@@ -54,9 +54,9 @@ using .GroundState
 using .Evolution
 using .Thermal
 using .FreqDomain
-using .Impurity: Impurity, Partition, BathParametrization, RealPoles, ComplexPoles,
-    audit_partition, couplings, matsubara_reconstruct, mount_bath, fit_bath,
-    BosonBath
+using .Impurity: Impurity, Partition, BathParametrization, RealPoles,
+    ThermofieldRealPoles, ComplexPoles, audit_partition, couplings,
+    matsubara_reconstruct, mount_bath, fit_bath, BosonBath
 using .Checkpoints
 using .Parallel
 
@@ -85,7 +85,7 @@ export dmrg1!, dmrg2!, dmrg1_3s!, expand!,
     TEBD, BUG, ImplicitLogTime, linsolve!,
     ThermalRep, Purified, METTS, thermalize
 # L6 + cross-cutting
-export Partition, BathParametrization, RealPoles, ComplexPoles,
+export Partition, BathParametrization, RealPoles, ThermofieldRealPoles, ComplexPoles,
     audit_partition, couplings, matsubara_reconstruct, mount_bath, fit_bath,
     BosonBath,
     checkpoint!, resume, with_checkpoint, threaded_foreach

@@ -751,7 +751,7 @@ end
     @test maximum(abs.(valsχ .- valsχ[1])) > 1e-4
 end
 
-@testset "T=0 boson bath fitting and mounting" begin
+@testset "boson bath fitting and mounting" begin
     S = spin_ops()
     B = boson_ops(2)
     P = Partition([[:imp]])
@@ -765,7 +765,9 @@ end
     @test bath.residues ≈ 0.2 .* bath.poles .* 0.5
     @test couplings(bath) ≈ sqrt.(bath.residues)
     @test bath.diagnostics.block_diagnostics[1].rel_weight_change < 0.2
-    @test_throws ArgumentError fit_bath(J, P; T=1.0, nmodes=2, ωmin=0.1, ωmax=1.0)
+    bathT = fit_bath(J, P; T=1.0, nmodes=2, ωmin=0.1, ωmax=1.0)
+    @test bathT isa ThermofieldRealPoles
+    @test bathT.diagnostics.representation == :thermofield_star
 
     νs = [0.0, 0.4, 1.0, 2.0, 4.0, 8.0]
     exact_poles = [0.75, 1.25, 1.75]
@@ -809,6 +811,8 @@ end
     ψ = random_ttns(RNG, ComplexF64, bb.topology, phys, ℂ^3)
     @test norm(to_dense(O) - dense_hamiltonian(bb.H, ψ)) < 1e-12
 end
+
+include("b4_finite_temperature_bath.jl")
 
 if lowercase(get(ENV, "GRAFT_LONG_B5", "false")) in ("1", "true", "yes")
     include("b5_holstein_tdvp_chi.jl")

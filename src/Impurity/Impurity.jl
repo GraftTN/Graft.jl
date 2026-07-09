@@ -1,8 +1,8 @@
 """
 L6 — GRAFT.Impurity: embedded impurity-solver module (architecture §6).
-Forwarded B4 implements T=0 boson bath fitting plus star/chain branch mounting.
-Finite-T thermofield baths and self-consistency-facing solver glue remain later
-milestones.
+Forwarded B4 implements boson Hamiltonian real-pole bath fitting plus star/chain
+branch mounting. Finite-T solver glue remains a later milestone; the pole-fit
+surface already returns thermofield real-pole star data.
 
 Never referenced by any lower layer (§9.10). Owns *no* private geometry code
 (§0.1): geometry builders emit plain `Trees.TreeTopology`.
@@ -14,8 +14,9 @@ using ..Trees
 using ..Networks
 using ..Symbolic
 
-export Partition, audit_partition, BathParametrization, RealPoles, ComplexPoles,
-    couplings, matsubara_reconstruct, mount_bath, fit_bath, BosonBath, solve
+export Partition, audit_partition, BathParametrization, RealPoles,
+    ThermofieldRealPoles, ComplexPoles, couplings, matsubara_reconstruct,
+    mount_bath, fit_bath, BosonBath, solve
 
 # ---------------------------------------------------------------------------
 # §6.2 Partition: a *user declaration* on the impurity orbitals; H_bath never
@@ -100,6 +101,61 @@ Base.length(b::RealPoles) = length(b.poles)
 couplings(b::RealPoles) = sqrt.(b.residues)
 
 """
+    ThermofieldRealPoles(source, emission, absorption; beta, temperature, diagnostics)
+
+Finite-temperature Hamiltonian bath parametrization for thermofield stars.
+`source` is the real-pole fit to the retarded/Matsubara source object, while
+`emission` and `absorption` are positive real-pole baths with bosonic thermal
+weights `(n_B(ω)+1)` and `n_B(ω)`. The Hamiltonian realization is two stars in a
+vacuum product state; this is deliberately separate from `ComplexPoles` BCF
+pseudomodes.
+"""
+struct ThermofieldRealPoles{S<:RealPoles,E<:RealPoles,A<:RealPoles,D<:NamedTuple} <: BathParametrization
+    source::S
+    emission::E
+    absorption::A
+    blocks::Vector{Vector{Symbol}}
+    beta::Float64
+    temperature::Float64
+    statistics::Symbol
+    diagnostics::D
+
+    function ThermofieldRealPoles(source::S, emission::E, absorption::A;
+                                  beta::Real, temperature::Real,
+                                  statistics::Symbol=:boson,
+                                  diagnostics::D) where {S<:RealPoles,E<:RealPoles,A<:RealPoles,D<:NamedTuple}
+        statistics == :boson ||
+            throw(ArgumentError("ThermofieldRealPoles currently supports statistics=:boson"))
+        source.blocks == emission.blocks ||
+            throw(ArgumentError("thermofield emission blocks must match the source bath"))
+        source.blocks == absorption.blocks ||
+            throw(ArgumentError("thermofield absorption blocks must match the source bath"))
+        source.block_ranges == emission.block_ranges ||
+            throw(ArgumentError("thermofield emission block ranges must match the source bath"))
+        source.block_ranges == absorption.block_ranges ||
+            throw(ArgumentError("thermofield absorption block ranges must match the source bath"))
+        source.poles == emission.poles ||
+            throw(ArgumentError("thermofield emission poles must match the source bath"))
+        source.poles == absorption.poles ||
+            throw(ArgumentError("thermofield absorption poles must match the source bath"))
+        β = Float64(beta)
+        T = Float64(temperature)
+        isfinite(β) && β > 0 ||
+            throw(ArgumentError("thermofield beta must be finite and positive"))
+        isfinite(T) && T > 0 ||
+            throw(ArgumentError("thermofield temperature must be finite and positive"))
+        return new{S,E,A,D}(source, emission, absorption, deepcopy(source.blocks),
+                            β, T, statistics, diagnostics)
+    end
+end
+Base.length(b::ThermofieldRealPoles) = length(b.emission) + length(b.absorption)
+couplings(b::ThermofieldRealPoles) = (;
+    source = couplings(b.source),
+    emission = couplings(b.emission),
+    absorption = couplings(b.absorption),
+)
+
+"""
     matsubara_reconstruct(bath::RealPoles, frequencies; block=1, kind=:boson)
 
 Project a real-pole Hamiltonian bath back to the supplied Matsubara grid. For
@@ -119,18 +175,45 @@ function matsubara_reconstruct(bath::RealPoles, frequencies; block::Integer=1,
 end
 
 """
+    matsubara_reconstruct(bath::ThermofieldRealPoles, frequencies; block=1,
+                          kind=:boson, channel=:source)
+
+Project a finite-temperature thermofield bath to a Matsubara grid. `channel` may
+be `:source`/`:retarded` for the original Hamiltonian source object,
+`:emission`, `:absorption`, or `:thermal_sum` for the positive channel sum.
+"""
+function matsubara_reconstruct(bath::ThermofieldRealPoles, frequencies;
+                               block::Integer=1, kind::Symbol=:boson,
+                               channel::Symbol=:source)
+    kind == :boson ||
+        throw(ArgumentError("matsubara_reconstruct currently supports kind=:boson"))
+    if channel in (:source, :retarded, :spectral)
+        return matsubara_reconstruct(bath.source, frequencies; block, kind)
+    elseif channel == :emission
+        return matsubara_reconstruct(bath.emission, frequencies; block, kind)
+    elseif channel == :absorption
+        return matsubara_reconstruct(bath.absorption, frequencies; block, kind)
+    elseif channel in (:thermal_sum, :sum)
+        return matsubara_reconstruct(bath.emission, frequencies; block, kind) +
+               matsubara_reconstruct(bath.absorption, frequencies; block, kind)
+    else
+        throw(ArgumentError("unknown thermofield reconstruction channel $channel"))
+    end
+end
+
+"""
     ComplexPoles
 
-Type slot ONLY (§6.3): quasi-Lindblad pseudomode baths (complex poles). Kept so
-the fitter interface doesn't change when the TTNDO route lands; deliberately
-unimplemented.
+Type slot ONLY (§6.3 / `03_GRAFT_complex_pole.md`): BCF exponential-sum
+pseudomode baths (complex poles). These belong to the Lindbladian/TTNDO route
+and are deliberately not mountable as Hamiltonian `TTNS` bath sites.
 """
 struct ComplexPoles <: BathParametrization end
 
 """
-    fit_bath(J, P::Partition; T=0, kind=:boson, nmodes, ωmin, ωmax,
+    fit_bath(J, P::Partition; T=0, beta=nothing, kind=:boson, nmodes, ωmin, ωmax,
              grid=:linear, method=:midpoint, domain=:real_axis,
-             crossblock=:highmount) -> RealPoles
+             crossblock=:highmount, pole_family=:real) -> RealPoles | ThermofieldRealPoles
 
 Blockwise real-pole Hamiltonian-bath fitting for the forwarded boson path.
 `domain=:real_axis` consumes a continuous boson spectral density `J(ω)` and
@@ -141,10 +224,13 @@ such object per partition block) and solves for nonnegative real-pole residues
 whose Matsubara reconstruction matches the input grid.
 
 * `T = 0`: Δ(iωₙ)/Δ(ω) → real-pole fit per block.
-* `T > 0` (TODO M2): thermofield star encoding — fit Γf and Γ(1−f) (fermions) /
-  absorption & emission parts (bosons) separately; vacuum product initial state.
+* `T > 0`, `kind=:boson`: fit the source real poles and split them into
+  thermofield emission/absorption `RealPoles`; the bath initial state is the
+  vacuum product state.
 * `crossblock = :highmount | :rotate` (§6.2): high mounting near the tree
   center, or a pre-fit single-particle rotation (returned with results).
+* `pole_family=:complex`: TODO(C3) BCF/Lindbladian fitting. Complex BCF poles
+  are never routed into Hamiltonian bath mounting.
 
 Mandatory self-checks to implement with it (§6.3): (1) β·δε ≪ 1 resolution
 check; (2) loop-bath vs final-bath both projected back to Δ(iωₙ) and compared.
@@ -157,9 +243,15 @@ function fit_bath(J, P::Partition; T::Real=0, kind::Symbol=:boson,
                   nmodes::Integer=8, wmin=nothing, wmax=nothing,
                   ωmin=nothing, ωmax=nothing, grid::Symbol=:linear,
                   method::Symbol=:midpoint, domain::Symbol=:real_axis,
-                  crossblock::Symbol=:highmount)
-    T == 0 || throw(ArgumentError("fit_bath T > 0 is TODO(M2): thermofield star fitting is not part of the forwarded T=0 boson path"))
-    kind == :boson || throw(ArgumentError("fit_bath currently implements only kind=:boson for the forwarded B4 path"))
+                  crossblock::Symbol=:highmount, beta=nothing, β=nothing,
+                  pole_family::Symbol=:real)
+    if pole_family == :complex
+        throw(ArgumentError("fit_bath pole_family=:complex is TODO(C3): ComplexPoles are BCF/Lindbladian fits and are not Hamiltonian-mountable"))
+    elseif pole_family != :real
+        throw(ArgumentError("fit_bath pole_family must be :real or :complex"))
+    end
+    kind == :boson ||
+        throw(ArgumentError("fit_bath currently implements only kind=:boson; fermionic finite-T Hamiltonian stars need a charged hybridization mounting surface"))
     crossblock in (:highmount, :rotate) ||
         throw(ArgumentError("crossblock must be :highmount or :rotate"))
     nmodes > 0 || throw(ArgumentError("nmodes must be positive"))
@@ -168,8 +260,22 @@ function fit_bath(J, P::Partition; T::Real=0, kind::Symbol=:boson,
     lo < hi || throw(ArgumentError("ωmin must be smaller than ωmax"))
     dom = _canonical_domain(domain)
     fitmethod = _canonical_fit_method(method, dom)
+    temp = _temperature_spec(T, beta, β)
 
     targets = dom == :real_axis ? _block_targets(J, P) : _matsubara_targets(J, P)
+    source = _fit_realpoles_from_targets(targets, P; kind, T=temp.T, dom,
+                                         fitmethod, lo, hi, nmodes=Int(nmodes),
+                                         grid, crossblock, channel=:source)
+    temp.finite || return source
+    return _thermofield_from_source(source; beta=temp.beta, temperature=temp.T,
+                                    kind, dom, fitmethod, grid,
+                                    nmodes=Int(nmodes), lo, hi, crossblock)
+end
+
+function _fit_realpoles_from_targets(targets, P::Partition; kind::Symbol, T::Float64,
+                                     dom::Symbol, fitmethod::Symbol, lo::Float64,
+                                     hi::Float64, nmodes::Int, grid::Symbol,
+                                     crossblock::Symbol, channel::Symbol)
     poles = Float64[]
     residues = Float64[]
     ranges = UnitRange{Int}[]
@@ -189,14 +295,15 @@ function fit_bath(J, P::Partition; T::Real=0, kind::Symbol=:boson,
     end
     diagnostics = (;
         kind,
-        T = 0.0,
+        T,
         method = fitmethod,
         domain = dom,
         grid,
-        nmodes = Int(nmodes),
+        nmodes,
         ωmin = lo,
         ωmax = hi,
         crossblock,
+        channel,
         block_diagnostics = block_diags,
     )
     return RealPoles(poles, residues, deepcopy(P.blocks), ranges, diagnostics)
@@ -248,11 +355,40 @@ function mount_bath(topo::TreeTopology, bath::RealPoles, P::Partition;
 end
 
 """
+    mount_bath(topo, bath::ThermofieldRealPoles, P::Partition; mode=:star, prefix=:bath, attach=nothing)
+
+Mount the emission and absorption thermofield stars as ordinary boson bath
+branches. The return value keeps the two channel mount records separate and
+also exposes concatenated `sites`, `anchors`, and per-block `block_sites`.
+"""
+function mount_bath(topo::TreeTopology, bath::ThermofieldRealPoles, P::Partition;
+                    mode::Symbol=:star, prefix::Symbol=:bath, attach=nothing)
+    emission = mount_bath(topo, bath.emission, P;
+                          mode, prefix=Symbol(prefix, :em_), attach)
+    absorption = mount_bath(emission.topology, bath.absorption, P;
+                            mode, prefix=Symbol(prefix, :abs_), attach)
+    block_sites = [vcat(emission.block_sites[i], absorption.block_sites[i])
+                   for i in eachindex(emission.block_sites)]
+    return (;
+        topology = absorption.topology,
+        emission,
+        absorption,
+        sites = vcat(emission.sites, absorption.sites),
+        anchors = vcat(emission.anchors, absorption.anchors),
+        block_sites,
+        channel_sites = (; emission=emission.block_sites, absorption=absorption.block_sites),
+    )
+end
+
+"""
     BosonBath(J; partition, topology, matter_ops, boson_ops, mode=:star, kwargs...)
 
-Continuous T=0 boson-bath entry point. Fits `J(ω)` with [`fit_bath`](@ref),
+Continuous boson-bath entry point. Fits `J(ω)` with [`fit_bath`](@ref),
 mounts explicit boson sites with [`mount_bath`](@ref), and emits ordinary
-symbolic terms via `boson_modes` and `BosonCoupling`. Returns
+symbolic terms via `boson_modes` and `BosonCoupling` for zero-temperature
+`RealPoles`. Finite-temperature `ThermofieldRealPoles` fitting/mounting is
+available through `fit_bath`/`mount_bath`; lowering the two thermofield coupling
+channels to a single `OpSum` is a later solver-convention step. Returns
 `(; bath, topology, sites, anchors, phys, H)`, where `phys` contains the new
 bath-site physical spaces and `H` is an `OpSum`.
 """
@@ -260,6 +396,8 @@ function BosonBath(J; partition::Partition, topology::TreeTopology, matter_ops,
                    boson_ops, mode::Symbol=:star, density::Symbol=:N,
                    prefix::Symbol=:bath, attach=nothing, kwargs...)
     bath = fit_bath(J, partition; kwargs...)
+    bath isa ThermofieldRealPoles &&
+        throw(ArgumentError("BosonBath finite-T thermofield OpSum lowering is not implemented; use fit_bath/mount_bath for typed thermofield star data"))
     mounted = mount_bath(topology, bath, partition; mode, prefix, attach)
     g = couplings(bath)
     modes = [site => bath.poles[k] for (k, site) in enumerate(mounted.sites)]
@@ -319,6 +457,156 @@ function _bound(name::String, ascii, unicode)
     x = Float64(v)
     isfinite(x) || throw(ArgumentError("$name must be finite"))
     return x
+end
+
+function _temperature_spec(T::Real, beta, β)
+    Tval = Float64(T)
+    isfinite(Tval) && Tval >= 0 ||
+        throw(ArgumentError("temperature T must be finite and nonnegative"))
+    if beta !== nothing && β !== nothing && Float64(beta) != Float64(β)
+        throw(ArgumentError("beta and β keywords disagree"))
+    end
+    βarg = β === nothing ? beta : β
+    if βarg === nothing
+        Tval == 0 && return (; finite=false, T=0.0, beta=Inf)
+        return (; finite=true, T=Tval, beta=inv(Tval))
+    end
+    βval = Float64(βarg)
+    isfinite(βval) && βval > 0 ||
+        throw(ArgumentError("beta must be finite and positive for finite-temperature bath fitting"))
+    implied_T = inv(βval)
+    if Tval > 0 && !isapprox(Tval, implied_T; rtol=1e-12, atol=0.0)
+        throw(ArgumentError("T and beta specify different finite temperatures"))
+    end
+    return (; finite=true, T=implied_T, beta=βval)
+end
+
+function _thermofield_from_source(source::RealPoles; beta::Float64,
+                                  temperature::Float64, kind::Symbol,
+                                  dom::Symbol, fitmethod::Symbol, grid::Symbol,
+                                  nmodes::Int, lo::Float64, hi::Float64,
+                                  crossblock::Symbol)
+    occupations = [_bose_occupation(beta, ω) for ω in source.poles]
+    emission_residues = (occupations .+ 1.0) .* source.residues
+    absorption_residues = occupations .* source.residues
+    emission_diag = _thermofield_channel_diagnostics(
+        source, emission_residues, occupations, :emission; beta, temperature,
+        kind, dom, fitmethod, grid, nmodes, lo, hi, crossblock)
+    absorption_diag = _thermofield_channel_diagnostics(
+        source, absorption_residues, occupations, :absorption; beta, temperature,
+        kind, dom, fitmethod, grid, nmodes, lo, hi, crossblock)
+    emission = RealPoles(source.poles, emission_residues, source.blocks,
+                         source.block_ranges, emission_diag)
+    absorption = RealPoles(source.poles, absorption_residues, source.blocks,
+                           source.block_ranges, absorption_diag)
+    diagnostics = _thermofield_diagnostics(
+        source, emission, absorption; beta, temperature, kind, dom, fitmethod,
+        grid, nmodes, lo, hi, crossblock)
+    return ThermofieldRealPoles(source, emission, absorption; beta,
+                                temperature, diagnostics)
+end
+
+function _bose_occupation(beta::Float64, ω::Float64)
+    x = beta * ω
+    x > 700 && return 0.0
+    return inv(expm1(x))
+end
+
+function _thermofield_channel_diagnostics(source::RealPoles, residues,
+                                          occupations, channel::Symbol;
+                                          beta::Float64, temperature::Float64,
+                                          kind::Symbol, dom::Symbol,
+                                          fitmethod::Symbol, grid::Symbol,
+                                          nmodes::Int, lo::Float64,
+                                          hi::Float64, crossblock::Symbol)
+    block_diags = map(enumerate(source.block_ranges)) do (i, r)
+        factors = channel == :emission ? occupations[r] .+ 1.0 : occupations[r]
+        (;
+            block_index = i,
+            source_domain = dom,
+            channel,
+            spectral_weight = sum(residues[r]),
+            source_spectral_weight = sum(source.residues[r]),
+            thermal_factor_min = minimum(factors),
+            thermal_factor_max = maximum(factors),
+        )
+    end
+    return (;
+        kind,
+        T = temperature,
+        beta,
+        method = :thermofield_split,
+        source_method = fitmethod,
+        domain = dom,
+        grid,
+        nmodes,
+        ωmin = lo,
+        ωmax = hi,
+        crossblock,
+        channel,
+        block_diagnostics = block_diags,
+    )
+end
+
+function _thermofield_diagnostics(source::RealPoles, emission::RealPoles,
+                                  absorption::RealPoles; beta::Float64,
+                                  temperature::Float64, kind::Symbol,
+                                  dom::Symbol, fitmethod::Symbol, grid::Symbol,
+                                  nmodes::Int, lo::Float64, hi::Float64,
+                                  crossblock::Symbol)
+    recon = _thermofield_source_reconstruction(source, emission, absorption)
+    βδε = _beta_delta_energy(source, beta)
+    return (;
+        kind,
+        T = temperature,
+        beta,
+        method = :thermofield_split,
+        source_method = fitmethod,
+        domain = dom,
+        grid,
+        nmodes,
+        ωmin = lo,
+        ωmax = hi,
+        crossblock,
+        statistics = :boson,
+        representation = :thermofield_star,
+        channels = (:emission, :absorption),
+        beta_delta_energy = βδε,
+        resolution_ok = βδε < 1.0,
+        source_diagnostics = source.diagnostics,
+        source_reconstruction = recon,
+    )
+end
+
+function _thermofield_source_reconstruction(source::RealPoles, emission::RealPoles,
+                                            absorption::RealPoles)
+    block_diags = map(enumerate(source.block_ranges)) do (i, r)
+        reconstructed = emission.residues[r] .- absorption.residues[r]
+        expected = source.residues[r]
+        err = reconstructed .- expected
+        rel = norm(err) / max(norm(expected), eps(Float64))
+        maxabs = isempty(err) ? 0.0 : maximum(abs.(err))
+        (;
+            block_index = i,
+            source_domain = source.diagnostics.domain,
+            relative_residual = rel,
+            max_abs_error = maxabs,
+            spectral_weight = sum(reconstructed),
+            source_spectral_weight = sum(expected),
+        )
+    end
+    return (;
+        channel_combination = :emission_minus_absorption,
+        relative_residual = maximum(d.relative_residual for d in block_diags),
+        max_abs_error = maximum(d.max_abs_error for d in block_diags),
+        block_diagnostics = block_diags,
+    )
+end
+
+function _beta_delta_energy(source::RealPoles, beta::Float64)
+    poles = sort(unique(source.poles))
+    length(poles) < 2 && return Inf
+    return beta * minimum(diff(poles))
 end
 
 function _block_targets(J, P::Partition)
