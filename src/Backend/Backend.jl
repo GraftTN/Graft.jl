@@ -44,7 +44,8 @@ export AbstractTensorMap, TensorMap, DiagonalTensorMap, id, isometry, unitary,
 export left_orth, right_orth, left_null, qr_compact, svd_compact, svd_trunc,
     svd_vals, truncrank, trunctol, truncerror, notrunc
 # contraction primitives
-export @tensor, ncon
+export @tensor, ncon, contract_pair, pair_cost, space_signature,
+    sector_cost_supported, sector_cost_nontrivial, sector_block_peak
 # GRAFT-defined
 export FermionSector, AbelianSector, TruncationScheme, truncspec, split_svd,
     absorb_on_leg, orth_factor_leg, trivialspace, ones_tensor
@@ -77,6 +78,174 @@ function ones_tensor(::Type{T}, cod::ProductSpace) where {T<:Number}
         fill!(b, one(T))
     end
     return t
+end
+
+# ---------------------------------------------------------------------------
+# Compiled-contraction primitives
+# ---------------------------------------------------------------------------
+
+"""
+    contract_pair(A, pA, conjA, B, pB, conjB, pAB) -> TensorMap
+
+Execute one pre-planned binary tensor contraction. `pA`, `pB`, and `pAB` are
+TensorOperations' expert-mode index partitions, so upper layers can compile
+leg bookkeeping once and keep the Krylov hot path free of ncon label parsing.
+
+`Backend` deliberately accepts only structural index data here: it must not
+depend on `Contractions.Planning.PairStep` (L0 stays below L2).
+"""
+function contract_pair(A::AbstractTensorMap, pA::Tuple, conjA::Bool,
+                       B::AbstractTensorMap, pB::Tuple, conjB::Bool,
+                       pAB::Tuple)
+    return TensorOperations.tensorcontract(A, pA, conjA, B, pB, conjB, pAB)
+end
+
+"""
+    space_signature(x) -> UInt
+
+Hash the immutable codomain/domain structure of a TensorMap or TensorMapSpace.
+Compiled contraction plans are shape-only artifacts: tensor values never enter
+their cache identity.
+"""
+space_signature(x) = hash((codomain(x), domain(x)))
+
+"""
+    sector_cost_supported(W::TensorMapSpace) -> Bool
+
+Whether the Phase-3 block-GEMM cost model is exact and applicable to the
+sector type of `W`.  It is deliberately restricted to `UniqueFusion` **and
+`SymmetricBraiding`** (trivial, U(1), Z₂, fermion parity, and their compatible
+abelian products): in that regime every sector has quantum dimension one,
+permutations are well-defined, and TensorKit's binary `mul!` is precisely a
+collection of independent dense GEMMs.  Non-abelian spaces use the Phase-2
+dense model.  Planar-only and anyonic spaces require a future planar
+TensorOperations executor path: this predicate deliberately does not claim
+that the current regular `contract_pair` wrapper can execute them.  The
+Phase-3 v1 permutation coefficient is consequently fixed to zero rather than
+silently pretending to price anyonic braids.
+"""
+sector_cost_supported(W::TensorMapSpace) =
+    TensorKit.FusionStyle(TensorKit.sectortype(W)) isa TensorKit.UniqueFusion &&
+    TensorKit.BraidingStyle(TensorKit.sectortype(W)) isa TensorKit.SymmetricBraiding
+
+"""
+    sector_cost_nontrivial(W::TensorMapSpace) -> Bool
+
+Whether `W` has a Phase-3-eligible symmetry *and* an actual nontrivial sector
+split.  All-trivial maps have exactly the dense cost/layout already modeled by
+Phase 2, so Planning deliberately avoids structural HomSpace composition for
+them.  This keeps pure dimension-only fixtures useful and avoids spending
+planning work on a cost model that cannot change their order.
+"""
+sector_cost_nontrivial(W::TensorMapSpace) =
+    sector_cost_supported(W) && TensorKit.sectortype(W) !== TensorKit.Trivial
+
+"""
+    sector_block_peak(W::TensorMapSpace) -> Float64
+
+Largest stored matrix block of a TensorKit HomSpace.  This is a structural
+query only; no TensorMap data is allocated.  Phase 3 uses it to include input
+maps in the per-plan largest-block diagnostic.
+"""
+function sector_block_peak(W::TensorMapSpace)
+    largest = 0.0
+    for q in TensorKit.blocksectors(W)
+        largest = max(largest,
+                      Float64(TensorKit.blockdim(codomain(W), q)) *
+                      Float64(TensorKit.blockdim(domain(W), q)))
+    end
+    return largest
+end
+
+function _conjugated_structure(W::TensorMapSpace, p::Tuple, conjW::Bool)
+    conjW || return W, p
+    # Use TensorKit's index remapping rather than reproducing its flat-leg
+    # convention by hand: an input flat leg is represented as dual(domain),
+    # and adjoint swaps the codomain/domain index ranges.
+    return adjoint(W), TensorKit.adjointtensorindices(W, p)
+end
+
+"""
+    pair_cost(A::TensorMapSpace, pA, conjA, B::TensorMapSpace, pB, conjB, pAB)
+
+Return exact, allocation-free block metadata for one TensorKit binary
+contraction.  `output` is the exact output HomSpace after the requested final
+partition.  For unique-fusion sector types, `sector_flops` is the sum of the
+actual per-sector GEMM costs `Σ_q 2m_qk_qn_q`; `output_elements` is the exact
+symmetry-reduced stored payload of the output; and `largest_block_elements`
+is the largest GEMM result block.  `output_largest_block_elements` records the
+largest block after `pAB`'s final repartition, while `peak_block_elements` is
+their maximum and is the safe live-block diagnostic for Planning.
+
+The block loop intentionally follows the *matrix-product* structure
+`compose(permute(A, pA), permute(B, pB))`, not the final repartitioned output:
+the latter can fuse those GEMM sectors differently and is not a record of the
+work TensorKit executed.
+"""
+function pair_cost(A::TensorMapSpace, pA::Tuple, conjA::Bool,
+                   B::TensorMapSpace, pB::Tuple, conjB::Bool,
+                   pAB::Tuple)
+    A′, pA′ = _conjugated_structure(A, pA, conjA)
+    B′, pB′ = _conjugated_structure(B, pB, conjB)
+    LA = TensorKit.permute(A′, pA′)
+    LB = TensorKit.permute(B′, pB′)
+    product_space = TensorKit.compose(LA, LB)
+    output = TensorOperations.tensorcontract(A, pA, conjA, B, pB, conjB, pAB)
+
+    supported = sector_cost_supported(A′) && sector_cost_supported(B′)
+    flops = 0.0
+    nblocks = 0
+    largest = 0.0
+    for q in TensorKit.blocksectors(product_space)
+        # `product_space` describes exactly the blocks visited by TensorKit's
+        # `mul!`; the two guards make a malformed structural call fail as an
+        # empty/unsupported profile rather than inventing a block cost.
+        TensorKit.hasblock(LA, q) && TensorKit.hasblock(LB, q) || continue
+        m = TensorKit.blockdim(codomain(LA), q)
+        k = TensorKit.blockdim(domain(LA), q)
+        k == TensorKit.blockdim(codomain(LB), q) ||
+            throw(ArgumentError("incompatible planned sector block $q"))
+        n = TensorKit.blockdim(domain(LB), q)
+        flops += 2.0 * m * k * n
+        largest = max(largest, Float64(m) * n)
+        nblocks += 1
+    end
+    output_largest = sector_block_peak(output)
+    return (output=output,
+            sector_flops=supported ? flops : NaN,
+            output_elements=Float64(dim(output)),
+            block_count=nblocks,
+            largest_block_elements=largest,
+            output_largest_block_elements=output_largest,
+            peak_block_elements=max(largest, output_largest),
+            supported=supported)
+end
+
+"""
+    pair_cost(dimsA, openA, contractA, dimsB, openB; memory_weight=0) -> Float64
+
+Dense estimate for a binary contraction. This is intentionally sector-blind:
+Phase 2 uses it for the dimensions-only planner, while sector-aware block costs
+remain a Phase-3 concern. `memory_weight` prices the output intermediate in
+elements; callers that need the two terms separately retain them in Planning.
+"""
+function pair_cost(dimsA::AbstractVector{<:Integer}, openA, contractA,
+                   dimsB::AbstractVector{<:Integer}, openB;
+                   memory_weight::Real=0)
+    out_a = _dimprod(dimsA, openA)
+    contracted = _dimprod(dimsA, contractA)
+    out_b = _dimprod(dimsB, openB)
+    flops = out_a * contracted * out_b
+    peak = out_a * out_b
+    return flops + Float64(memory_weight) * peak
+end
+
+@inline function _dimprod(dims::AbstractVector{<:Integer}, inds)
+    p = 1.0
+    for i in inds
+        p *= Float64(dims[i])
+    end
+    return p
 end
 
 # ---------------------------------------------------------------------------

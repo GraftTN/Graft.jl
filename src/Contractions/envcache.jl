@@ -6,20 +6,48 @@
 """
     EnvCache(topo::TreeTopology)
 
-Cache of sandwich environments keyed by directed edge `(u, v)`. Holds only the
-topology reference and tensors — deliberately serializable/shippable (MPI
-subtree dispatch unit, §8; big-but-rebuildable: checkpoints drop it by
-default, §7).
+Cache of sandwich environments keyed by directed edge `(u, v)`, plus compiled
+shape-only effective-Hamiltonian plans. Both classes are deliberately
+rebuildable: checkpoints drop the whole cache, while gauge invalidation drops
+only value-dependent environments and retains plans whose space signatures
+still match (§3).
 """
-struct EnvCache
+mutable struct EnvCache
     topo::TreeTopology
     envs::Dict{Tuple{Int,Int},AbstractTensorMap}
+    plans::Dict{PlanKey,ContractionPlan}
+    plan_hits::Int
+    plan_misses::Int
 end
-EnvCache(topo::TreeTopology) = EnvCache(topo, Dict{Tuple{Int,Int},AbstractTensorMap}())
+EnvCache(topo::TreeTopology) =
+    EnvCache(topo, Dict{Tuple{Int,Int},AbstractTensorMap}(),
+             Dict{PlanKey,ContractionPlan}(), 0, 0)
+EnvCache(topo::TreeTopology, envs::Dict{Tuple{Int,Int},AbstractTensorMap}) =
+    EnvCache(topo, envs, Dict{PlanKey,ContractionPlan}(), 0, 0)
 
 Base.haskey(c::EnvCache, key::Tuple{Int,Int}) = haskey(c.envs, key)
 Base.getindex(c::EnvCache, key::Tuple{Int,Int}) = c.envs[key]
-Base.empty!(c::EnvCache) = (empty!(c.envs); c)
+Base.empty!(c::EnvCache) = (empty!(c.envs); empty!(c.plans);
+                            c.plan_hits = 0; c.plan_misses = 0; c)
+
+"""Observable plan-cache state for tests and solver diagnostics."""
+plan_cache_stats(c::EnvCache) =
+    (hits=c.plan_hits, misses=c.plan_misses, size=length(c.plans))
+
+function _effective_map!(c::EnvCache, kind::Symbol, spec::ContractionSpec,
+                         protos, statics::Tuple, T::DataType;
+                         optimize::Bool=true, memory_weight::Real=1,
+                         sector_aware::Bool=true)
+    plan, hit = Planning.get_or_plan!(c.plans, kind, spec, protos, T;
+                                      optimize=optimize, memory_weight=memory_weight,
+                                      sector_aware=sector_aware)
+    if hit
+        c.plan_hits += 1
+    else
+        c.plan_misses += 1
+    end
+    return EffectiveMap(plan, statics)
+end
 
 # is node `n` on the `u`-side of the directed edge (u, v)?
 function _on_side(t::TreeTopology, n::Int, u::Int, v::Int)

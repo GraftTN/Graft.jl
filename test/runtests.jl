@@ -4,10 +4,11 @@
 using Test
 using GRAFT
 using GRAFT.TestUtils
-using GRAFT.Backend: ℂ, ⊗, ←, dim, domain, U1Space, U1Irrep, FermionParity,
-    TensorMap, sectors
+using GRAFT.Backend: ℂ, ⊗, ←, dim, domain, dual, space, id, numind, numout, numin,
+    U1Space, U1Irrep, FermionParity, TensorMap, oneunit, sectors
+using TensorOperations
 using GRAFT.Trees: edges
-using GRAFT.Contractions: two_site_tensor, split_two_site!
+using GRAFT.Contractions: two_site_tensor, two_site_space, split_two_site!
 using Random
 using LinearAlgebra: I, dot, norm
 
@@ -879,5 +880,7 @@ end
     @test resume(path_iter).metadata.count == 4
     @test resume(path_iter * ".1").state.step == 2
 end
+
+include("contraction_planning.jl")
 
 end

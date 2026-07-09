@@ -26,8 +26,8 @@ Two iron rules (§3):
    fired by `Networks.update_tensor!`/`move_center!`; entries never go stale
    silently;
 2. `EnvCache` doubles as the future MPI dispatch unit (§8 level 3): it holds
-   nothing but the topology reference and per-directed-edge tensors, so a
-   subtree's environments can be shipped wholesale.
+   topology, per-directed-edge tensors, and small rebuildable compiled plans,
+   so a subtree's environments can be shipped wholesale.
 """
 module Contractions
 
@@ -38,9 +38,12 @@ using ..Networks
 import ..Networks: invalidate_node!, invalidate_edge!
 
 export EnvCache, env!, build_env, invalidate_node!, invalidate_edge!,
-    inner, expect, eff_h1, eff_h0, eff_h2, two_site_tensor, split_two_site!,
-    expand!
+    EffectiveMap, ContractionPlan, ContractionSpec, PlanKey, plan_cache_stats,
+    inner, expect, eff_h1, eff_h0, eff_h2, two_site_tensor, two_site_space,
+    split_two_site!, expand!
 
+include("planning/Planning.jl")
+using .Planning: ContractionSpec, ContractionPlan, EffectiveMap, PlanKey
 include("envcache.jl")
 include("effective.jl")
 include("expansion.jl")
