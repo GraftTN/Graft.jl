@@ -218,7 +218,7 @@ end
     Hf = OpSum()
     Hf += Term(-1.0, SiteOp(:site1, :Cd, F.Cd), SiteOp(:site2, :C, F.C))
     Hf += Term(-1.0, SiteOp(:site1, :C, F.C), SiteOp(:site2, :Cd, F.Cd))
-    Of = @test_logs (:warn, r"FermionParity Arrays") ttno_from_opsum(Hf, topo_b, phys_f; hermitian=true)
+    Of = ttno_from_opsum(Hf, topo_b, phys_f; hermitian=true)
     @test check_arrows(Of)
     @test collect(sectors(virtualspace(Of, nodeindex(topo_b, :site1)))) == [FermionParity(1)]
 end

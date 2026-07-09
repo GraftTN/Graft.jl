@@ -242,20 +242,6 @@ function ttno_from_opsum(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,S};
         P = hp ? phys[nodeid(t, n)] : nothing
         d = hp ? dim(P) : 1
         χp = t.parent[n] == 0 ? 1 : dim(vspaces[n])
-        dims = (ntuple(k -> dim(vspaces[t.children[n][k]]), K)..., (hp ? (d, d) : ())..., χp)
-        W = zeros(elt, dims)
-        for ((m, αkeys, βkey, opname), coeff) in entries
-            m == n || continue
-            αidx = ntuple(k -> chcoord[t.children[n][k]][αkeys[k]], K)
-            βidx = t.parent[n] == 0 ? 1 : chcoord[n][βkey]
-            if hp
-                mat = _siteop_matrix(opmats, n, opname, elt, d)
-                view(W, αidx..., :, :, βidx) .+= elt(coeff) .* mat
-            else
-                opname == :I || throw(ArgumentError("operator factor on branching node $(nodeid(t, n))"))
-                W[αidx..., βidx] += elt(coeff)
-            end
-        end
         cods = S[]
         for c in t.children[n]
             push!(cods, vspaces[c])
@@ -263,7 +249,50 @@ function ttno_from_opsum(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,S};
         hp && push!(cods, P)
         cod = isempty(cods) ? one(unit) : reduce(⊗, cods)
         Vp = t.parent[n] == 0 ? oneunit(S) : vspaces[n]
-        TensorMap(W, cod ← (hp ? P ⊗ Vp : ProductSpace(Vp)))
+        doms = hp ? S[P, Vp] : S[Vp]
+        dom = hp ? P ⊗ Vp : ProductSpace(Vp)
+
+        if graded
+            W = zeros(elt, cod ← dom)
+            blockmap = Dict{typeof(unit_sector),Any}(q => b for (q, b) in blocks(W))
+            _, codcoord = _sector_tuple_groups(cods, unit_sector)
+            _, domcoord = _sector_tuple_groups(doms, unit_sector)
+            for ((m, αkeys, βkey, opname), coeff) in entries
+                m == n || continue
+                αidx = ntuple(k -> chcoord[t.children[n][k]][αkeys[k]], K)
+                βidx = t.parent[n] == 0 ? 1 : chcoord[n][βkey]
+                if hp
+                    mat = _siteop_matrix(opmats, n, opname, elt, d)
+                    for pout in 1:d, pin in 1:d
+                        val = elt(coeff) * mat[pout, pin]
+                        iszero(val) && continue
+                        _add_block_entry!(blockmap, codcoord, domcoord,
+                                          (αidx..., pout), (pin, βidx), val)
+                    end
+                else
+                    opname == :I || throw(ArgumentError("operator factor on branching node $(nodeid(t, n))"))
+                    _add_block_entry!(blockmap, codcoord, domcoord,
+                                      αidx, (βidx,), elt(coeff))
+                end
+            end
+            W
+        else
+            dims = (ntuple(k -> dim(vspaces[t.children[n][k]]), K)..., (hp ? (d, d) : ())..., χp)
+            W = zeros(elt, dims)
+            for ((m, αkeys, βkey, opname), coeff) in entries
+                m == n || continue
+                αidx = ntuple(k -> chcoord[t.children[n][k]][αkeys[k]], K)
+                βidx = t.parent[n] == 0 ? 1 : chcoord[n][βkey]
+                if hp
+                    mat = _siteop_matrix(opmats, n, opname, elt, d)
+                    view(W, αidx..., :, :, βidx) .+= elt(coeff) .* mat
+                else
+                    opname == :I || throw(ArgumentError("operator factor on branching node $(nodeid(t, n))"))
+                    W[αidx..., βidx] += elt(coeff)
+                end
+            end
+            TensorMap(W, cod ← dom)
+        end
     end
 
     return TTNO(t, tensors; ishermitian=hermitian)
@@ -275,9 +304,10 @@ function _siteop_matrix(opmats, n::Int, opname::Symbol, ::Type{T}, d::Int) where
     opname == :I && return _eye(T, d)
     op = opmats[(n, opname)]
     if numout(op) == 1 && numin(op) == 1
-        return T.(reshape(convert(Array, op), d, d))
+        arr = _tensor_dense_from_blocks(op)
+        return T.(reshape(arr, d, d))
     elseif numout(op) == 1 && numin(op) == 2 && dim(domain(op)[2]) == 1
-        arr = reshape(convert(Array, op), d, d, :)
+        arr = reshape(_tensor_dense_from_blocks(op), d, d, :)
         size(arr, 3) == 1 || throw(ArgumentError("charged SiteOp charge leg must be one-dimensional"))
         return T.(arr[:, :, 1])
     else
@@ -326,4 +356,69 @@ function _channel_layout(::Type{S}, ordered::Vector{_ChannelKey},
         offset += length(groups[q])
     end
     return V, coord
+end
+
+function _basis_sectors(V::ElementarySpace, unit_sector)
+    qs = typeof(unit_sector)[]
+    for q in sectors(V)
+        for _ in 1:dim(V, q)
+            push!(qs, q)
+        end
+    end
+    return qs
+end
+
+function _sector_tuple_groups(legs::Vector{S}, unit_sector) where {S<:ElementarySpace}
+    Q = typeof(unit_sector)
+    groups = Dict{Q,Vector{Tuple}}()
+    coord = Dict{Tuple,Tuple{Q,Int}}()
+    if isempty(legs)
+        groups[unit_sector] = [()]
+        coord[()] = (unit_sector, 1)
+        return groups, coord
+    end
+    legqs = [_basis_sectors(V, unit_sector) for V in legs]
+    dims = Tuple(length(qs) for qs in legqs)
+    for I in CartesianIndices(dims)
+        idx = Tuple(I)
+        q = unit_sector
+        for j in eachindex(idx)
+            q = _fuse_charge(q, legqs[j][idx[j]])
+        end
+        rows = get!(groups, q, Tuple[])
+        push!(rows, idx)
+        coord[idx] = (q, length(rows))
+    end
+    return groups, coord
+end
+
+function _add_block_entry!(blockmap, codcoord, domcoord,
+                           codidx::Tuple, domidx::Tuple, val)
+    cq, row = codcoord[codidx]
+    dq, col = domcoord[domidx]
+    cq == dq || return nothing
+    blockmap[cq][row, col] += val
+    return nothing
+end
+
+function _tensor_dense_from_blocks(t::AbstractTensorMap)
+    T = scalartype(t)
+    dims = ntuple(i -> dim(space(t, i)), numind(t))
+    arr = zeros(T, dims)
+    if spacetype(t) === ComplexSpace
+        return convert(Array, t)
+    end
+    unit_sector = one(sectortype(space(t, 1)))
+    codlegs = [codomain(t)[i] for i in 1:numout(t)]
+    domlegs = [domain(t)[i] for i in 1:numin(t)]
+    codgroups, _ = _sector_tuple_groups(codlegs, unit_sector)
+    domgroups, _ = _sector_tuple_groups(domlegs, unit_sector)
+    for (q, b) in blocks(t)
+        for row in axes(b, 1), col in axes(b, 2)
+            codidx = codgroups[q][row]
+            domidx = domgroups[q][col]
+            arr[codidx..., domidx...] = b[row, col]
+        end
+    end
+    return arr
 end
