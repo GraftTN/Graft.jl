@@ -31,7 +31,7 @@ using ..Contractions
 export Evolver, step!, evolve!, CorrelatorSeries, correlator, correlator_series,
     supports_complex_step,
     TDVP1, TDVP2, TDVP1_CBE, GlobalKrylov, GSE_TDVP, LSE_TDVP, TEBD, BUG,
-    FixedBUG, ImplicitLogTime
+    FixedBUG, ImplicitLogTime, linsolve!
 
 abstract type Evolver end
 
@@ -172,33 +172,39 @@ include("subspace_expansion.jl")
 # TODO stubs — declared types so dispatch surfaces exist; no methods yet.
 # ---------------------------------------------------------------------------
 
-# TODO(M0/M1): TEBD — nearest-neighbour gates on tree edges only (valid inside
-# bath chains); port PyTreeNet time_evolution/tebd.py + trotter.py (Trotter
-# layers are already tree-aware there).
-"""Tree-edge TEBD. TODO — PyTreeNet tebd.py/trotter.py port pending."""
+# TODO(M1+ TEBD milestone): nearest-neighbour gates on tree edges only (valid
+# inside bath chains). This is not required by the forwarded bosonic B1-B5 path
+# now that TDVP2/GK/GSE/LSE and correlator snapshots are available; port
+# PyTreeNet time_evolution/tebd.py + trotter.py when that milestone is opened.
+"""Tree-edge TEBD. TODO(M1+ TEBD milestone) — no step! methods yet."""
 struct TEBD <: Evolver end
 
-# TODO(M1+): BUG / FixedBUG — rank-adaptive Basis-Update & Galerkin
-# (PyTreeNet specialty: time_evolution/bug.py, fixed_bug.py); friendly to
-# branching nodes.
-"""Rank-adaptive Basis-Update & Galerkin. TODO — PyTreeNet bug.py port pending."""
+# TODO(M1+ BUG milestone): rank-adaptive Basis-Update & Galerkin (PyTreeNet
+# specialty: time_evolution/bug.py, fixed_bug.py). GSE/LSE provide the current
+# forwarded subspace-expansion surface; BUG remains a separate rank-adaptive
+# integrator milestone.
+"""Rank-adaptive Basis-Update & Galerkin. TODO(M1+ BUG milestone) — no step! methods yet."""
 struct BUG <: Evolver end
-"""Fixed-rank BUG. TODO — PyTreeNet fixed_bug.py port pending."""
+"""Fixed-rank BUG. TODO(M1+ BUG milestone) — no step! methods yet."""
 struct FixedBUG <: Evolver end
 
-# TODO(M1): ImplicitLogTime — A-stable implicit stepping on a logarithmic
-# τ-grid (Zima–Stoudenmire–White–Parcollet–Kaye, arXiv:2606.02930). Needs the
-# `linsolve!` primitive (tree ALS outer loop + KrylovKit.linsolve inner —
-# PyTreeNet dmrg/als.py is the starting point); acceptance test: AIM Kondo
-# scaling of 2606.02930. Imaginary-axis only, enforced via the trait below and
-# a `Re(dz) > 0, Im(dz) = 0` type restriction on its `step!`.
-"""Implicit log-time-grid imaginary-time evolver. TODO(M1) — requires `linsolve!`."""
+# TODO(M1 implicit-log-time milestone): A-stable implicit stepping on a
+# logarithmic τ-grid (Zima–Stoudenmire–White–Parcollet–Kaye, arXiv:2606.02930).
+# This requires the `linsolve!` primitive below and is intentionally separate
+# from the forwarded B1-B5 real/complex-time validation path.
+"""Implicit log-time-grid imaginary-time evolver. TODO(M1 implicit-log-time milestone) — no step! methods yet."""
 struct ImplicitLogTime <: Evolver end
 supports_complex_step(::Type{ImplicitLogTime}) = false
 
-# TODO(M1): linsolve!(ψ, A, rhs) — variational linear solve on trees (ALS
-# sweep), the second public primitive demanded by ImplicitLogTime (§5b);
-# also reused by TaSK / correction-vector methods later. Lives here or in
-# Networks once written.
+# TODO(M1 linear-solve milestone): tree ALS outer loop plus KrylovKit.linsolve
+# inner solves. PyTreeNet dmrg/als.py is the starting point; TaSK and
+# correction-vector methods should reuse the same primitive later.
+"""
+    linsolve!(ψ, A, rhs; kwargs...)
+
+Variational tree linear solve surface for `ImplicitLogTime` and future
+correction-vector/TaSK methods. TODO(M1 linear-solve milestone) — no methods yet.
+"""
+function linsolve! end
 
 end # module Evolution

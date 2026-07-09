@@ -671,6 +671,7 @@ end
     @test real(expect(ψ, O)) ≈ E0 atol = 1e-3
     @test supports_complex_step(TDVP1)
     @test !supports_complex_step(ImplicitLogTime)
+    @test isempty(methods(linsolve!))
 end
 
 @testset "local insertions and zero-temperature correlators" begin

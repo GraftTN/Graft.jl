@@ -5,8 +5,10 @@
 # construction. Leg bookkeeping matches the input tensor exactly: the closure
 # maps a tensor to one with identical space structure.
 #
-# TODO(M1, §8 level 2): operator-term-level MPI Allreduce lives exactly here —
-# H_eff·x splits over TTNO virtual-bond blocks; DMRG and TDVP share this code.
+# TODO(MPI extension, §8 level 2): operator-term-level MPI Allreduce lives
+# exactly here. It is outside the forwarded B1-B5/M0-local threading surface;
+# H_eff·x splits over TTNO virtual-bond blocks, and DMRG/TDVP should share it
+# when the MPI extension milestone is opened.
 
 # open-leg label bookkeeping: result leg i of the applied map gets label -i.
 
