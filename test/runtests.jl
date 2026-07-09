@@ -137,6 +137,21 @@ function GRAFT.step!(ev::LocalZEvolver, ψ::TTNS, ::TTNO, dz::Number)
     return ψ
 end
 
+struct LocalXEvolver <: Evolver
+    site::Symbol
+    omega::Float64
+end
+
+function GRAFT.step!(ev::LocalXEvolver, ψ::TTNS, ::TTNO, dz::Number)
+    P = physspace(ψ, nodeindex(topology(ψ), ev.site))
+    a = dz * ev.omega
+    U = TensorMap(ComplexF64[cosh(a) sinh(a); sinh(a) cosh(a)], P ← P)
+    ϕ = apply_local(ψ, U, ev.site)
+    ψ.tensors .= ϕ.tensors
+    ψ.center = center(ϕ)
+    return ψ
+end
+
 @testset "GRAFT.jl" begin
 
 @testset "Trees: topology & paths" begin
@@ -556,6 +571,22 @@ end
     Hd = dense_hamiltonian(H, ψ0)
     ref = [exp(im * E0 * t) * dot(X1 * v0, exact_evolve(Hd, X1 * v0, -im * t)) for t in ts]
     @test norm(vals - ref) < 1e-10
+
+    topoχ = mps_topology(1)
+    physχ = allspin(topoχ)
+    ψχ = product_ttns(ComplexF64, topoχ, Dict(:site1 => ComplexF64[1, 1] / sqrt(2)))
+    Hχ = OpSum() + Term(ω, SiteOp(:site1, :X, S.X))
+    Oχ = ttno_from_opsum(Hχ, topoχ, physχ; hermitian=true)
+    vχ = to_dense(ψχ)
+    Eχ = real(dot(vχ, dense_hamiltonian(Hχ, ψχ) * vχ))
+    Nχ = dense_hamiltonian(OpSum() + Term(1.0, SiteOp(:site1, :N, S.N)), ψχ)
+    nbar = expect(ψχ, S.N, :site1)
+    valsχ = correlator(ψχ, Eχ, :site1 => S.N, :site1 => S.N, ts;
+                       H=Oχ, evolver=LocalXEvolver(:site1, ω)) .- nbar^2
+    refχ = [exp(im * Eχ * t) * dot(Nχ * vχ, exact_evolve(dense_hamiltonian(Hχ, ψχ), Nχ * vχ, -im * t)) - nbar^2
+            for t in ts]
+    @test norm(valsχ - refχ) < 1e-10
+    @test maximum(abs.(valsχ .- valsχ[1])) > 1e-4
 end
 
 @testset "T=0 boson bath fitting and mounting" begin
