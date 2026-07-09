@@ -678,6 +678,10 @@ if lowercase(get(ENV, "GRAFT_LONG_B4", "false")) in ("1", "true", "yes")
     include("b4_bath_tdvp_e2e.jl")
 end
 
+if lowercase(get(ENV, "GRAFT_LONG_B2", "false")) in ("1", "true", "yes")
+    include("b2_graded_kernel_smoke.jl")
+end
+
 @testset "checkpoint / resume" begin
     topo = mps_topology(4)
     phys = allspin(topo)
