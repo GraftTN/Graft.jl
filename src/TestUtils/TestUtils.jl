@@ -210,13 +210,16 @@ physical_sites(O::TTNO) = [n for n in 1:nnodes(O.topo) if hasphys(O, n)]
     to_dense(ψ::TTNS) -> Vector
 
 Full state vector by brute-force contraction (small trees only). Site order:
-see module docstring.
+see module docstring. The root parent leg is left open before flattening, so
+fixed nontrivial one-dimensional root sectors used by charged states are
+represented instead of being capped to the trivial sector.
 """
 function to_dense(ψ::TTNS)
     t = ψ.topo
     sites = physical_sites(ψ)
     nopen = 0
     openlabel = Dict(n => -(nopen += 1) for n in sites)
+    rootlabel = -(nopen + 1)
     tensors = Any[]
     indices = Vector{Int}[]
     for n in 1:nnodes(t)
@@ -227,10 +230,7 @@ function to_dense(ψ::TTNS)
         end
         hasphys(ψ, n) && (idx[physleg(ψ, n)] = openlabel[n])
         if t.parent[n] == 0
-            cap = ones_tensor(eltype(ψ), ProductSpace(domain(A)[1]))
-            lbl = nnodes(t) + 1
-            idx[end] = lbl
-            push!(tensors, cap); push!(indices, [lbl])
+            idx[end] = rootlabel
         else
             idx[end] = n
         end

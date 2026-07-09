@@ -140,12 +140,12 @@ function build_env(ket::TTNS, O::Union{TTNO,Nothing}, bra::TTNS, u::Int, v::Int,
         bidx[end] = kb
         Vroot = domain(A)[1]
         if W === nothing
-            cap = Backend.ones_tensor(scalartype(A), Vroot ⊗ dual(domain(B)[1]))
-            push!(tensors, cap); push!(indices, [ka, kb]); push!(conj, false)
+            cap = Backend.ones_tensor(scalartype(A), dual(domain(B)[1]) ⊗ Vroot)
+            push!(tensors, cap); push!(indices, [kb, ka]); push!(conj, false)
         else
             widx[end] = ko
-            cap = Backend.ones_tensor(scalartype(A), Vroot ⊗ domain(W)[numin(W)] ⊗ dual(domain(B)[1]))
-            push!(tensors, cap); push!(indices, [ka, ko, kb]); push!(conj, false)
+            cap = Backend.ones_tensor(scalartype(A), dual(domain(B)[1]) ⊗ domain(W)[numin(W)] ⊗ Vroot)
+            push!(tensors, cap); push!(indices, [kb, ko, ka]); push!(conj, false)
         end
     end
 

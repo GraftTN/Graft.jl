@@ -77,13 +77,17 @@ function fz2_fermion_ops()
     C = Vect[FermionParity](o => 1)
     Cd = zeros(ComplexF64, P ← P ⊗ C)
     Cn = zeros(ComplexF64, P ← P ⊗ C)
+    I = zeros(ComplexF64, P ← P)
     for (f, b) in blocks(Cd)
         f == o && (b[1, 1] = 1)
     end
     for (f, b) in blocks(Cn)
         f == e && (b[1, 1] = 1)
     end
-    return (; P, Cd, C= Cn)
+    for (_, b) in blocks(I)
+        b[1, 1] = 1
+    end
+    return (; P, Cd, C= Cn, I)
 end
 
 function dense_two_site_ttno(O)
@@ -151,6 +155,9 @@ function GRAFT.step!(ev::LocalXEvolver, ψ::TTNS, ::TTNO, dz::Number)
     ψ.center = center(ϕ)
     return ψ
 end
+
+struct NoOpEvolver <: Evolver end
+GRAFT.step!(::NoOpEvolver, ψ::TTNS, ::TTNO, ::Number) = ψ
 
 @testset "GRAFT.jl" begin
 
@@ -287,6 +294,32 @@ end
     @test check_arrows(ψprod)
     @test collect(sectors(virtualspace(ψprod, nodeindex(topo, :site1)))) == [U1Irrep(1)]
     @test collect(sectors(domain(ψprod[topo.root])[1])) == [U1Irrep(1)]
+
+    ψvac = product_ttns(ComplexF64, topo_b, phys_f,
+                        Dict(:site1 => FermionParity(0), :site2 => FermionParity(0)))
+    ϕ1 = apply_local(ψvac, F.Cd, :site1)
+    ϕ2 = apply_local(ψvac, F.Cd, :site2)
+    @test check_arrows(ϕ1)
+    @test check_arrows(ϕ2)
+    @test inner(ϕ1, ϕ1) ≈ 1
+    @test inner(ϕ2, ϕ2) ≈ 1
+    @test collect(sectors(domain(ϕ1[topo_b.root])[1])) == [FermionParity(1)]
+    @test norm(to_dense(ψvac) - ComplexF64[1, 0, 0, 0]) < 1e-12
+    @test_logs (:warn, r"FermionParity Arrays") begin
+        @test norm(to_dense(ϕ1) - ComplexF64[0, 0, 1, 0]) < 1e-12
+        @test norm(to_dense(ϕ2) - ComplexF64[0, 1, 0, 0]) < 1e-12
+    end
+
+    topo_one = mps_topology(1)
+    phys_one = Dict(:site1 => F.P)
+    ψeven = product_ttns(ComplexF64, topo_one, phys_one, Dict(:site1 => FermionParity(0)))
+    ψodd = product_ttns(ComplexF64, topo_one, phys_one, Dict(:site1 => FermionParity(1)))
+    @test inner(ψodd, ψodd) ≈ 1
+    Hzero = OpSum() + Term(0.0, SiteOp(:site1, :I, F.I))
+    Ozero = ttno_from_opsum(Hzero, topo_one, phys_one; hermitian=true)
+    G = correlator(ψeven, 0.0, :site1 => F.C, :site1 => F.Cd, [0.0, 0.2];
+                   H=Ozero, evolver=NoOpEvolver())
+    @test G ≈ ComplexF64[1, 1]
 
     topo_fstar = star_topology(2, 1)
     phys_fstar = Dict(nodeid(topo_fstar, i) => F.P for i in 1:nnodes(topo_fstar))
