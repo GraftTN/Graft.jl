@@ -630,6 +630,32 @@ end
     @test_throws ArgumentError step!(GlobalKrylov(), ψr, O, dz)
 end
 
+@testset "subspace expansion TDVP vs exact propagation" begin
+    topo = mps_topology(2)
+    phys = allspin(topo)
+    H = tfi(topo; g=0.4)
+    O = ttno_from_opsum(H, topo, phys; hermitian=true)
+    ψ0 = random_ttns(RNG, ComplexF64, topo, phys, ℂ^1)
+    Hd = dense_hamiltonian(H, ψ0)
+    v0 = to_dense(ψ0)
+    dz = -0.02im
+    vex = exact_evolve(Hd, v0, dz)
+
+    for ev in (GSE_TDVP(order=2, trunc=TruncationScheme(maxdim=4, atol=1e-12),
+                        max_add=3, krylovdim=8, tol=1e-10),
+               LSE_TDVP(order=2, trunc=TruncationScheme(maxdim=4, atol=1e-12),
+                        max_add=3, krylovdim=8, tol=1e-10))
+        ψ = copy(ψ0)
+        step!(ev, ψ, O, dz)
+        @test check_arrows(ψ)
+        @test maximum(bonddims(ψ)) > 1
+        @test abs(1 - abs(dot(to_dense(ψ), vex))) < 1e-5
+    end
+
+    ψr = random_ttns(RNG, Float64, topo, phys, ℂ^1)
+    @test_throws ArgumentError step!(GSE_TDVP(), ψr, O, dz)
+end
+
 @testset "imaginary time (complex-step contract §5b)" begin
     topo = mps_topology(6)
     phys = allspin(topo)

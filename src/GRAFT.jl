@@ -80,7 +80,8 @@ export OpSum, Term, SiteOp, charge, spin_ops, spin_ops_u1,
 export dmrg1!, dmrg2!, dmrg1_3s!, expand!,
     Evolver, step!, evolve!, CorrelatorSeries, correlator, correlator_series,
     supports_complex_step,
-    TDVP1, TDVP2, TDVP1_CBE, GlobalKrylov, TEBD, BUG, ImplicitLogTime,
+    TDVP1, TDVP2, TDVP1_CBE, GlobalKrylov, GSE_TDVP, LSE_TDVP,
+    TEBD, BUG, ImplicitLogTime,
     ThermalRep, Purified, METTS, thermalize
 # L6 + cross-cutting
 export Partition, BathParametrization, RealPoles, ComplexPoles,

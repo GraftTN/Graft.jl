@@ -31,16 +31,19 @@ Two iron rules (§3):
 """
 module Contractions
 
+using Random: AbstractRNG, randn
 using ..Backend
 using ..Trees
 using ..Networks
 import ..Networks: invalidate_node!, invalidate_edge!
 
 export EnvCache, env!, build_env, invalidate_node!, invalidate_edge!,
-    inner, expect, eff_h1, eff_h0, eff_h2, two_site_tensor, split_two_site!
+    inner, expect, eff_h1, eff_h0, eff_h2, two_site_tensor, split_two_site!,
+    expand!
 
 include("envcache.jl")
 include("effective.jl")
+include("expansion.jl")
 include("expectation.jl")
 
 end # module Contractions

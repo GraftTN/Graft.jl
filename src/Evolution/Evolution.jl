@@ -21,6 +21,7 @@ on a real-eltype state are a caller-side explicit conversion.
 module Evolution
 
 using LinearAlgebra: LinearAlgebra
+using Random: AbstractRNG
 using KrylovKit: KrylovKit, exponentiate
 using ..Backend
 using ..Trees
@@ -165,19 +166,11 @@ supports_complex_step(::Type{<:Evolver}) = true
 
 include("tdvp.jl")
 include("global_krylov.jl")
+include("subspace_expansion.jl")
 
 # ---------------------------------------------------------------------------
 # TODO stubs — declared types so dispatch surfaces exist; no methods yet.
 # ---------------------------------------------------------------------------
-
-# TODO(M1+): GSE_TDVP — global subspace expansion (Yang–White) + 1TDVP;
-# expansion step goes through the shared `expand!` primitive (§11.7).
-"""Global-subspace-expansion TDVP. TODO(M1+) — requires `expand!(scheme=:gse)`."""
-struct GSE_TDVP <: Evolver end
-
-# TODO(M1+): LSE_TDVP — local subspace expansion variant.
-"""Local-subspace-expansion TDVP. TODO(M1+)."""
-struct LSE_TDVP <: Evolver end
 
 # TODO(M0/M1): TEBD — nearest-neighbour gates on tree edges only (valid inside
 # bath chains); port PyTreeNet time_evolution/tebd.py + trotter.py (Trotter
