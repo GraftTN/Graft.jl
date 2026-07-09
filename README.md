@@ -1,7 +1,7 @@
 ### GRAFT.jl
 
 <p align="center">
-  <img src="https://cdn.jsdelivr.net/gh/weiyiguo9/GRAFT.jl@main/assets/graftjl-logo-small.png" alt="GRAFT.jl logo" width="240">
+  <img src="https://cdn.jsdelivr.net/gh/weiyiguo9/GRAFT.jl@main/assets/graftjl-logo.png" alt="GRAFT.jl logo" width="240">
 </p>
 
 A tree tensor network library featuring DMFT impurity solver, with the eventual goal of applying it to real material simulations.
