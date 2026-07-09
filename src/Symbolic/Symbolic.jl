@@ -19,8 +19,9 @@ module Symbolic
 using ..Backend
 using ..Trees: TreeTopology, mount_chain, nodeindex
 
-export SiteOp, Term, OpSum, charge, sites, coefficient, nterms, spin_ops, boson_ops,
-    boson_ops_pp, boson_modes, BosonCoupling, Lindbladian, ppdress, su2reduce, modereorder
+export SiteOp, Term, OpSum, charge, sites, coefficient, nterms, spin_ops,
+    spin_ops_u1, boson_ops, boson_ops_u1, boson_ops_pp, fermion_ops_z2,
+    boson_modes, BosonCoupling, Lindbladian, ppdress, su2reduce, modereorder
 
 """
     SiteOp(site, name, op)
@@ -125,7 +126,9 @@ A sum of product terms. Build with `+=`:
     H += Term(-1.0, SiteOp(:s1, :Z, Z), SiteOp(:s2, :Z, Z))
 
 Implemented discrete boson helpers: [`boson_modes`](@ref) and
-[`BosonCoupling`](@ref). TODO(M0/M5, §4a): structured fermion generators
+[`BosonCoupling`](@ref). Local abelian charged libraries are provided by
+[`spin_ops_u1`](@ref), [`boson_ops_u1`](@ref), and
+[`fermion_ops_z2`](@ref). TODO(M0+/M5, §4a): structured matrix generators
 `Hopping(t)`, `Coulomb(V)` (via ISDF-THC/SVD pre-factorization, §4b),
 `Hybridization(Vk, εk)`. Continuous `BosonBath(ImU)` lives in `Impurity` and
 lowers to these discrete helpers after fitting.
@@ -163,8 +166,8 @@ end
     spin_ops(; elt=ComplexF64) -> (; X, Y, Z, Sp, Sm, N, I, P)
 
 Spin-1/2 operators on `ℂ²` (trivial sector). `P = ℂ²` is the physical space.
-TODO(M0): graded U(1)_Sz versions; TODO(M3): SU(2) reduced tensor operators
-(the `SU2Reduce` pass owns those).
+Use [`spin_ops_u1`](@ref) for the abelian charged `U(1)_Sz` library. TODO(M3):
+SU(2) reduced tensor operators (the `SU2Reduce` pass owns those).
 """
 function spin_ops(; elt::Type{<:Number}=ComplexF64)
     P = ℂ^2
@@ -177,10 +180,33 @@ function spin_ops(; elt::Type{<:Number}=ComplexF64)
 end
 
 """
+    spin_ops_u1(; elt=ComplexF64) -> (; Sp, Sm, Z, N, I, P, Cp, Cm)
+
+Spin-1/2 operators over `U(1)` charge sectors `0,1`. `Sp` carries charge `+1`
+and `Sm` carries charge `-1`, both as `P <- P ⊗ C` charged local operators.
+The diagonal convention is `N = diag(0,1)` and `Z = 2N - I`, matching the
+sector ordering used by charged TTNO tests.
+"""
+function spin_ops_u1(; elt::Type{<:Number}=ComplexF64)
+    P = U1Space(0 => 1, 1 => 1)
+    Cp = U1Space(1 => 1)
+    Cm = U1Space(-1 => 1)
+    charged(mat, C) = TensorMap(reshape(elt.(mat), 2, 2, 1), P ← P ⊗ C)
+    neutral(mat) = TensorMap(elt.(mat), P ← P)
+    Sp = charged([0 0; 1 0], Cp)
+    Sm = charged([0 1; 0 0], Cm)
+    N = neutral([0 0; 0 1])
+    Z = neutral([-1 0; 0 1])
+    I = neutral([1 0; 0 1])
+    return (; Sp, Sm, Z, N, I, P, Cp, Cm)
+end
+
+"""
     boson_ops(nmax; elt=Float64) -> (; B, Bd, X, N, I, P)
 
-Truncated boson (d = nmax+1) on trivial-sector space. TODO(M5): U(1)_PP graded
-version for projected purification (PPDress pass).
+Truncated boson (d = nmax+1) on trivial-sector space. Use
+[`boson_ops_u1`](@ref) for number-conserving charged boson hopping and
+[`boson_ops_pp`](@ref) for projected purification.
 """
 function boson_ops(nmax::Int; elt::Type{<:Number}=Float64)
     d = nmax + 1
@@ -200,6 +226,73 @@ end
 
 # small identity helper without pulling LinearAlgebra into the public surface
 LinearAlgebra_I(d::Int) = [i == j ? 1.0 : 0.0 for i in 1:d, j in 1:d]
+
+"""
+    boson_ops_u1(nmax; elt=ComplexF64) -> (; B, Bd, N, I, P, Cp, Cm)
+
+Truncated boson over `U(1)` occupation sectors `0:nmax`. `B` carries charge
+`-1` and `Bd` carries charge `+1`; neutral number and identity operators remain
+`P <- P`. This is the public B2/M0 helper for number-conserving hopping terms
+such as `b†_i b_j`.
+"""
+function boson_ops_u1(nmax::Int; elt::Type{<:Number}=ComplexF64)
+    nmax >= 0 || throw(ArgumentError("nmax must be nonnegative"))
+    d = nmax + 1
+    P = U1Space([n => 1 for n in 0:nmax]...)
+    Cp = U1Space(1 => 1)
+    Cm = U1Space(-1 => 1)
+    lower = zeros(elt, d, d, 1)
+    raise = zeros(elt, d, d, 1)
+    nmat = zeros(elt, d, d)
+    for n in 1:nmax
+        lower[n, n + 1, 1] = sqrt(elt(n))
+        raise[n + 1, n, 1] = sqrt(elt(n))
+    end
+    for n in 0:nmax
+        nmat[n + 1, n + 1] = elt(n)
+    end
+    B = TensorMap(lower, P ← P ⊗ Cm)
+    Bd = TensorMap(raise, P ← P ⊗ Cp)
+    N = TensorMap(nmat, P ← P)
+    I = TensorMap(Matrix{elt}(LinearAlgebra_I(d)), P ← P)
+    return (; B, Bd, N, I, P, Cp, Cm)
+end
+
+"""
+    fermion_ops_z2(; elt=ComplexF64) -> (; C, Cd, N, I, F, P, Q)
+
+Spinless-fermion operators over TensorKit's fermion-parity `fℤ₂` grading. Both
+annihilation `C` and creation `Cd` carry the odd charge leg `Q`, while `N`,
+identity `I`, and parity `F = (-1)^N` are neutral. TensorKit's graded braiding
+handles fermionic exchange; no Jordan-Wigner string is generated here.
+"""
+function fermion_ops_z2(; elt::Type{<:Number}=ComplexF64)
+    even = FermionParity(0)
+    odd = FermionParity(1)
+    P = Vect[FermionParity](even => 1, odd => 1)
+    Q = Vect[FermionParity](odd => 1)
+    Cd = zeros(elt, P ← P ⊗ Q)
+    C = zeros(elt, P ← P ⊗ Q)
+    N = zeros(elt, P ← P)
+    I = zeros(elt, P ← P)
+    F = zeros(elt, P ← P)
+    for (sector, block_) in blocks(Cd)
+        sector == odd && (block_[1, 1] = one(elt))
+    end
+    for (sector, block_) in blocks(C)
+        sector == even && (block_[1, 1] = one(elt))
+    end
+    for (sector, block_) in blocks(N)
+        block_[1, 1] = sector == odd ? one(elt) : zero(elt)
+    end
+    for (_, block_) in blocks(I)
+        block_[1, 1] = one(elt)
+    end
+    for (sector, block_) in blocks(F)
+        block_[1, 1] = sector == odd ? -one(elt) : one(elt)
+    end
+    return (; C, Cd, N, I, F, P, Q)
+end
 
 """
     boson_ops_pp(nmax; elt=Float64) -> (; Bp, B, Bpd, Bd, Bb, Bbd, N, I, P, Bspace)

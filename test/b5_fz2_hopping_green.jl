@@ -4,24 +4,8 @@ using GRAFT.TestUtils
 using GRAFT.Backend
 using LinearAlgebra: I, dot, norm
 
-function _b5_fz2_ops()
-    e = FermionParity(0)
-    o = FermionParity(1)
-    P = Vect[FermionParity](e => 1, o => 1)
-    Cq = Vect[FermionParity](o => 1)
-    Cd = zeros(ComplexF64, P ← P ⊗ Cq)
-    C = zeros(ComplexF64, P ← P ⊗ Cq)
-    for (f, b) in blocks(Cd)
-        f == o && (b[1, 1] = 1)
-    end
-    for (f, b) in blocks(C)
-        f == e && (b[1, 1] = 1)
-    end
-    return (; P, Cd, C)
-end
-
 @testset "B5 fZ2 hopping Green smoke" begin
-    F = _b5_fz2_ops()
+    F = fermion_ops_z2()
     topo = mps_topology(2)
     phys = Dict(nodeid(topo, i) => F.P for i in 1:nnodes(topo))
 

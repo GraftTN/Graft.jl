@@ -4,8 +4,8 @@
 using Test
 using GRAFT
 using GRAFT.TestUtils
-using GRAFT.Backend: ℂ, ⊗, ←, dim, domain, U1Space, U1Irrep,
-    FermionParity, Vect, TensorMap, sectors, blocks
+using GRAFT.Backend: ℂ, ⊗, ←, dim, domain, U1Space, U1Irrep, FermionParity,
+    TensorMap, sectors
 using GRAFT.Trees: edges
 using GRAFT.Contractions: two_site_tensor, split_two_site!
 using Random
@@ -34,60 +34,6 @@ function fused_u1_charge(ops)
         q = only(q ⊗ charge(op))
     end
     return q
-end
-
-function u1_spin_ops()
-    P = U1Space(0 => 1, 1 => 1)
-    Cp = U1Space(1 => 1)
-    Cm = U1Space(-1 => 1)
-    charged(mat, C) = TensorMap(reshape(ComplexF64.(mat), 2, 2, 1), P ← P ⊗ C)
-    neutral(mat) = TensorMap(ComplexF64.(mat), P ← P)
-    Sp = charged([0 0; 1 0], Cp)
-    Sm = charged([0 1; 0 0], Cm)
-    Z = neutral([-1 0; 0 1])
-    I = neutral([1 0; 0 1])
-    return (; P, Sp, Sm, Z, I)
-end
-
-function u1_boson_ops(nmax::Int)
-    P = U1Space([n => 1 for n in 0:nmax]...)
-    Cp = U1Space(1 => 1)
-    Cm = U1Space(-1 => 1)
-    d = nmax + 1
-    b = zeros(ComplexF64, d, d, 1)
-    bd = zeros(ComplexF64, d, d, 1)
-    nmat = zeros(ComplexF64, d, d)
-    for n in 1:nmax
-        b[n, n + 1, 1] = sqrt(n)
-        bd[n + 1, n, 1] = sqrt(n)
-    end
-    for n in 0:nmax
-        nmat[n + 1, n + 1] = n
-    end
-    B = TensorMap(b, P ← P ⊗ Cm)
-    Bd = TensorMap(bd, P ← P ⊗ Cp)
-    N = TensorMap(nmat, P ← P)
-    return (; P, B, Bd, N)
-end
-
-function fz2_fermion_ops()
-    e = FermionParity(0)
-    o = FermionParity(1)
-    P = Vect[FermionParity](e => 1, o => 1)
-    C = Vect[FermionParity](o => 1)
-    Cd = zeros(ComplexF64, P ← P ⊗ C)
-    Cn = zeros(ComplexF64, P ← P ⊗ C)
-    I = zeros(ComplexF64, P ← P)
-    for (f, b) in blocks(Cd)
-        f == o && (b[1, 1] = 1)
-    end
-    for (f, b) in blocks(Cn)
-        f == e && (b[1, 1] = 1)
-    end
-    for (_, b) in blocks(I)
-        b[1, 1] = 1
-    end
-    return (; P, Cd, C= Cn, I)
 end
 
 function dense_two_site_ttno(O)
@@ -239,7 +185,7 @@ end
 end
 
 @testset "charged TTNO builder vs dense" begin
-    U = u1_spin_ops()
+    U = spin_ops_u1()
     @test charge(SiteOp(:s, :Sp, U.Sp)) == U1Irrep(1)
     @test charge(SiteOp(:s, :Z, U.Z)) == U1Irrep(0)
     @test_throws ArgumentError Term(1.0, SiteOp(:s, :Sp, U.Sp))
@@ -268,7 +214,7 @@ end
     @test check_arrows(Ostar)
     @test norm(dense_two_leaf_star_ttno(Ostar) - dense_hamiltonian(Hstar, topo_star, phys_star)) < 1e-12
 
-    B = u1_boson_ops(2)
+    B = boson_ops_u1(2)
     topo_b = mps_topology(2)
     phys_b = Dict(nodeid(topo_b, i) => B.P for i in 1:nnodes(topo_b))
     Hb = OpSum()
@@ -277,7 +223,7 @@ end
     Ob = ttno_from_opsum(Hb, topo_b, phys_b; hermitian=true)
     @test norm(dense_two_site_ttno(Ob) - dense_hamiltonian(Hb, topo_b, phys_b)) < 1e-12
 
-    F = fz2_fermion_ops()
+    F = fermion_ops_z2()
     phys_f = Dict(nodeid(topo_b, i) => F.P for i in 1:nnodes(topo_b))
     Hf = OpSum()
     Hf += Term(-1.0, SiteOp(:site1, :Cd, F.Cd), SiteOp(:site2, :C, F.C))
