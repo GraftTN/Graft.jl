@@ -628,6 +628,10 @@ end
     @test norm(to_dense(O) - dense_hamiltonian(bb.H, ψ)) < 1e-12
 end
 
+if lowercase(get(ENV, "GRAFT_LONG_B5", "false")) in ("1", "true", "yes")
+    include("b5_holstein_tdvp_chi.jl")
+end
+
 @testset "checkpoint / resume" begin
     topo = mps_topology(4)
     phys = allspin(topo)
