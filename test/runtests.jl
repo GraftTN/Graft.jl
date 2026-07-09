@@ -610,6 +610,26 @@ end
     @test norm(to_dense(ψa) - to_dense(ψb)) < 1e-14
 end
 
+@testset "GlobalKrylov vs exact propagation" begin
+    topo = mps_topology(2)
+    phys = allspin(topo)
+    H = tfi(topo; g=0.4)
+    O = ttno_from_opsum(H, topo, phys; hermitian=true)
+    ψ = random_ttns(RNG, ComplexF64, topo, phys, ℂ^4)
+    Hd = dense_hamiltonian(H, ψ)
+    v0 = to_dense(ψ)
+    dz = -0.03im
+    ev = GlobalKrylov(krylovdim=8, maxiter=4, fit_nsweeps=5,
+                      fit_tol=1e-11, tol=1e-10)
+    step!(ev, ψ, O, dz)
+    @test ev.last_info !== nothing
+    @test ev.last_info.converged == 1
+    @test norm(to_dense(ψ) - exact_evolve(Hd, v0, dz)) < 1e-7
+
+    ψr = random_ttns(RNG, Float64, topo, phys, ℂ^4)
+    @test_throws ArgumentError step!(GlobalKrylov(), ψr, O, dz)
+end
+
 @testset "imaginary time (complex-step contract §5b)" begin
     topo = mps_topology(6)
     phys = allspin(topo)

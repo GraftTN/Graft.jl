@@ -20,6 +20,7 @@ on a real-eltype state are a caller-side explicit conversion.
 """
 module Evolution
 
+using LinearAlgebra: LinearAlgebra
 using KrylovKit: KrylovKit, exponentiate
 using ..Backend
 using ..Trees
@@ -163,17 +164,11 @@ Trait (§10.3): whether the scheme is valid for arbitrary complex `dz`.
 supports_complex_step(::Type{<:Evolver}) = true
 
 include("tdvp.jl")
+include("global_krylov.jl")
 
 # ---------------------------------------------------------------------------
 # TODO stubs — declared types so dispatch surfaces exist; no methods yet.
 # ---------------------------------------------------------------------------
-
-# TODO(M1): GlobalKrylov (GK) — KrylovKit exponentiate on the full state via
-# apply(H, ψ) + fit! compression; non-hermitian safe (Arnoldi path). The shared
-# apply/fit primitives exist; the remaining work is the GK outer algorithm and
-# compression policy.
-"""Global Krylov evolver. TODO(M1) — GK outer algorithm pending."""
-struct GlobalKrylov <: Evolver end
 
 # TODO(M1+): GSE_TDVP — global subspace expansion (Yang–White) + 1TDVP;
 # expansion step goes through the shared `expand!` primitive (§11.7).
