@@ -13,18 +13,19 @@ using ..Trees
 
 export TTNS, TTNO, TTNDO, topology, center, hasphys, physleg, parentleg,
     physspace, virtualspace, check_arrows, move_center!, update_tensor!,
-    normalize!, apply, apply_local, ishermitian, invalidate_node!,
+    normalize!, apply, fit!, apply_local, ishermitian, invalidate_node!,
     invalidate_edge!
 
 include("ttns.jl")
 include("ttno.jl")
 include("apply.jl")
+include("fit.jl")
 
 # ---------------------------------------------------------------------------
 # TODO(M0/M1, architecture §3 "通用操作"):
-#   fit!(φ, ψ; H=nothing)    — variational fitting/compression primitive
-#       (PyTreeNet dmrg/variational_fitting; shared by GK evolver, GSE, METTS
-#        collapse compression — deliberately a public primitive, §11.6)
+#   operator-weighted fitting `fit!(φ, sources; Hs, coeffs)` — PyTreeNet
+#       variational_fitting generalizes this state-compression primitive to
+#       sums of operator applications for GK/GSE/METTS (§11.6).
 # ---------------------------------------------------------------------------
 
 end # module Networks
