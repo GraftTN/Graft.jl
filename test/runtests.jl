@@ -9,7 +9,7 @@ using GRAFT.Backend: ℂ, ⊗, ←, dim, domain, U1Space, U1Irrep, FermionParity
 using GRAFT.Trees: edges
 using GRAFT.Contractions: two_site_tensor, split_two_site!
 using Random
-using LinearAlgebra: dot, norm
+using LinearAlgebra: I, dot, norm
 
 const RNG = Xoshiro(20260709)
 
@@ -630,6 +630,33 @@ end
     @test_throws ArgumentError step!(GlobalKrylov(), ψr, O, dz)
 end
 
+@testset "linear solve and implicit log time" begin
+    topo = mps_topology(2)
+    phys = allspin(topo)
+    H = tfi(topo; g=0.4)
+    O = ttno_from_opsum(H, topo, phys; hermitian=true)
+    rhs = random_ttns(RNG, ComplexF64, topo, phys, ℂ^4)
+    Hd = dense_hamiltonian(H, rhs)
+    v = to_dense(rhs)
+    A = Matrix{ComplexF64}(I, length(v), length(v)) + 0.05 * Hd
+
+    ψ = copy(rhs)
+    _, info = linsolve!(ψ, O, rhs; a0=1.0, a1=0.05,
+                        krylovdim=8, maxiter=4, tol=1e-10,
+                        fit_nsweeps=6, fit_tol=1e-11)
+    @test info.converged == 1
+    @test norm(to_dense(ψ) - (A \ v)) < 1e-7
+
+    ψτ = copy(rhs)
+    ev = ImplicitLogTime(krylovdim=8, maxiter=4, tol=1e-10,
+                         fit_nsweeps=6, fit_tol=1e-11)
+    step!(ev, ψτ, O, -0.05)
+    @test ev.last_info !== nothing
+    @test ev.last_info.converged == 1
+    @test norm(to_dense(ψτ) - (A \ v)) < 1e-7
+    @test_throws ArgumentError step!(ev, copy(rhs), O, -0.05im)
+end
+
 @testset "subspace expansion TDVP vs exact propagation" begin
     topo = mps_topology(2)
     phys = allspin(topo)
@@ -671,7 +698,7 @@ end
     @test real(expect(ψ, O)) ≈ E0 atol = 1e-3
     @test supports_complex_step(TDVP1)
     @test !supports_complex_step(ImplicitLogTime)
-    @test isempty(methods(linsolve!))
+    @test !isempty(methods(linsolve!))
 end
 
 @testset "local insertions and zero-temperature correlators" begin

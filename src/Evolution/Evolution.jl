@@ -166,6 +166,7 @@ supports_complex_step(::Type{<:Evolver}) = true
 
 include("tdvp.jl")
 include("global_krylov.jl")
+include("linear_solve.jl")
 include("subspace_expansion.jl")
 
 # ---------------------------------------------------------------------------
@@ -187,24 +188,5 @@ struct TEBD <: Evolver end
 struct BUG <: Evolver end
 """Fixed-rank BUG. TODO(M1+ BUG milestone) — no step! methods yet."""
 struct FixedBUG <: Evolver end
-
-# TODO(M1 implicit-log-time milestone): A-stable implicit stepping on a
-# logarithmic τ-grid (Zima–Stoudenmire–White–Parcollet–Kaye, arXiv:2606.02930).
-# This requires the `linsolve!` primitive below and is intentionally separate
-# from the forwarded B1-B5 real/complex-time validation path.
-"""Implicit log-time-grid imaginary-time evolver. TODO(M1 implicit-log-time milestone) — no step! methods yet."""
-struct ImplicitLogTime <: Evolver end
-supports_complex_step(::Type{ImplicitLogTime}) = false
-
-# TODO(M1 linear-solve milestone): tree ALS outer loop plus KrylovKit.linsolve
-# inner solves. PyTreeNet dmrg/als.py is the starting point; TaSK and
-# correction-vector methods should reuse the same primitive later.
-"""
-    linsolve!(ψ, A, rhs; kwargs...)
-
-Variational tree linear solve surface for `ImplicitLogTime` and future
-correction-vector/TaSK methods. TODO(M1 linear-solve milestone) — no methods yet.
-"""
-function linsolve! end
 
 end # module Evolution
