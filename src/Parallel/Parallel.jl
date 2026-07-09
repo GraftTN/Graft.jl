@@ -15,7 +15,40 @@ and checkpoints are subtree-dispatchable, no global implicit state (§9.9).
 """
 module Parallel
 
-# TODO(M1): threaded block loops helper (function barrier per block, §10.4)
+import Base.Threads
+
+export threaded_foreach
+
+"""
+    threaded_foreach(f, items; threaded=Threads.nthreads() > 1, minbatch=2) -> nothing
+
+Run `f(item)` for every element of `items`, optionally using Julia threads.
+This is the shared M1 block-loop primitive (§10.4): the per-item call goes
+through a function barrier, kernels opt in explicitly with the `threaded`
+keyword, and the serial fallback is deterministic. `items` may be any iterable;
+non-indexable iterables are collected once before dispatch.
+"""
+function threaded_foreach(f, items; threaded::Bool=Threads.nthreads() > 1,
+                          minbatch::Integer=2)
+    minbatch >= 1 || throw(ArgumentError("minbatch must be positive"))
+    xs = _indexable_items(items)
+    if threaded && Threads.nthreads() > 1 && length(xs) >= minbatch
+        Threads.@threads for i in eachindex(xs)
+            _threaded_call(f, xs[i])
+        end
+    else
+        for x in xs
+            _threaded_call(f, x)
+        end
+    end
+    return nothing
+end
+
+_indexable_items(xs::AbstractArray) = xs
+_indexable_items(xs) = collect(xs)
+
+@noinline _threaded_call(f, x) = f(x)
+
 # TODO(M5): subtree ownership map type for EnvCache distribution
 
 end # module Parallel

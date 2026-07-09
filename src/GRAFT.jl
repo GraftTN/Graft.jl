@@ -85,7 +85,7 @@ export dmrg1!, dmrg2!, dmrg1_3s!, expand!,
 # L6 + cross-cutting
 export Partition, BathParametrization, RealPoles, ComplexPoles,
     audit_partition, couplings, mount_bath, fit_bath, BosonBath,
-    checkpoint!, resume, with_checkpoint
+    checkpoint!, resume, with_checkpoint, threaded_foreach
 
 # TODO(§10.7): GRAFT.build_sysimage() — PackageCompiler + PrecompileTools
 # workload for the checkpoint-resume cluster usage pattern.

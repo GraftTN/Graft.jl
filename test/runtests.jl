@@ -126,6 +126,21 @@ GRAFT.step!(::NoOpEvolver, ψ::TTNS, ::TTNO, ::Number) = ψ
     @test binary_topology(2) != t2
 end
 
+@testset "Parallel helpers" begin
+    out = zeros(Int, 8)
+    threaded_foreach(1:8; threaded=false) do i
+        out[i] = i^2
+    end
+    @test out == [i^2 for i in 1:8]
+
+    out2 = zeros(Int, 8)
+    threaded_foreach((i for i in 1:8); threaded=true, minbatch=1) do i
+        out2[i] = 2 * i
+    end
+    @test out2 == [2 * i for i in 1:8]
+    @test_throws ArgumentError threaded_foreach(identity, [1]; minbatch=0)
+end
+
 @testset "canonical form & gauge invariance" begin
     for topo in (mps_topology(6), star_topology(3, 2), binary_topology(2))
         phys = allspin(topo)
