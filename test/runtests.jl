@@ -246,6 +246,12 @@ end
         @test norm(dense_two_site_ttno(Of) - dense_hamiltonian(Hf, topo_b, phys_f)) < 1e-12
     end
 
+    ψprod = product_ttns(ComplexF64, topo, phys,
+                         Dict(:site1 => U1Irrep(1), :site2 => U1Irrep(0)))
+    @test check_arrows(ψprod)
+    @test collect(sectors(virtualspace(ψprod, nodeindex(topo, :site1)))) == [U1Irrep(1)]
+    @test collect(sectors(domain(ψprod[topo.root])[1])) == [U1Irrep(1)]
+
     topo_fstar = star_topology(2, 1)
     phys_fstar = Dict(nodeid(topo_fstar, i) => F.P for i in 1:nnodes(topo_fstar))
     Hfs = OpSum()

@@ -73,11 +73,13 @@ end
 
 """
     product_ttns(T, topo, states::Dict{Symbol,<:AbstractVector}) -> TTNS
+    product_ttns(T, topo, phys, sectors) -> TTNS
 
 Product state on trivial-sector spaces: `states[site]` is the local state
-vector; nodes absent from the Dict are branching tensors. All bonds are
-one-dimensional. TODO(M0 fermion path): graded version (bond sectors must
-carry the accumulated charge towards the root).
+vector; nodes absent from the Dict are branching tensors. For graded spaces,
+`phys` gives each physical space and `sectors[site]` gives the local basis
+sector (or `sector => degeneracy_index`). Bond sectors carry the accumulated
+subtree charge toward the root.
 """
 function product_ttns(::Type{T}, topo::TreeTopology,
                       states::Dict{Symbol,<:AbstractVector}) where {T<:Number}
@@ -96,6 +98,108 @@ function product_ttns(::Type{T}, topo::TreeTopology,
     end
     ψ = TTNS(topo, tensors, topo.root)
     return ψ
+end
+
+function product_ttns(::Type{T}, topo::TreeTopology,
+                      phys::Dict{Symbol,S}, basis) where {T<:Number, S<:ElementarySpace}
+    S === ComplexSpace && throw(ArgumentError("graded product_ttns expects graded physical spaces; use the vector-state method for ComplexSpace"))
+    isempty(phys) && throw(ArgumentError("graded product_ttns needs at least one physical site"))
+    Q = sectortype(first(values(phys)))
+    unitq = one(Q)
+    qlocal = fill(unitq, nnodes(topo))
+    ilocal = fill(1, nnodes(topo))
+    for (site, P) in phys
+        spacetype(P) == S || throw(ArgumentError("all physical spaces must share one symmetry type"))
+        n = nodeindex(topo, site)
+        q, i = _sector_index(basis[site])
+        q isa Q || throw(ArgumentError("local sector for $site has type $(typeof(q)); expected $Q"))
+        1 <= i <= dim(P, q) || throw(ArgumentError("local sector index $i out of range for $site sector $q"))
+        qlocal[n] = q
+        ilocal[n] = i
+    end
+
+    qsub = fill(unitq, nnodes(topo))
+    for n in postorder(topo)
+        q = qlocal[n]
+        for c in topo.children[n]
+            q = _fuse_one(q, qsub[c])
+        end
+        qsub[n] = q
+    end
+
+    edgespace(n) = Vect[Q](qsub[n] => 1)
+    rootspace = Vect[Q](qsub[topo.root] => 1)
+    tensors = map(1:nnodes(topo)) do n
+        cods = S[]
+        for c in topo.children[n]
+            push!(cods, edgespace(c))
+        end
+        hp = haskey(phys, nodeid(topo, n))
+        hp && push!(cods, phys[nodeid(topo, n)])
+        cod = isempty(cods) ? oneunit(S) : reduce(⊗, cods)
+        dom = topo.parent[n] == 0 ? rootspace : edgespace(n)
+        A = zeros(T, cod ← dom)
+        _, codcoord = _basis_coord(cods, unitq)
+        _, domcoord = _basis_coord(S[dom], unitq)
+        codidx = hp ? (ntuple(_ -> 1, nchildren(topo, n))..., _sector_offset(phys[nodeid(topo, n)], qlocal[n], ilocal[n])) :
+            ntuple(_ -> 1, nchildren(topo, n))
+        cq, row = codcoord[codidx]
+        dq, col = domcoord[(1,)]
+        cq == dq || throw(ArgumentError("internal product_ttns charge mismatch at $(nodeid(topo, n)): codomain $cq vs domain $dq"))
+        for (q, b) in blocks(A)
+            q == cq && (b[row, col] = one(T))
+        end
+        A
+    end
+    return TTNS(topo, tensors, topo.root)
+end
+
+_sector_index(x::Pair) = x.first, x.second
+_sector_index(x::Tuple{Any,Int}) = x[1], x[2]
+_sector_index(q) = q, 1
+
+function _fuse_one(a, b)
+    fused = a ⊗ b
+    length(fused) == 1 || throw(ArgumentError("graded product_ttns currently supports abelian one-channel fusion"))
+    return only(fused)
+end
+
+function _sector_offset(V::ElementarySpace, q, i::Int)
+    offset = 0
+    for s in sectors(V)
+        s == q && return offset + i
+        offset += dim(V, s)
+    end
+    throw(ArgumentError("sector $q is absent from $V"))
+end
+
+function _basis_coord(legs::Vector{S}, unitq) where {S<:ElementarySpace}
+    groups = Dict{typeof(unitq),Vector{Tuple}}()
+    coord = Dict{Tuple,Tuple{typeof(unitq),Int}}()
+    if isempty(legs)
+        groups[unitq] = [()]
+        coord[()] = (unitq, 1)
+        return groups, coord
+    end
+    legqs = Vector{Vector{typeof(unitq)}}()
+    for V in legs
+        qs = typeof(unitq)[]
+        for q in sectors(V), _ in 1:dim(V, q)
+            push!(qs, q)
+        end
+        push!(legqs, qs)
+    end
+    for I in CartesianIndices(Tuple(length(qs) for qs in legqs))
+        idx = Tuple(I)
+        q = unitq
+        for k in eachindex(idx)
+            q = _fuse_one(q, legqs[k][idx[k]])
+        end
+        rows = get!(groups, q, Tuple[])
+        push!(rows, idx)
+        coord[idx] = (q, length(rows))
+    end
+    return groups, coord
 end
 
 """Internal-order list of nodes that carry a physical leg."""
