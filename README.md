@@ -1,5 +1,8 @@
 ### GRAFT.jl
-![logo](assets/graftjl-logo-small.png)
+
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/weiyiguo9/GRAFT.jl@main/assets/graftjl-logo-small.png" alt="GRAFT.jl logo" width="300">
+</p>
 
 A tree tensor network library featuring DMFT impurity solver, with the eventual goal of applying it to real material simulations.
 
@@ -31,4 +34,3 @@ O = ttno_from_opsum(H, topo, phys; hermitian=true)
 ev = TDVP1_CBE(trunc=TruncationScheme(maxdim=64), d_tilde_max=16)
 evolve!(ev, ψ, O, -0.05im, 100)                  # real-time evolution, bond-adaptive
 ```
-
