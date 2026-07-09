@@ -305,6 +305,17 @@ end
     @test all(t -> fused_u1_charge(t.ops) == U1Irrep(0), Hp)
     Op = ttno_from_opsum(Hp, topop, physp; hermitian=true)
     @test check_arrows(Op)
+
+    topo_m = star_topology(1, 1; center=:spin, prefix=:b)
+    phys_m = Dict(:spin => spin_ops().P, :b1_1 => B.P)
+    Hm = boson_modes([:b1_1 => 0.7]; ops=B)
+    Hm += BosonCoupling([(:spin, :b1_1) => 0.2],
+                        :density; matter_ops=spin_ops(), boson_ops=B, density=:Z)
+    Hmp, topomp, physmp = ppdress(Hm, topo_m, phys_m; nmax=2, boson_sites=[:b1_1])
+    @test all(P -> typeof(first(sectors(P))) == U1Irrep, values(physmp))
+    @test physmp[:spin] == U1Space(0 => 2)
+    Omp = ttno_from_opsum(Hmp, topomp, physmp; hermitian=true)
+    @test check_arrows(Omp)
 end
 
 @testset "expectation values & overlaps" begin

@@ -363,10 +363,12 @@ Projected-purification rewrite pass. Each boson site `s` gains an ancilla leaf
 `Symbol(s, "_B")` mounted directly on `s`; topology and physical spaces change,
 so the pass returns all three. The rewrite follows the pinned B3 design:
 `Bd_s -> Bpd_s * Bbd_s_B`, `B_s -> Bp_s * Bb_s_B`, while neutral `N`/`I`
-factors remain on `s`. All dressed modes share one U(1)_PP.
+factors remain on `s`. All dressed modes share one U(1)_PP. Neutral
+trivial-sector matter sites are lifted into the shared zero-charge sector so
+mixed spin-boson PP Hamiltonians still satisfy TTNO's one-spacetype invariant.
 """
-function ppdress(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,S};
-                 nmax::Int, boson_sites=keys(phys), prefix::Symbol=:ppB) where {S<:ElementarySpace}
+function ppdress(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,<:ElementarySpace};
+                 nmax::Int, boson_sites=keys(phys), prefix::Symbol=:ppB)
     pp = boson_ops_pp(nmax)
     bsites = Set(Symbol.(collect(boson_sites)))
     topo′ = topo
@@ -378,9 +380,18 @@ function ppdress(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,S};
         anc[s] = a
         topo′ = mount_chain(topo′, s, 1; prefix=Symbol(s, :_B))
     end
-    phys′ = Dict{Symbol,ElementarySpace}(k => v for (k, v) in phys)
+    phys′ = Dict{Symbol,ElementarySpace}()
+    liftspaces = Dict{Symbol,ElementarySpace}()
+    for (site, P) in phys
+        if site in bsites
+            phys′[site] = pp.P
+        else
+            P′ = _pp_lift_space(P, pp)
+            phys′[site] = P′
+            spacetype(P) === ComplexSpace && (liftspaces[site] = P′)
+        end
+    end
     for s in bsites
-        phys′[s] = pp.P
         phys′[anc[s]] = pp.Bspace
     end
 
@@ -388,7 +399,7 @@ function ppdress(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,S};
     for term in H
         partial = [SiteOp[]]
         for so in term.ops
-            expanded = _pp_factor(so, bsites, anc, pp)
+            expanded = _pp_factor(so, bsites, anc, pp, liftspaces)
             partial = [vcat(base, add) for base in partial for add in expanded]
         end
         for ops in partial
@@ -398,8 +409,29 @@ function ppdress(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,S};
     return H′, topo′, phys′
 end
 
-function _pp_factor(so::SiteOp, bsites, anc, pp)
-    so.site in bsites || return [[so]]
+function _pp_lift_space(P::ElementarySpace, pp)
+    if spacetype(P) === ComplexSpace
+        return U1Space(0 => dim(P))
+    elseif spacetype(P) === spacetype(pp.P)
+        return P
+    else
+        throw(ArgumentError("ppdress can lift ComplexSpace matter or reuse U(1)_PP-compatible spaces; got $P"))
+    end
+end
+
+function _pp_lift_neutral_op(op::AbstractTensorMap, P::ElementarySpace)
+    numout(op) == 1 && numin(op) == 1 ||
+        throw(ArgumentError("ppdress can lift only neutral trivial-sector matter operators"))
+    dim(codomain(op)[1]) == dim(P) && dim(domain(op)[1]) == dim(P) ||
+        throw(ArgumentError("ppdress neutral lift dimension mismatch"))
+    return TensorMap(reshape(convert(Array, op), dim(P), dim(P)), P ← P)
+end
+
+function _pp_factor(so::SiteOp, bsites, anc, pp, liftspaces)
+    if !(so.site in bsites)
+        haskey(liftspaces, so.site) || return [[so]]
+        return [[SiteOp(so.site, so.name, _pp_lift_neutral_op(so.op, liftspaces[so.site]))]]
+    end
     if so.name == :Bd
         return [[SiteOp(so.site, :Bpd, pp.Bpd), SiteOp(anc[so.site], :Bbd, pp.Bbd)]]
     elseif so.name == :B
