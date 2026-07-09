@@ -78,14 +78,20 @@ function fork_topology(nteeth::Int, toothlength::Int; prefix::Symbol=:spine)
 end
 
 """
-    is_t3ns(t::TreeTopology) -> Bool
+    is_t3ns(t::TreeTopology; physical=Symbol[]) -> Bool
 
-T3NS constraint predicate (architecture §6.1): every node has at most 3 legs
-(counting the parent leg and the physical leg — callers that separate physical
-and branching tensors should check degree ≤ 3 on the appropriate node set).
-Implemented as a predicate, not a type, so sweep engines stay geometry-blind.
+T3NS constraint predicate (architecture §6.1): every tensor has at most 3 legs.
+`physical` lists the nodes carrying a physical leg (T3NS separates physical
+and branching tensors, so a degree-3 junction must be physless). Implemented
+as a predicate, not a type, so sweep engines stay geometry-blind.
 """
-is_t3ns(t::TreeTopology) = all(i -> (nchildren(t, i) + (isroot(t, i) ? 0 : 1)) <= 3, 1:nnodes(t))
+function is_t3ns(t::TreeTopology; physical::AbstractVector{Symbol}=Symbol[])
+    phys = Set(physical)
+    return all(1:nnodes(t)) do i
+        nlegs = nchildren(t, i) + (isroot(t, i) ? 0 : 1) + (nodeid(t, i) in phys ? 1 : 0)
+        nlegs <= 3
+    end
+end
 
 # TODO(M5+): cayley_topology (Bethe lattice, coordination z), interleaved orderings,
 # boson-branch mounting helpers (they mechanically expand from the impurity

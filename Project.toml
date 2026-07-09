@@ -19,7 +19,7 @@ TensorOperations = "5"
 julia = "1.10"
 
 [extras]
-Test = "8dfed614-c452-5f7f-a2b2-ea7d01f6da05"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
 test = ["Test"]

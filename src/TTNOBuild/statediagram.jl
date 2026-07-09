@@ -12,9 +12,15 @@
 # channels of PyTreeNet's state-diagram pipeline (single-term diagrams +
 # hyperedge/vertex merging) for product-term Hamiltonians.
 #
-# TODO(port, §4b): PyTreeNet's bipartite-graph optimization + symbolic Gaussian
-#   elimination can compress further (shared prefixes/suffixes); add as a
-#   `compress!` pass on the assembled TTNO or on the diagram.
+# TODO(port, §4b): PyTreeNet's edge-cut compression pass can beat the channel
+#   construction when term combinations are linearly dependent (not just
+#   identical). Port order (per state_diagram.py::from_hamiltonian_modified):
+#   per edge cut, build the exact-rational Γ bond matrix (rows/cols = child-/
+#   parent-side hyperedges), symbolic Gaussian elimination over Rational
+#   (symbolic_gaussian_elimination_fraction.py), then Kőnig minimum vertex
+#   cover via Hopcroft–Karp (bipartite_graph.py, generic and portable
+#   verbatim); keep whichever of raw-Γ / eliminated-Γ gives the smaller cover
+#   (TTNOFinder.SGE semantics). Run bottom-up level by level.
 # TODO(M0 fermion path): sector-graded virtual legs — each ACTIVE channel
 #   carries the charge flux of its restriction; requires charged SiteOps
 #   (Symbolic TODO) and GradedSpace bond assembly. Everything below assumes
