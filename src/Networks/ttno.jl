@@ -35,6 +35,7 @@ end
 
 topology(O::TTNO) = O.topo
 Base.eltype(::TTNO{S,T}) where {S,T} = T
+Backend.spacetype(::TTNO{S}) where {S} = S
 Trees.nnodes(O::TTNO) = nnodes(O.topo)
 hasphys(O::TTNO, n::Int) = O.hasphys[n]
 

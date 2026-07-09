@@ -69,7 +69,7 @@ export TreeTopology, nnodes, nodeid, nodeindex, isleaf, leaves, neighbors,
     is_t3ns
 # L2/L3
 export TTNS, TTNO, TTNDO, topology, center, move_center!, update_tensor!,
-    normalize!, check_arrows, physspace, virtualspace, apply_local,
+    normalize!, check_arrows, physspace, virtualspace, apply, apply_local,
     EnvCache, inner, expect, eff_h1, eff_h0, eff_h2
 # L4
 export OpSum, Term, SiteOp, charge, spin_ops, spin_ops_u1,

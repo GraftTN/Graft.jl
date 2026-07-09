@@ -199,6 +199,34 @@ end
     @test norm(to_dense(O) - dense_hamiltonian(H, ψ)) < 1e-12
 end
 
+@testset "TTNO apply" begin
+    topo = mps_topology(2)
+    S = spin_ops()
+    phys = Dict(:site1 => S.P, :site2 => S.P)
+    H = OpSum()
+    H += Term(0.7, SiteOp(:site1, :X, S.X), SiteOp(:site2, :Z, S.Z))
+    H += Term(0.2, SiteOp(:site2, :X, S.X))
+    O = ttno_from_opsum(H, topo, phys; hermitian=false)
+    ψ = random_ttns(RNG, ComplexF64, topo, phys, ℂ^2)
+    move_center!(ψ, :site1)
+    ϕ = apply(O, ψ)
+    @test check_arrows(ϕ)
+    @test center(ϕ) == center(ψ)
+    @test norm(to_dense(ϕ) - dense_hamiltonian(H, ψ) * to_dense(ψ)) < 1e-10
+
+    B = boson_ops_u1(2)
+    phys_b = Dict(:site1 => B.P, :site2 => B.P)
+    Hb = OpSum()
+    Hb += Term(0.5, SiteOp(:site1, :Bd, B.Bd), SiteOp(:site2, :B, B.B))
+    Hb += Term(0.5, SiteOp(:site1, :B, B.B), SiteOp(:site2, :Bd, B.Bd))
+    Ob = ttno_from_opsum(Hb, topo, phys_b; hermitian=true)
+    ψb = product_ttns(ComplexF64, topo, phys_b,
+                      Dict(:site1 => U1Irrep(1), :site2 => U1Irrep(0)))
+    ϕb = apply(Ob, ψb)
+    @test check_arrows(ϕb)
+    @test norm(to_dense(ϕb) - dense_hamiltonian(Hb, topo, phys_b) * to_dense(ψb)) < 1e-10
+end
+
 @testset "charged TTNO builder vs dense" begin
     U = spin_ops_u1()
     @test charge(SiteOp(:s, :Sp, U.Sp)) == U1Irrep(1)
