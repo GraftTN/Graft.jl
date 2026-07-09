@@ -567,6 +567,13 @@ end
     ts = [0.0, 0.05, 0.11]
     vals = correlator(ψ0, E0, :site1 => S.X, :site1 => S.X, ts;
                       H=O, evolver=LocalZEvolver(:site1, ω))
+    series = correlator_series(ψ0, E0, :site1 => S.X, :site1 => S.X, ts;
+                               H=O, evolver=LocalZEvolver(:site1, ω),
+                               metadata=(; kind=:test))
+    @test series isa CorrelatorSeries
+    @test collect(series) == collect(zip(ts, vals))
+    @test series.metadata.kind == :test
+    @test series.metadata.Asite == :site1
     X1 = dense_hamiltonian(OpSum() + Term(1.0, SiteOp(:site1, :X, S.X)), ψ0)
     Hd = dense_hamiltonian(H, ψ0)
     ref = [exp(im * E0 * t) * dot(X1 * v0, exact_evolve(Hd, X1 * v0, -im * t)) for t in ts]

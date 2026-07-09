@@ -77,7 +77,8 @@ export OpSum, Term, SiteOp, charge, spin_ops, boson_ops, boson_ops_pp,
     Lindbladian, ppdress, ttno_from_opsum
 # L5
 export dmrg1!, dmrg2!, dmrg1_3s!, expand!,
-    Evolver, step!, evolve!, correlator, supports_complex_step,
+    Evolver, step!, evolve!, CorrelatorSeries, correlator, correlator_series,
+    supports_complex_step,
     TDVP1, TDVP2, TDVP1_CBE, GlobalKrylov, TEBD, BUG, ImplicitLogTime,
     ThermalRep, Purified, METTS, thermalize
 # L6 + cross-cutting

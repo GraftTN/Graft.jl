@@ -26,7 +26,8 @@ using ..Trees
 using ..Networks
 using ..Contractions
 
-export Evolver, step!, evolve!, correlator, supports_complex_step,
+export Evolver, step!, evolve!, CorrelatorSeries, correlator, correlator_series,
+    supports_complex_step,
     TDVP1, TDVP2, TDVP1_CBE, GlobalKrylov, GSE_TDVP, LSE_TDVP, TEBD, BUG,
     FixedBUG, ImplicitLogTime
 
@@ -97,6 +98,44 @@ function correlator(ψ0::TTNS, E0::Number, A, B, ts; H::TTNO, evolver::Evolver)
         τprev = τ
     end
     return vals
+end
+
+"""
+    CorrelatorSeries(times, values, metadata)
+
+Discrete correlator snapshot series for M1 spectral post-processing:
+iteration yields `(t, value)` pairs and `metadata` is a typed `NamedTuple`.
+"""
+struct CorrelatorSeries{R<:Real,V,M<:NamedTuple}
+    times::Vector{R}
+    values::Vector{V}
+    metadata::M
+    function CorrelatorSeries(times::AbstractVector{R}, values::AbstractVector{V},
+                              metadata::M) where {R<:Real,V,M<:NamedTuple}
+        length(times) == length(values) ||
+            throw(ArgumentError("CorrelatorSeries needs one value per time"))
+        return new{R,V,M}(collect(times), collect(values), metadata)
+    end
+end
+Base.length(s::CorrelatorSeries) = length(s.times)
+Base.getindex(s::CorrelatorSeries, i::Int) = (s.times[i], s.values[i])
+Base.iterate(s::CorrelatorSeries, state...) = iterate(zip(s.times, s.values), state...)
+
+"""
+    correlator_series(ψ0, E0, A, B, ts; H, evolver, metadata=(;)) -> CorrelatorSeries
+
+Typed snapshot wrapper around [`correlator`](@ref). `metadata` is merged with
+the insertion sites and `E0`; operator tensors stay in the call, not in the
+metadata payload.
+"""
+function correlator_series(ψ0::TTNS, E0::Number, A, B, ts; H::TTNO,
+                           evolver::Evolver, metadata::NamedTuple=(;))
+    times = collect(ts)
+    vals = correlator(ψ0, E0, A, B, times; H, evolver)
+    Asite, _ = _local_insertion(A)
+    Bsite, _ = _local_insertion(B)
+    meta = merge((; E0, Asite, Bsite), metadata)
+    return CorrelatorSeries(real.(times), vals, meta)
 end
 
 _local_insertion(x) =
