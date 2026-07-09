@@ -177,14 +177,19 @@ end
 
 """
     dense_hamiltonian(H::OpSum, ψ) -> Matrix
+    dense_hamiltonian(H::OpSum, topo, phys) -> Matrix
 
 Dense matrix of an `OpSum` on the physical sites of `ψ` (identity padding),
 kron-ordered to match `to_dense`. Small systems only.
 """
 function dense_hamiltonian(H::OpSum, ψ::TTNS)
-    t = ψ.topo
-    sites = physical_sites(ψ)
-    dims = [dim(physspace(ψ, n)) for n in sites]
+    phys = Dict(nodeid(ψ.topo, n) => physspace(ψ, n) for n in physical_sites(ψ))
+    return dense_hamiltonian(H, ψ.topo, phys)
+end
+
+function dense_hamiltonian(H::OpSum, t::TreeTopology, phys::Dict{Symbol,<:ElementarySpace})
+    sites = [n for n in 1:nnodes(t) if haskey(phys, nodeid(t, n))]
+    dims = [dim(phys[nodeid(t, n)]) for n in sites]
     D = prod(dims)
     Hd = zeros(ComplexF64, D, D)
     for term in H
@@ -192,11 +197,23 @@ function dense_hamiltonian(H::OpSum, ψ::TTNS)
         for so in term.ops
             i = findfirst(==(nodeindex(t, so.site)), sites)
             i === nothing && throw(ArgumentError("term site $(so.site) has no physical leg"))
-            mats[i] = reshape(convert(Array, so.op), dims[i], dims[i])
+            mats[i] = _dense_siteop_matrix(so.op, dims[i])
         end
         Hd .+= term.coeff .* reduce(kron, reverse(mats))
     end
     return Hd
+end
+
+function _dense_siteop_matrix(op::AbstractTensorMap, d::Int)
+    if numout(op) == 1 && numin(op) == 1
+        return reshape(convert(Array, op), d, d)
+    elseif numout(op) == 1 && numin(op) == 2 && dim(domain(op)[2]) == 1
+        arr = reshape(convert(Array, op), d, d, :)
+        size(arr, 3) == 1 || throw(ArgumentError("charged SiteOp charge leg must be one-dimensional"))
+        return arr[:, :, 1]
+    else
+        throw(ArgumentError("SiteOp tensor must be `P ← P` or charged `P ← P ⊗ C`"))
+    end
 end
 
 """Exact ground state (dense, hermitian): returns `(E0, v0)`."""

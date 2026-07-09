@@ -18,47 +18,52 @@ module Symbolic
 
 using ..Backend
 
-export SiteOp, Term, OpSum, sites, coefficient, nterms, spin_ops, boson_ops,
+export SiteOp, Term, OpSum, charge, sites, coefficient, nterms, spin_ops, boson_ops,
     boson_modes, BosonCoupling, Lindbladian, ppdress, su2reduce, modereorder
 
 """
     SiteOp(site, name, op)
 
-One local operator factor: `op :: P ← P` acting on the physical space of node
-`site`. `name` is the symbolic identity used for term merging in TTNO
+One local operator factor acting on node `site`. The fast path is a neutral
+endomorphism `op :: P ← P`. Charged abelian factors use
+`op :: P ← P ⊗ C`, where `C` is a one-dimensional graded charge space carrying
+the sector injected by the operator and flowing toward the root in TTNO
+assembly. `name` is the symbolic identity used for term merging in TTNO
 construction (PyTreeNet merges hyperedges by comparing label strings — floats
 are never compared).
-
-TODO(M0 fermion path): charged operators (c†, c) carrying a nontrivial sector
-on an auxiliary leg (`op :: P ← P ⊗ C`); the state diagram then threads the
-charge flux through every virtual space on the tree path between paired
-factors. Until then every factor must be charge-diagonal.
 """
 struct SiteOp
     site::Symbol
     name::Symbol
     op::AbstractTensorMap
+    charge
     function SiteOp(site::Symbol, name::Symbol, op::AbstractTensorMap)
-        numout(op) == numin(op) == 1 || throw(ArgumentError("SiteOp must be a single-site endomorphism P ← P (charged ops TODO)"))
-        codomain(op)[1] == domain(op)[1] || throw(ArgumentError("SiteOp must map P ← P"))
-        return new(site, name, op)
+        q = _siteop_charge(op)
+        return new(site, name, op, q)
     end
 end
 
-Base.:(==)(a::SiteOp, b::SiteOp) = a.site == b.site && a.name == b.name
-Base.hash(a::SiteOp, h::UInt) = hash(a.name, hash(a.site, hash(:SiteOp, h)))
+charge(op::SiteOp) = op.charge
+
+Base.:(==)(a::SiteOp, b::SiteOp) =
+    a.site == b.site && a.name == b.name && charge(a) == charge(b)
+Base.hash(a::SiteOp, h::UInt) =
+    hash(charge(a), hash(a.name, hash(a.site, hash(:SiteOp, h))))
 
 """
     Term(coeff, ops)
 
 `coeff * ⊗_i ops[i]`, identity-padded on all unlisted sites. Factors must act
-on distinct sites (products on the same site should be pre-multiplied).
+on distinct sites (products on the same site should be pre-multiplied). If any
+factor is charged, the fused total charge must be trivial; TTNO root caps stay
+neutral.
 """
 struct Term{C<:Number}
     coeff::C
     ops::Vector{SiteOp}
     function Term(coeff::C, ops::Vector{SiteOp}) where {C<:Number}
         allunique(op.site for op in ops) || throw(ArgumentError("Term factors must act on distinct sites"))
+        _assert_neutral_term(ops)
         return new{C}(coeff, ops)
     end
 end
@@ -67,6 +72,48 @@ Term(coeff::Number, ops::SiteOp...) = Term(coeff, collect(SiteOp, ops))
 sites(t::Term) = [op.site for op in t.ops]
 coefficient(t::Term) = t.coeff
 Base.:*(λ::Number, t::Term) = Term(λ * t.coeff, t.ops)
+
+function _siteop_charge(op::AbstractTensorMap)
+    numout(op) == 1 || throw(ArgumentError("SiteOp must have one physical output leg"))
+    if numin(op) == 1
+        codomain(op)[1] == domain(op)[1] ||
+            throw(ArgumentError("neutral SiteOp must map P ← P"))
+        P = codomain(op)[1]
+        return spacetype(P) === ComplexSpace ? nothing : one(sectortype(P))
+    elseif numin(op) == 2
+        P = codomain(op)[1]
+        domain(op)[1] == P || throw(ArgumentError("charged SiteOp must map P ← P ⊗ C"))
+        spacetype(P) === ComplexSpace &&
+            throw(ArgumentError("charged SiteOp requires a graded physical space"))
+        C = domain(op)[2]
+        spacetype(C) == spacetype(P) ||
+            throw(ArgumentError("charged SiteOp charge leg must use the physical-space symmetry"))
+        dim(C) == 1 || throw(ArgumentError("charged SiteOp charge leg must be one-dimensional"))
+        qs = collect(sectors(C))
+        length(qs) == 1 ||
+            throw(ArgumentError("charged SiteOp charge leg must carry exactly one sector"))
+        return only(qs)
+    else
+        throw(ArgumentError("SiteOp must be `P ← P` or charged `P ← P ⊗ C`"))
+    end
+end
+
+function _assert_neutral_term(ops::Vector{SiteOp})
+    qs = [charge(op) for op in ops if charge(op) !== nothing]
+    isempty(qs) && return true
+    Q = typeof(qs[1])
+    qtot = one(Q)
+    for q in qs
+        q isa Q || throw(ArgumentError("all charged factors in a Term must use the same sector type"))
+        fused = qtot ⊗ q
+        length(fused) == 1 ||
+            throw(ArgumentError("non-abelian charged Terms need SU2Reduce/graded fusion-tree support (TODO(M3))"))
+        qtot = only(fused)
+    end
+    qtot == one(Q) ||
+        throw(ArgumentError("charged Term is not neutral: fused charge $qtot"))
+    return true
+end
 
 """
     OpSum()

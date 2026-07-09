@@ -4,7 +4,8 @@
 using Test
 using GRAFT
 using GRAFT.TestUtils
-using GRAFT.Backend: ℂ, ⊗, ←, dim, domain, U1Space
+using GRAFT.Backend: ℂ, ⊗, ←, dim, domain, U1Space, U1Irrep,
+    FermionParity, Vect, TensorMap, sectors, blocks
 using GRAFT.Trees: edges
 using GRAFT.Contractions: two_site_tensor, split_two_site!
 using Random
@@ -27,6 +28,73 @@ end
 
 allspin(topo) = Dict(nodeid(topo, i) => spin_ops().P for i in 1:nnodes(topo))
 bonddims(ψ) = [dim(domain(ψ.tensors[c])[1]) for c in 1:nnodes(ψ.topo) if ψ.topo.parent[c] != 0]
+
+function u1_spin_ops()
+    P = U1Space(0 => 1, 1 => 1)
+    Cp = U1Space(1 => 1)
+    Cm = U1Space(-1 => 1)
+    charged(mat, C) = TensorMap(reshape(ComplexF64.(mat), 2, 2, 1), P ← P ⊗ C)
+    neutral(mat) = TensorMap(ComplexF64.(mat), P ← P)
+    Sp = charged([0 0; 1 0], Cp)
+    Sm = charged([0 1; 0 0], Cm)
+    Z = neutral([-1 0; 0 1])
+    I = neutral([1 0; 0 1])
+    return (; P, Sp, Sm, Z, I)
+end
+
+function u1_boson_ops(nmax::Int)
+    P = U1Space([n => 1 for n in 0:nmax]...)
+    Cp = U1Space(1 => 1)
+    Cm = U1Space(-1 => 1)
+    d = nmax + 1
+    b = zeros(ComplexF64, d, d, 1)
+    bd = zeros(ComplexF64, d, d, 1)
+    nmat = zeros(ComplexF64, d, d)
+    for n in 1:nmax
+        b[n, n + 1, 1] = sqrt(n)
+        bd[n + 1, n, 1] = sqrt(n)
+    end
+    for n in 0:nmax
+        nmat[n + 1, n + 1] = n
+    end
+    B = TensorMap(b, P ← P ⊗ Cm)
+    Bd = TensorMap(bd, P ← P ⊗ Cp)
+    N = TensorMap(nmat, P ← P)
+    return (; P, B, Bd, N)
+end
+
+function fz2_fermion_ops()
+    e = FermionParity(0)
+    o = FermionParity(1)
+    P = Vect[FermionParity](e => 1, o => 1)
+    C = Vect[FermionParity](o => 1)
+    Cd = zeros(ComplexF64, P ← P ⊗ C)
+    Cn = zeros(ComplexF64, P ← P ⊗ C)
+    for (f, b) in blocks(Cd)
+        f == o && (b[1, 1] = 1)
+    end
+    for (f, b) in blocks(Cn)
+        f == e && (b[1, 1] = 1)
+    end
+    return (; P, Cd, C= Cn)
+end
+
+function dense_two_site_ttno(O)
+    topo = topology(O)
+    @assert nnodes(topo) == 2
+    root = topo.root
+    child = only(topo.children[root])
+    Wr = convert(Array, O[root])
+    Wc = convert(Array, O[child])
+    χ = size(Wc, 3)
+    droot = size(Wr, 2)
+    dchild = size(Wc, 1)
+    M = zeros(eltype(Wr), droot, dchild, droot, dchild)
+    for a in 1:χ, ro in 1:droot, co in 1:dchild, ri in 1:droot, ci in 1:dchild
+        M[ro, co, ri, ci] += Wr[a, ro, ri, 1] * Wc[co, ci, a]
+    end
+    return reshape(M, droot * dchild, droot * dchild)
+end
 
 @testset "GRAFT.jl" begin
 
@@ -105,6 +173,54 @@ end
     O = ttno_from_opsum(H, topo, phys; hermitian=true)
     ψ = random_ttns(RNG, ComplexF64, topo, phys, ℂ^2)
     @test norm(to_dense(O) - dense_hamiltonian(H, ψ)) < 1e-12
+end
+
+@testset "charged TTNO builder vs dense" begin
+    U = u1_spin_ops()
+    @test charge(SiteOp(:s, :Sp, U.Sp)) == U1Irrep(1)
+    @test charge(SiteOp(:s, :Z, U.Z)) == U1Irrep(0)
+    @test_throws ArgumentError Term(1.0, SiteOp(:s, :Sp, U.Sp))
+
+    topo = mps_topology(2)
+    phys = Dict(nodeid(topo, i) => U.P for i in 1:nnodes(topo))
+    H = OpSum()
+    for (c, p) in edges(topo)
+        a, b = nodeid(topo, c), nodeid(topo, p)
+        H += Term(0.5, SiteOp(a, :Sp, U.Sp), SiteOp(b, :Sm, U.Sm))
+        H += Term(0.5, SiteOp(a, :Sm, U.Sm), SiteOp(b, :Sp, U.Sp))
+        H += Term(0.2, SiteOp(a, :Z, U.Z), SiteOp(b, :Z, U.Z))
+    end
+    O = ttno_from_opsum(H, topo, phys; hermitian=true)
+    @test norm(dense_two_site_ttno(O) - dense_hamiltonian(H, topo, phys)) < 1e-12
+
+    topo_star = star_topology(2, 1)
+    phys_star = Dict(nodeid(topo_star, i) => U.P for i in 1:nnodes(topo_star))
+    Hstar = OpSum()
+    for (c, p) in edges(topo_star)
+        a, b = nodeid(topo_star, c), nodeid(topo_star, p)
+        Hstar += Term(0.5, SiteOp(a, :Sp, U.Sp), SiteOp(b, :Sm, U.Sm))
+        Hstar += Term(0.5, SiteOp(a, :Sm, U.Sm), SiteOp(b, :Sp, U.Sp))
+    end
+    Ostar = ttno_from_opsum(Hstar, topo_star, phys_star; hermitian=true)
+    @test check_arrows(Ostar)
+
+    B = u1_boson_ops(2)
+    topo_b = mps_topology(2)
+    phys_b = Dict(nodeid(topo_b, i) => B.P for i in 1:nnodes(topo_b))
+    Hb = OpSum()
+    Hb += Term(0.7, SiteOp(:site1, :Bd, B.Bd), SiteOp(:site2, :B, B.B))
+    Hb += Term(0.7, SiteOp(:site1, :B, B.B), SiteOp(:site2, :Bd, B.Bd))
+    Ob = ttno_from_opsum(Hb, topo_b, phys_b; hermitian=true)
+    @test norm(dense_two_site_ttno(Ob) - dense_hamiltonian(Hb, topo_b, phys_b)) < 1e-12
+
+    F = fz2_fermion_ops()
+    phys_f = Dict(nodeid(topo_b, i) => F.P for i in 1:nnodes(topo_b))
+    Hf = OpSum()
+    Hf += Term(-1.0, SiteOp(:site1, :Cd, F.Cd), SiteOp(:site2, :C, F.C))
+    Hf += Term(-1.0, SiteOp(:site1, :C, F.C), SiteOp(:site2, :Cd, F.Cd))
+    Of = @test_logs (:warn, r"FermionParity Arrays") ttno_from_opsum(Hf, topo_b, phys_f; hermitian=true)
+    @test check_arrows(Of)
+    @test collect(sectors(virtualspace(Of, nodeindex(topo_b, :site1)))) == [FermionParity(1)]
 end
 
 @testset "expectation values & overlaps" begin
