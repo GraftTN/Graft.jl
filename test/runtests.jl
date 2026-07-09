@@ -236,6 +236,39 @@ end
     checkpoint!((; ψ, step=8), path)
     @test isfile(path * ".1")
     @test resume(path).state.step == 8
+
+    # mixed spin/boson trivial-sector states are the B1/B3 checkpoint
+    # boundary: future PP state must remain a serializable solver-state value.
+    b = boson_ops(2)
+    topo_b = mps_topology(2)
+    phys_b = Dict(:site1 => spin_ops().P, :site2 => b.P)
+    ψb = random_ttns(RNG, ComplexF64, topo_b, phys_b, ℂ^2)
+    path_b = joinpath(mktempdir(), "boson_state.jld2")
+    checkpoint!((; ψ=ψb, step=1, trunc=TruncationScheme(maxdim=8)), path_b)
+    @test norm(to_dense(resume(path_b).state.ψ) - to_dense(ψb)) < 1e-14
+
+    # JLD2 must also preserve TensorKit graded spaces, because B2/B3 introduce
+    # charged virtual/physical spaces before any specialized checkpoint schema.
+    topo_g = mps_topology(3)
+    Pg = U1Space(0 => 1, 1 => 1)
+    Vg = U1Space(-1 => 1, 0 => 2, 1 => 1)
+    phys_g = Dict(nodeid(topo_g, i) => Pg for i in 1:nnodes(topo_g))
+    ψg = random_ttns(RNG, ComplexF64, topo_g, phys_g, Vg)
+    path_g = joinpath(mktempdir(), "graded_state.jld2")
+    checkpoint!((; ψ=ψg, step=2), path_g; metadata=(; sector=:U1))
+    rg = resume(path_g)
+    @test rg.metadata.sector == :U1
+    @test norm(to_dense(rg.state.ψ) - to_dense(ψg)) < 1e-14
+
+    path_iter = joinpath(mktempdir(), "iter_state.jld2")
+    states = ((; step=i, value=i^2) for i in 1:5)
+    collected = collect(with_checkpoint(states; every=2, path=path_iter, keep=2,
+                                        metadata=(value, count) -> (; count),
+                                        statefn=value -> value))
+    @test length(collected) == 5
+    @test resume(path_iter).state.step == 4
+    @test resume(path_iter).metadata.count == 4
+    @test resume(path_iter * ".1").state.step == 2
 end
 
 end

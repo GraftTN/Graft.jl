@@ -18,7 +18,7 @@ module Checkpoints
 
 using JLD2
 
-export checkpoint!, resume
+export checkpoint!, resume, with_checkpoint
 
 """
     checkpoint!(state, path; keep=3, metadata=NamedTuple())
@@ -53,8 +53,58 @@ function resume(path::AbstractString)
     return (; state=data["state"], metadata=get(data, "metadata", NamedTuple()))
 end
 
-# TODO(§10.8): `with_checkpoint(itr; every, path)` iterator combinator so sweep
-# kernels only implement "one step" and checkpointing wraps around them.
+struct CheckpointedIterator{I,F,M}
+    iter::I
+    every::Int
+    path::String
+    keep::Int
+    metadata::M
+    statefn::F
+end
+
+Base.IteratorSize(::Type{<:CheckpointedIterator}) = Base.SizeUnknown()
+
+"""
+    with_checkpoint(iter; every, path, keep=3, metadata=NamedTuple(), statefn=identity)
+
+Wrap an iterator whose yielded values are solver states or step records. Every
+`every` yielded values, atomically checkpoint `statefn(value)` to `path`.
+`metadata` may be a `NamedTuple` or a function `(value, count) -> NamedTuple`.
+"""
+function with_checkpoint(iter; every::Integer, path::AbstractString,
+                         keep::Integer=3, metadata=NamedTuple(),
+                         statefn=identity)
+    every >= 1 || throw(ArgumentError("checkpoint interval `every` must be positive"))
+    keep >= 0 || throw(ArgumentError("checkpoint rotation count `keep` must be nonnegative"))
+    return CheckpointedIterator(iter, Int(every), String(path), Int(keep), metadata, statefn)
+end
+
+function Base.iterate(itr::CheckpointedIterator)
+    nxt = iterate(itr.iter)
+    nxt === nothing && return nothing
+    value, iterstate = nxt
+    count = 1
+    _checkpoint_if_due(itr, value, count)
+    return value, (iterstate, count)
+end
+
+function Base.iterate(itr::CheckpointedIterator, state)
+    iterstate, count = state
+    nxt = iterate(itr.iter, iterstate)
+    nxt === nothing && return nothing
+    value, nextstate = nxt
+    count += 1
+    _checkpoint_if_due(itr, value, count)
+    return value, (nextstate, count)
+end
+
+function _checkpoint_if_due(itr::CheckpointedIterator, value, count::Int)
+    count % itr.every == 0 || return nothing
+    metadata = itr.metadata isa Function ? itr.metadata(value, count) : itr.metadata
+    checkpoint!(itr.statefn(value), itr.path; keep=itr.keep, metadata)
+    return nothing
+end
+
 # TODO(§7): TRIQS interop — (a) pure-Julia HDF5 reader for TRIQS archive
 # layouts (BlockGf/Gf/U-matrix, production default), (b) PythonCall bridge as a
 # package extension `GRAFTTriqsExt`; both converge on one intermediate
