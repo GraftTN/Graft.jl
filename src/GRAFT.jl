@@ -54,7 +54,8 @@ using .GroundState
 using .Evolution
 using .Thermal
 using .FreqDomain
-using .Impurity: Impurity, Partition, audit_partition, fit_bath
+using .Impurity: Impurity, Partition, BathParametrization, RealPoles, ComplexPoles,
+    audit_partition, couplings, mount_bath, fit_bath, BosonBath
 using .Checkpoints
 using .Parallel
 
@@ -80,7 +81,9 @@ export dmrg1!, dmrg2!, dmrg1_3s!, expand!,
     TDVP1, TDVP2, TDVP1_CBE, GlobalKrylov, TEBD, BUG, ImplicitLogTime,
     ThermalRep, Purified, METTS, thermalize
 # L6 + cross-cutting
-export Partition, audit_partition, fit_bath, checkpoint!, resume, with_checkpoint
+export Partition, BathParametrization, RealPoles, ComplexPoles,
+    audit_partition, couplings, mount_bath, fit_bath, BosonBath,
+    checkpoint!, resume, with_checkpoint
 
 # TODO(§10.7): GRAFT.build_sysimage() — PackageCompiler + PrecompileTools
 # workload for the checkpoint-resume cluster usage pattern.

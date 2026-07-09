@@ -547,6 +547,38 @@ end
     @test norm(vals - ref) < 1e-10
 end
 
+@testset "T=0 boson bath fitting and mounting" begin
+    S = spin_ops()
+    B = boson_ops(2)
+    P = Partition([[:imp]])
+    J(ω) = 0.2 * ω
+    bath = fit_bath(J, P; nmodes=3, ωmin=0.5, ωmax=2.0)
+    @test bath isa RealPoles
+    @test bath.blocks == P.blocks
+    @test bath.block_ranges == [1:3]
+    @test bath.poles ≈ [0.75, 1.25, 1.75]
+    @test bath.residues ≈ 0.2 .* bath.poles .* 0.5
+    @test couplings(bath) ≈ sqrt.(bath.residues)
+    @test bath.diagnostics.block_diagnostics[1].rel_weight_change < 0.2
+    @test_throws ArgumentError fit_bath(J, P; T=1.0, nmodes=2, ωmin=0.1, ωmax=1.0)
+
+    topo = TreeTopology(:imp, Pair{Symbol,Symbol}[])
+    mounted = mount_bath(topo, bath, P; prefix=:ph)
+    @test nnodes(mounted.topology) == 4
+    @test mounted.sites == [:ph1_1_1, :ph1_2_1, :ph1_3_1]
+    @test all(==(:imp), mounted.anchors)
+
+    bb = BosonBath(J; partition=P, topology=topo, matter_ops=S, boson_ops=B,
+                   nmodes=2, ωmin=0.5, ωmax=1.5, prefix=:bfit, density=:Z)
+    @test bb.bath.poles ≈ [0.75, 1.25]
+    @test bb.sites == [:bfit1_1_1, :bfit1_2_1]
+    @test Set(keys(bb.phys)) == Set(bb.sites)
+    phys = merge(Dict(:imp => S.P), bb.phys)
+    O = ttno_from_opsum(bb.H, bb.topology, phys; hermitian=true)
+    ψ = random_ttns(RNG, ComplexF64, bb.topology, phys, ℂ^3)
+    @test norm(to_dense(O) - dense_hamiltonian(bb.H, ψ)) < 1e-12
+end
+
 @testset "checkpoint / resume" begin
     topo = mps_topology(4)
     phys = allspin(topo)
