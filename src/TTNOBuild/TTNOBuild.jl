@@ -9,8 +9,8 @@ sector-resolved SVD).
 Planned extensions beyond PyTreeNet (§4b):
 * dense four-index Coulomb V_ijkl pre-factorization (ISDF-THC preferred,
   SVD/density-fitting fallback) *before* it ever reaches the diagram — TODO(M5);
-* sector-aware virtual legs (abelian charge labels on diagram vertices;
-  SU(2) fusion-tree info from the SU2Reduce pass) — TODO(M0 fermion path/M3);
+* abelian sector-aware virtual legs are implemented in `statediagram.jl`;
+  non-abelian SU(2) fusion-tree info from the SU2Reduce pass remains TODO(M3);
 * bipartite-graph optimization + symbolic Gaussian elimination on the diagram
   — TODO (upstream PyTreeNet has them; port after the baseline is validated).
 """
