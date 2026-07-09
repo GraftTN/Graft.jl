@@ -54,7 +54,7 @@ function _greedy_tree(spec::ContractionSpec, dims::Vector{Vector{Int}})
 end
 
 """
-Bounded structural DP state used only by the Phase-3 unique-fusion planner.
+Structural DP state used only by the Phase-3 unique-fusion planner.
 `space` is the exact TensorKit HomSpace of the all-codomain intermediate, so
 states with equal label sets but different fusion/leg layouts cannot be
 incorrectly merged.  It is intentionally local to Planning: the long-lived
@@ -73,63 +73,86 @@ struct _SectorDPState
     sector_block_peak::Float64
 end
 
-const _SECTOR_DP_TENSOR_LIMIT = 7
-const _SECTOR_DP_FRONTIER_LIMIT = 8
+# The dense TensorOperations candidate and the exact sector DP deliberately
+# share this local-network limit.  Above it, the Phase-1 env-first plan and
+# the Phase-2 dense candidates remain the bounded, memory-safe fallback.
+const _EXACT_TENSOR_LIMIT = 10
+const _SECTOR_EXACT_TENSOR_LIMIT = _EXACT_TENSOR_LIMIT
 
 @inline function _has_shared_positive_label(a::Vector{Int}, b::Vector{Int})
     return any(label -> label > 0 && label in b, a)
 end
 
-@inline _same_sector_structure(a::_SectorDPState, b::_SectorDPState) =
-    Tuple(a.labels) == Tuple(b.labels) && a.space == b.space
+@inline _canonical_label_key(label::Int) = label > 0 ? (0, label) : (1, -label)
 
-@inline function _sector_dominates(a::_SectorDPState, b::_SectorDPState)
+"""
+    _canonical_intermediate_partition(labels) -> pAB
+
+Materialize every non-root intermediate in a deterministic flat-leg order:
+remaining contracted labels first in ascending order, then open labels in
+`-1, -2, …` order.  Phase 3 is restricted to unique-fusion symmetric braiding
+and currently fixes the permutation coefficient to zero, so TensorKit's
+braiding makes this canonicalization an exact representative of either input
+operand order.  It also prevents a high-degree star's harmless leaf-order
+permutations from creating factorially many DP states.
+"""
+function _canonical_intermediate_partition(labels::Vector{Int})
+    order = sortperm(eachindex(labels); by=i -> _canonical_label_key(labels[i]))
+    return (Tuple(order), ())
+end
+
+function _reordered_metrics(metrics, out::Tuple)
+    order = Int[out[1]...]
+    return metrics.labels[order], metrics.dims[order]
+end
+
+@inline _sector_structure_key(s::_SectorDPState) =
+    (Tuple(s.labels), Tuple(s.dims), s.space, s.conj)
+
+@inline _same_sector_structure(a::_SectorDPState, b::_SectorDPState) =
+    _sector_structure_key(a) == _sector_structure_key(b)
+
+@inline function _sector_no_worse(a::_SectorDPState, b::_SectorDPState)
+    # `sector_block_peak` is a reported allocator/workspace diagnostic, not a
+    # configured objective or hard guard.  It must not retain otherwise
+    # dominated states and turn the exact λ_mem frontier into a larger,
+    # unselected multi-objective search.
     no_worse = a.peak <= b.peak &&
                a.sector_peak <= b.sector_peak &&
                a.sector_flops <= b.sector_flops
-    strict = a.peak < b.peak ||
-             a.sector_peak < b.sector_peak ||
-             a.sector_flops < b.sector_flops
-    return no_worse && strict
+    return no_worse
 end
 
-"""Insert a state into its exact-layout Pareto frontier, with a hard size cap."""
+"""Insert a state into its exact-layout Pareto frontier without approximation."""
 function _insert_sector_state!(frontier::Vector{_SectorDPState}, candidate::_SectorDPState)
     same = Int[]
     for (i, current) in enumerate(frontier)
         _same_sector_structure(current, candidate) || continue
-        _sector_dominates(current, candidate) && return frontier
+        # Equal objective tuples are interchangeable for every later merge,
+        # because the structural state is equal too.  Keep the first tree to
+        # avoid duplicate derivations without dropping a Pareto alternative.
+        _sector_no_worse(current, candidate) && return frontier
         push!(same, i)
     end
     for i in reverse(same)
-        _sector_dominates(candidate, frontier[i]) && deleteat!(frontier, i)
+        _sector_no_worse(candidate, frontier[i]) && deleteat!(frontier, i)
     end
     push!(frontier, candidate)
-
-    # A pathological graph can generate many non-dominated trees with the
-    # same externally visible intermediate.  Keeping the smallest sector
-    # objective representatives is bounded planning overhead, not a semantic
-    # fallback: env-first remains a separate candidate below.
-    same = Int[i for (i, current) in enumerate(frontier)
-               if _same_sector_structure(current, candidate)]
-    if length(same) > _SECTOR_DP_FRONTIER_LIMIT
-        sort!(same; by=i -> (frontier[i].sector_flops,
-                             frontier[i].sector_peak,
-                             frontier[i].peak))
-        for i in reverse(same[(_SECTOR_DP_FRONTIER_LIMIT + 1):end])
-            deleteat!(frontier, i)
-        end
-    end
     return frontier
 end
 
-function _sector_merge_state(left::_SectorDPState, right::_SectorDPState)
+function _sector_merge_state(left::_SectorDPState, right::_SectorDPState,
+                             profiles::Dict{Any,Any})
     metrics = dense_cost(left.labels, left.dims, right.labels, right.dims)
-    out = (Tuple(1:length(metrics.labels)), ())
-    profile = _sector_pair_profile(metrics, left.space, left.conj,
-                                   right.space, right.conj, out)
+    out = _canonical_intermediate_partition(metrics.labels)
+    labels, dims = _reordered_metrics(metrics, out)
+    key = (_sector_structure_key(left), _sector_structure_key(right))
+    profile = get!(profiles, key) do
+        _sector_pair_profile(metrics, left.space, left.conj,
+                             right.space, right.conj, out)
+    end
     profile.supported || return nothing
-    return _SectorDPState(Any[left.tree, right.tree], metrics.labels, metrics.dims,
+    return _SectorDPState(Any[left.tree, right.tree], labels, dims,
                           profile.output, false,
                           left.flops + right.flops + metrics.flops,
                           max(left.peak, right.peak, metrics.peak_elements),
@@ -143,20 +166,28 @@ end
 """
     _sector_dp_trees(spec, dims, protos) -> Vector{Any}
 
-Generate a small Pareto frontier of binary trees using exact HomSpace block
-profiles.  The canonical subset orientation deliberately avoids exploring both
-braid/layout orientations of the same merge; execution remains general, while
-the Phase-1 env-first candidate provides the memory-safe fallback.
+Generate every Pareto-relevant *connected* binary contraction tree for an
+eligible local network of at most `_SECTOR_EXACT_TENSOR_LIMIT` tensors.  Each
+non-root result is materialized in a canonical leg order.  In the supported
+unique-fusion, symmetric-braiding, `λ_perm = 0` model, this makes reversed
+operand layouts structurally equivalent instead of factorially distinct DP
+states.  Only mathematically dominated canonical states are pruned.  An early
+outer product in a connected effective-map graph is Pareto-dominated by
+delaying that product until one component reaches its bridge tensor, so shared
+positive-label merges span the exact optimum under this model.  The Phase-1
+env-first plan stays the bounded memory-safe fallback outside this deliberately
+small local scope.
 """
 function _sector_dp_trees(spec::ContractionSpec, dims::Vector{Vector{Int}}, protos)
     n = length(spec.labels)
-    n <= _SECTOR_DP_TENSOR_LIMIT || return Any[]
+    n <= _SECTOR_EXACT_TENSOR_LIMIT || return Any[]
     spaces = [_prototype_space(proto) for proto in protos]
     all(Backend.sector_cost_supported, spaces) || return Any[]
     any(Backend.sector_cost_nontrivial, spaces) || return Any[]
 
     fullmask = (1 << n) - 1
     frontiers = [_SectorDPState[] for _ in 1:fullmask]
+    profiles = Dict{Any,Any}()
     for i in 1:n
         space_i = spaces[i]
         frontiers[1 << (i - 1)] = [_SectorDPState(
@@ -171,13 +202,19 @@ function _sector_dp_trees(spec::ContractionSpec, dims::Vector{Vector{Int}}, prot
         leftmask = (mask - 1) & mask
         while leftmask != 0
             rightmask = mask ⊻ leftmask
-            # Canonical operand orientation: every unordered bipartition is
-            # considered exactly once, avoiding unpriced permutation variants.
+            # `_canonical_intermediate_partition` materializes an exact
+            # canonical representative of either operand order under the
+            # supported symmetric-braiding cost model, so each unordered
+            # bipartition is considered once.
             if rightmask != 0 && leftmask < rightmask &&
                !isempty(frontiers[leftmask]) && !isempty(frontiers[rightmask])
                 for left in frontiers[leftmask], right in frontiers[rightmask]
+                    # An early outer product in a connected effective-map
+                    # graph can always be delayed until one component reaches
+                    # its bridge tensor. In this λ_perm=0 symmetric model it
+                    # cannot improve work or either peak metric.
                     _has_shared_positive_label(left.labels, right.labels) || continue
-                    merged = _sector_merge_state(left, right)
+                    merged = _sector_merge_state(left, right, profiles)
                     merged === nothing || _insert_sector_state!(frontiers[mask], merged)
                 end
             end
@@ -213,7 +250,9 @@ end
 
 function _compile_tree!(state::_CompileState, tree, spec::ContractionSpec,
                         dims::Vector{Vector{Int}}, protos,
-                        structural_metrics::Bool, root::Bool=false)
+                        structural_metrics::Bool,
+                        canonical_intermediates::Bool,
+                        root::Bool=false)
     if tree isa Integer
         slot = Int(tree)
         return slot, copy(spec.labels[slot]), copy(dims[slot]),
@@ -221,14 +260,21 @@ function _compile_tree!(state::_CompileState, tree, spec::ContractionSpec,
     end
     length(tree) == 2 || throw(ArgumentError("contraction tree nodes must be binary"))
     a, labels_a, dims_a, space_a, conj_a =
-        _compile_tree!(state, tree[1], spec, dims, protos, structural_metrics)
+        _compile_tree!(state, tree[1], spec, dims, protos,
+                       structural_metrics, canonical_intermediates)
     b, labels_b, dims_b, space_b, conj_b =
-        _compile_tree!(state, tree[2], spec, dims, protos, structural_metrics)
+        _compile_tree!(state, tree[2], spec, dims, protos,
+                       structural_metrics, canonical_intermediates)
     metrics = dense_cost(labels_a, dims_a, labels_b, dims_b)
     state.nextslot += 1
     dst = state.nextslot
     out = root ? _output_partition(metrics.labels, spec) :
-                 (Tuple(1:length(metrics.labels)), ())
+                 (canonical_intermediates ?
+                  _canonical_intermediate_partition(metrics.labels) :
+                  (Tuple(1:length(metrics.labels)), ()))
+    out_labels, out_dims = root || !canonical_intermediates ?
+                           (metrics.labels, metrics.dims) :
+                           _reordered_metrics(metrics, out)
     profile = structural_metrics ?
               _sector_pair_profile(metrics, space_a, conj_a, space_b, conj_b, out) :
               nothing
@@ -247,7 +293,7 @@ function _compile_tree!(state::_CompileState, tree, spec::ContractionSpec,
         state.sector_flops += 2 * metrics.flops
         state.sector_peak = max(state.sector_peak, metrics.peak_elements)
         state.sector_block_peak = max(state.sector_block_peak, metrics.peak_elements)
-        return dst, metrics.labels, metrics.dims, nothing, false
+        return dst, out_labels, out_dims, nothing, false
     elseif profile.supported && isfinite(state.sector_flops)
         state.sector_flops += profile.sector_flops
     else
@@ -256,11 +302,12 @@ function _compile_tree!(state::_CompileState, tree, spec::ContractionSpec,
     state.sector_peak = max(state.sector_peak, profile.output_elements)
     state.sector_block_peak = max(state.sector_block_peak,
                                   profile.peak_block_elements)
-    return dst, metrics.labels, metrics.dims, profile.output, false
+    return dst, out_labels, out_dims, profile.output, false
 end
 
 function _compile_plan(tree, spec::ContractionSpec, dims::Vector{Vector{Int}}, protos;
-                       strategy::Symbol, structural_metrics::Bool)
+                       strategy::Symbol, structural_metrics::Bool,
+                       canonical_intermediates::Bool=false)
     spaces = [_prototype_space(proto) for proto in protos]
     initial_peak = maximum(_prod_dims(d) for d in dims; init=0.0)
     initial_sector_peak = structural_metrics ?
@@ -275,7 +322,8 @@ function _compile_plan(tree, spec::ContractionSpec, dims::Vector{Vector{Int}}, p
                           initial_sector_flops, initial_sector_peak,
                           initial_sector_block_peak)
     output, _, _, _, _ = _compile_tree!(state, tree, spec, dims, protos,
-                                         structural_metrics, true)
+                                         structural_metrics,
+                                         canonical_intermediates, true)
     return ContractionPlan(state.nextslot, output, state.steps;
                            strategy, flops=state.flops, peak_elements=state.peak,
                            sector_flops=state.sector_flops,
@@ -288,17 +336,15 @@ end
                      optimize=true, memory_weight=1, sector_aware=true) -> ContractionPlan
 
 Compile the Phase-1 env-first plan plus Phase-2 dense candidates: TensorOperations'
-FLOP-optimal tree and a separate memory-greedy tree.  On unique-fusion spaces,
-`sector_aware=true` additionally supplies a bounded own DP using TensorKit's
-per-block GEMM model.  Dense peak and symmetry-reduced stored peak are both
-hard-constrained by the env-first candidate; only then does selection optimize
-the relevant cost model.  Its `:sector_bounded` result is a bounded candidate,
-not a global optimality claim: the frontier and operand orientation are capped
-deliberately.  Non-unique fusion spaces cleanly retain Phase-2 dense selection
-until recoupling/permutation cost is calibrated.
+FLOP-optimal tree and a separate memory-greedy tree.  On eligible unique-fusion
+spaces, `sector_aware=true` additionally supplies an exact local DP (up to ten
+tensors) using TensorKit's per-block GEMM model.  Dense peak and
+symmetry-reduced stored peak are both hard-constrained by the env-first
+candidate; only then does selection optimize the relevant cost model.  Larger
+local networks, non-unique fusion spaces, and non-symmetric braiding cleanly
+retain Phase-2 dense selection until their corresponding cost/execution models
+are calibrated.
 """
-const _EXACT_TENSOR_LIMIT = 10
-
 function plan_contraction(spec::ContractionSpec, protos;
                           optimize::Bool=true, memory_weight::Real=1,
                           sector_aware::Bool=true)
@@ -319,8 +365,9 @@ function plan_contraction(spec::ContractionSpec, protos;
             try
                 push!(candidates,
                       _compile_plan(tree, spec, dims, protos;
-                                    strategy=:sector_bounded,
-                                    structural_metrics=structural_metrics))
+                                    strategy=:sector_exact,
+                                    structural_metrics=structural_metrics,
+                                    canonical_intermediates=true))
             catch err
                 err isa InterruptException && rethrow()
             end

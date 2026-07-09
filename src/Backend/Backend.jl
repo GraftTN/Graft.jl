@@ -132,13 +132,22 @@ sector_cost_supported(W::TensorMapSpace) =
     sector_cost_nontrivial(W::TensorMapSpace) -> Bool
 
 Whether `W` has a Phase-3-eligible symmetry *and* an actual nontrivial sector
-split.  All-trivial maps have exactly the dense cost/layout already modeled by
-Phase 2, so Planning deliberately avoids structural HomSpace composition for
-them.  This keeps pure dimension-only fixtures useful and avoids spending
-planning work on a cost model that cannot change their order.
+split.  A U(1)/Z₂ *type* alone is not enough: a charge-constrained map can
+still contain exactly one dense block with the same payload as its ordinary
+codomain-by-domain matrix.  Planning deliberately avoids structural HomSpace
+composition in that dense-equivalent case.  This keeps pure dimension-only
+fixtures and single-sector charge maps useful while avoiding planning work on
+a cost model that cannot change their order.
 """
-sector_cost_nontrivial(W::TensorMapSpace) =
-    sector_cost_supported(W) && TensorKit.sectortype(W) !== TensorKit.Trivial
+function sector_cost_nontrivial(W::TensorMapSpace)
+    sector_cost_supported(W) || return false
+    # `dim(W)` is TensorKit's stored HomSpace payload (Σ block rows × block
+    # columns), while this product is the sector-blind dense payload.  Either
+    # a payload reduction or multiple actual blocks can change Phase-3's cost.
+    dense_payload = big(dim(codomain(W))) * big(dim(domain(W)))
+    nblocks = count(q -> TensorKit.hasblock(W, q), TensorKit.blocksectors(W))
+    return nblocks > 1 || big(dim(W)) != dense_payload
+end
 
 """
     sector_block_peak(W::TensorMapSpace) -> Float64

@@ -1,6 +1,72 @@
 const _CP = GRAFT.Contractions
 const _Planning = GRAFT.Contractions.Planning
 
+"""
+Return every *ordered* binary tree for a very small label graph, including
+early outer products.  This deliberately does not call Phase 3's DP: it is a
+compact independent oracle for the connected-DP normal form.
+"""
+function _all_ordered_trees(spec, protos)
+    dims, _ = _Planning._label_dimensions(spec, protos)
+    memo = Dict{Int,Vector{Any}}()
+    function build(mask::Int)
+        haskey(memo, mask) && return memo[mask]
+        if count_ones(mask) == 1
+            slot = trailing_zeros(mask) + 1
+            return memo[mask] = Any[(tree=slot,
+                                     labels=copy(spec.labels[slot]),
+                                     dims=copy(dims[slot]))]
+        end
+        states = Any[]
+        leftmask = (mask - 1) & mask
+        while leftmask != 0
+            rightmask = mask ⊻ leftmask
+            if rightmask != 0
+                for left in build(leftmask), right in build(rightmask)
+                    metrics = _Planning.dense_cost(left.labels, left.dims,
+                                                    right.labels, right.dims)
+                    push!(states, (tree=Any[left.tree, right.tree],
+                                   labels=metrics.labels, dims=metrics.dims))
+                end
+            end
+            leftmask = (leftmask - 1) & mask
+        end
+        return memo[mask] = states
+    end
+    fullmask = (1 << length(spec.labels)) - 1
+    return dims, Any[state.tree for state in build(fullmask)]
+end
+
+function _sector_oracle_score(spec, protos, envfirst; memory_weight::Real)
+    dims, trees = _all_ordered_trees(spec, protos)
+    scores = Float64[]
+    for tree in trees
+        plan = _Planning._compile_plan(tree, spec, dims, protos;
+                                       strategy=:oracle, structural_metrics=true,
+                                       canonical_intermediates=true)
+        plan.peak_elements <= envfirst.peak_elements || continue
+        plan.sector_peak_elements <= envfirst.sector_peak_elements || continue
+        push!(scores, _Planning._sector_score(plan, memory_weight))
+    end
+    isempty(scores) && error("sector oracle produced no memory-safe tree")
+    return minimum(scores)
+end
+
+function _sector_dp_score(spec, protos, envfirst; memory_weight::Real)
+    dims, _ = _Planning._label_dimensions(spec, protos)
+    scores = Float64[]
+    for tree in _Planning._sector_dp_trees(spec, dims, protos)
+        plan = _Planning._compile_plan(tree, spec, dims, protos;
+                                       strategy=:oracle, structural_metrics=true,
+                                       canonical_intermediates=true)
+        plan.peak_elements <= envfirst.peak_elements || continue
+        plan.sector_peak_elements <= envfirst.sector_peak_elements || continue
+        push!(scores, _Planning._sector_score(plan, memory_weight))
+    end
+    isempty(scores) && error("sector DP produced no memory-safe tree")
+    return minimum(scores)
+end
+
 function _assert_planned_matches_ncon(spec, statics, planned, x;
                                       rtol::Real=1e-13, atol::Real=1e-13)
     got = planned(x)
@@ -184,12 +250,108 @@ end
     @test dense.strategy == :env_first
     @test dense.flops == 60
     @test dense.sector_flops == 30
-    @test sector.strategy == :sector_bounded
+    @test sector.strategy == :sector_exact
     @test sector.flops == 63
     @test sector.sector_flops == 28
-    @test (sector.steps[1].a, sector.steps[1].b) == (2, 3)
+    @test sort([sector.steps[1].a, sector.steps[1].b]) == [2, 3]
     @test sector.peak_elements <= envfirst.peak_elements
     @test sector.sector_peak_elements <= envfirst.sector_peak_elements
+
+    # Exercise the exact candidate's canonicalized intermediate executor path
+    # against retained ncon, not only its structural metadata.
+    rng = MersenneTwister(1801)
+    At = randn(rng, ComplexF64, A)
+    Bt = randn(rng, ComplexF64, B)
+    Ct = randn(rng, ComplexF64, C)
+    exact_map = _Planning.EffectiveMap(sector, (Bt, Ct))
+    exact_reference = _Planning.ncon_reference(spec, At, (Bt, Ct))
+    @test norm(exact_map(At) - exact_reference) <= 1e-12 * max(norm(exact_reference), 1)
+
+    # In the supported symmetric-braiding, λ_perm=0 model, canonicalizing an
+    # intermediate output makes A×B and B×A the same structural cost state.
+    # This is what removes high-degree leaf-order factorials without dropping
+    # a physical contraction: PairStep.out materializes that canonical order.
+    dimsA, dimsB = _Planning._prototype_dims(A), _Planning._prototype_dims(B)
+    metricsAB = _Planning.dense_cost([-1, 1], dimsA, [1, -2], dimsB)
+    metricsBA = _Planning.dense_cost([1, -2], dimsB, [-1, 1], dimsA)
+    profileAB = _Planning._sector_pair_profile(
+        metricsAB, A, false, B, false,
+        _Planning._canonical_intermediate_partition(metricsAB.labels),
+    )
+    profileBA = _Planning._sector_pair_profile(
+        metricsBA, B, false, A, false,
+        _Planning._canonical_intermediate_partition(metricsBA.labels),
+    )
+    @test profileAB.output == profileBA.output
+    @test profileAB.sector_flops == profileBA.sector_flops
+
+    # Compare connected exact-DP candidates with an independent enumeration
+    # of *all* ordered four-map trees, including early outer products.  The
+    # star supplies the important bridge structure that makes a leaf-only
+    # outer product possible.  Equality certifies the connected normal form
+    # for this supported cost model rather than merely repeating the DP's
+    # own shared-label restriction in the oracle.
+    Vstar = U1Space(0 => 1, 1 => 1)
+    center4 = Vstar ← reduce(⊗, ntuple(_ -> Vstar, 3))
+    leaf4 = Vstar ← Vstar
+    protos4 = (center4, leaf4, leaf4, leaf4)
+    spec4 = _Planning.ContractionSpec(
+        Vector{Int}[[-1, 1, 2, 3], [1, -2], [2, -3], [3, -4]],
+        Bool[false, false, false, false], 4, (4, 0), 1;
+        preferred_slots=[2, 3, 4],
+    )
+    envfirst4 = _Planning.plan_contraction(spec4, protos4; optimize=false)
+    dp4 = _sector_dp_score(spec4, protos4, envfirst4; memory_weight=1)
+    oracle4 = _sector_oracle_score(spec4, protos4, envfirst4; memory_weight=1)
+    selected4 = _Planning.plan_contraction(spec4, protos4;
+                                            sector_aware=true, memory_weight=1)
+    @test dp4 ≈ oracle4
+    @test _Planning._sector_score(selected4, 1) ≈ oracle4
+
+    # Phase 3's exact scope is the same local ≤10-tensor scope as the dense
+    # optimizer.  This is a high-degree 8-tensor U(1) star, rather than an
+    # easy chain: canonical intermediate legs make the formerly factorial
+    # leaf-order search collapse to a small exact frontier with no data tensor.
+    nleaves8 = 7
+    center8 = Vstar ← reduce(⊗, ntuple(_ -> Vstar, nleaves8))
+    protos8 = (center8, ntuple(_ -> Vstar ← Vstar, nleaves8)...)
+    labels8 = Vector{Int}[vcat([-1], collect(1:nleaves8))]
+    for i in 1:nleaves8
+        push!(labels8, [i, -(i + 1)])
+    end
+    spec8 = _Planning.ContractionSpec(labels8, falses(nleaves8 + 1),
+                                       nleaves8 + 1, (nleaves8 + 1, 0), 1;
+                                       preferred_slots=collect(2:(nleaves8 + 1)))
+    dims8, _ = _Planning._label_dimensions(spec8, protos8)
+    @test _Planning._SECTOR_EXACT_TENSOR_LIMIT == 10
+    @test !isempty(_Planning._sector_dp_trees(spec8, dims8, protos8))
+
+    # A sector type without an actual split must retain Phase 2 instead of
+    # spending an exact-DP miss on a single dense charge-0 block.
+    V0 = U1Space(0 => 1)
+    W0 = V0 ← V0
+    @test GRAFT.Backend.sector_cost_supported(W0)
+    @test !GRAFT.Backend.sector_cost_nontrivial(W0)
+    spec0 = _Planning.ContractionSpec(
+        Vector{Int}[[-1, 1], [1, 2], [2, -2]],
+        Bool[false, false, false], 2, (1, 1), 1;
+        preferred_slots=[2, 3],
+    )
+    @test _Planning.plan_contraction(spec0, (W0, W0, W0);
+                                     sector_aware=true).strategy != :sector_exact
+
+    # Exact Pareto retention has no arbitrary frontier-length cap.  These
+    # nine otherwise identical structural states trade sector FLOPs against
+    # both dense and sector peak, so none is mathematically dominated.
+    frontier = _Planning._SectorDPState[]
+    for i in 1:9
+        state = _Planning._SectorDPState(
+            i, [-1, 1], [2, 2], V8 ← V8, false,
+            Float64(i), Float64(i), Float64(i), Float64(10 - i), Float64(10 - i),
+        )
+        _Planning._insert_sector_state!(frontier, state)
+    end
+    @test length(frontier) == 9
 
     key_dense = _Planning.plan_key(:sector_fixture, spec, (A, B, C), ComplexF64;
                                    sector_aware=false, memory_weight=0)
