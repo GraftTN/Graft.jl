@@ -17,9 +17,10 @@ Design rules (§4a):
 module Symbolic
 
 using ..Backend
+using ..Trees: TreeTopology, mount_chain, nodeindex
 
 export SiteOp, Term, OpSum, charge, sites, coefficient, nterms, spin_ops, boson_ops,
-    boson_modes, BosonCoupling, Lindbladian, ppdress, su2reduce, modereorder
+    boson_ops_pp, boson_modes, BosonCoupling, Lindbladian, ppdress, su2reduce, modereorder
 
 """
     SiteOp(site, name, op)
@@ -155,7 +156,7 @@ struct Lindbladian
 end
 
 # ---------------------------------------------------------------------------
-# local operator libraries (trivial-sector; graded versions TODO)
+# local operator libraries
 # ---------------------------------------------------------------------------
 
 """
@@ -199,6 +200,42 @@ end
 
 # small identity helper without pulling LinearAlgebra into the public surface
 LinearAlgebra_I(d::Int) = [i == j ? 1.0 : 0.0 for i in 1:d, j in 1:d]
+
+"""
+    boson_ops_pp(nmax; elt=Float64) -> (; Bp, B, Bpd, Bd, Bb, Bbd, N, I, P, Bspace)
+
+Projected-purification boson operators over a shared U(1) charge. `P` carries
+occupation sectors `0:nmax`; `Bspace` is the dual ancilla representation. The
+charged pair rewrite is `b† -> Bpd_P * Bbd_B` and `b -> Bp_P * Bb_B`, while
+`N`/`I` stay neutral on the physical P site.
+"""
+function boson_ops_pp(nmax::Int; elt::Type{<:Number}=Float64)
+    nmax >= 0 || throw(ArgumentError("nmax must be nonnegative"))
+    d = nmax + 1
+    P = U1Space([n => 1 for n in 0:nmax]...)
+    Bspace = dual(P)
+    Cp = U1Space(1 => 1)
+    Cm = U1Space(-1 => 1)
+    lower = zeros(elt, d, d, 1)
+    raise = zeros(elt, d, d, 1)
+    for n in 1:nmax
+        lower[n, n + 1, 1] = sqrt(elt(n))
+        raise[n + 1, n, 1] = sqrt(elt(n))
+    end
+    Bp = TensorMap(lower, P ← P ⊗ Cm)
+    Bpd = TensorMap(raise, P ← P ⊗ Cp)
+    # Ancilla operators act in the dual representation; the charge legs are
+    # opposite so each P-B pair is neutral.
+    Bb = TensorMap(lower, Bspace ← Bspace ⊗ Cp)
+    Bbd = TensorMap(raise, Bspace ← Bspace ⊗ Cm)
+    nmat = zeros(elt, d, d)
+    for n in 0:nmax
+        nmat[n + 1, n + 1] = elt(n)
+    end
+    N = TensorMap(nmat, P ← P)
+    I = TensorMap(Matrix{elt}(LinearAlgebra_I(d)), P ← P)
+    return (; Bp, B=Bp, Bpd, Bd=Bpd, Bb, Bbd, N, I, P, Bspace)
+end
 
 """
     boson_modes(modes; ops, site_prefix=:b) -> OpSum
@@ -318,16 +355,64 @@ end
 # rewrite passes — compiler-style, applied in order to the term list (§4a)
 # ---------------------------------------------------------------------------
 
-# TODO(M5): PPDress pass — rewrite every `b†` into `b†_P · b_B` pairs
-# (Köhler–Stolpp–Paeckel, SciPost Phys. 10, 058 (2021)); adds the artificial
-# U(1)_PP conservation (n_P + n_B = d − 1). Truncating the P–B bond through
-# `TruncationScheme` is then equivalent to LBO for free (§2).
 """
-    ppdress(H::OpSum) -> OpSum
+    ppdress(H, topo, phys; nmax, boson_sites=keys(phys), prefix=:ppB)
+        -> (Hprime, topoprime, physprime)
 
-Projected-purification rewrite pass. TODO(M5) — no methods yet.
+Projected-purification rewrite pass. Each boson site `s` gains an ancilla leaf
+`Symbol(s, "_B")` mounted directly on `s`; topology and physical spaces change,
+so the pass returns all three. The rewrite follows the pinned B3 design:
+`Bd_s -> Bpd_s * Bbd_s_B`, `B_s -> Bp_s * Bb_s_B`, while neutral `N`/`I`
+factors remain on `s`. All dressed modes share one U(1)_PP.
 """
-function ppdress end
+function ppdress(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,S};
+                 nmax::Int, boson_sites=keys(phys), prefix::Symbol=:ppB) where {S<:ElementarySpace}
+    pp = boson_ops_pp(nmax)
+    bsites = Set(Symbol.(collect(boson_sites)))
+    topo′ = topo
+    anc = Dict{Symbol,Symbol}()
+    for s in sort!(collect(bsites); by=string)
+        haskey(phys, s) || throw(ArgumentError("ppdress boson site $s is absent from phys"))
+        nodeindex(topo′, s) # validate before mounting
+        a = Symbol(s, :_B, 1)
+        anc[s] = a
+        topo′ = mount_chain(topo′, s, 1; prefix=Symbol(s, :_B))
+    end
+    phys′ = Dict{Symbol,ElementarySpace}(k => v for (k, v) in phys)
+    for s in bsites
+        phys′[s] = pp.P
+        phys′[anc[s]] = pp.Bspace
+    end
+
+    H′ = OpSum()
+    for term in H
+        partial = [SiteOp[]]
+        for so in term.ops
+            expanded = _pp_factor(so, bsites, anc, pp)
+            partial = [vcat(base, add) for base in partial for add in expanded]
+        end
+        for ops in partial
+            H′ += Term(term.coeff, ops)
+        end
+    end
+    return H′, topo′, phys′
+end
+
+function _pp_factor(so::SiteOp, bsites, anc, pp)
+    so.site in bsites || return [[so]]
+    if so.name == :Bd
+        return [[SiteOp(so.site, :Bpd, pp.Bpd), SiteOp(anc[so.site], :Bbd, pp.Bbd)]]
+    elseif so.name == :B
+        return [[SiteOp(so.site, :Bp, pp.Bp), SiteOp(anc[so.site], :Bb, pp.Bb)]]
+    elseif so.name == :X
+        return [[SiteOp(so.site, :Bpd, pp.Bpd), SiteOp(anc[so.site], :Bbd, pp.Bbd)],
+                [SiteOp(so.site, :Bp, pp.Bp), SiteOp(anc[so.site], :Bb, pp.Bb)]]
+    elseif so.name in (:N, :I)
+        return [[SiteOp(so.site, so.name, so.name == :N ? pp.N : pp.I)]]
+    else
+        throw(ArgumentError("ppdress does not know how to rewrite boson operator `$(so.name)` at $(so.site)"))
+    end
+end
 
 # TODO(M3): SU2Reduce pass — c† as spin-1/2 tensor operator, hoppings and
 # Coulomb terms as scalar contractions; emits reduced matrix elements + fusion

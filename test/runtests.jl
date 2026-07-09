@@ -28,6 +28,13 @@ end
 
 allspin(topo) = Dict(nodeid(topo, i) => spin_ops().P for i in 1:nnodes(topo))
 bonddims(ψ) = [dim(domain(ψ.tensors[c])[1]) for c in 1:nnodes(ψ.topo) if ψ.topo.parent[c] != 0]
+function fused_u1_charge(ops)
+    q = U1Irrep(0)
+    for op in ops
+        q = only(q ⊗ charge(op))
+    end
+    return q
+end
 
 function u1_spin_ops()
     P = U1Space(0 => 1, 1 => 1)
@@ -262,6 +269,28 @@ end
     @test_logs (:warn, r"FermionParity Arrays") begin
         @test norm(dense_two_leaf_star_ttno(Ofs) - dense_hamiltonian(Hfs, topo_fstar, phys_fstar)) < 1e-12
     end
+end
+
+@testset "projected purification rewrite" begin
+    B = boson_ops(2)
+    PP = boson_ops_pp(2)
+    @test charge(SiteOp(:p, :Bpd, PP.Bpd)) == U1Irrep(1)
+    @test charge(SiteOp(:b, :Bbd, PP.Bbd)) == U1Irrep(-1)
+    @test charge(SiteOp(:p, :Bp, PP.Bp)) == U1Irrep(-1)
+    @test charge(SiteOp(:b, :Bb, PP.Bb)) == U1Irrep(1)
+
+    topo = mps_topology(1)
+    phys = Dict(:site1 => B.P)
+    H = OpSum()
+    H += Term(0.3, SiteOp(:site1, :X, B.X))
+    H += Term(0.7, SiteOp(:site1, :N, B.N))
+    Hp, topop, physp = ppdress(H, topo, phys; nmax=2, boson_sites=[:site1])
+    @test nnodes(topop) == 2
+    @test haskey(physp, :site1_B1)
+    @test length(Hp) == 3
+    @test all(t -> fused_u1_charge(t.ops) == U1Irrep(0), Hp)
+    Op = ttno_from_opsum(Hp, topop, physp; hermitian=true)
+    @test check_arrows(Op)
 end
 
 @testset "expectation values & overlaps" begin

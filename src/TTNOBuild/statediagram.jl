@@ -59,12 +59,16 @@ tensors). For graded abelian spaces, charged [`SiteOp`](@ref) factors thread
 their fused restriction charge through TTNO virtual channels. `hermitian` sets
 the `ishermitian` trait on the result — a wrong `true` is a caller bug (§9.8).
 """
-function ttno_from_opsum(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,S};
+function ttno_from_opsum(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,<:ElementarySpace};
                          elt::Type{<:Number}=ComplexF64,
-                         hermitian::Bool=false) where {S<:ElementarySpace}
+                         hermitian::Bool=false)
     t = topo
     E = _Euler(t)
     N = nnodes(t)
+    isempty(phys) && throw(ArgumentError("phys must contain at least one physical space"))
+    S = spacetype(first(values(phys)))
+    all(P -> spacetype(P) === S, values(phys)) ||
+        throw(ArgumentError("TTNO builder requires all physical spaces to share one concrete spacetype"))
     graded = S !== ComplexSpace
     unit_sector = graded ? one(sectortype(first(values(phys)))) : nothing
 

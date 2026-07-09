@@ -71,8 +71,9 @@ export TTNS, TTNO, TTNDO, topology, center, move_center!, update_tensor!,
     normalize!, check_arrows, physspace, virtualspace,
     EnvCache, inner, expect, eff_h1, eff_h0, eff_h2
 # L4
-export OpSum, Term, SiteOp, charge, spin_ops, boson_ops, boson_modes, BosonCoupling,
-    Lindbladian, ttno_from_opsum
+export OpSum, Term, SiteOp, charge, spin_ops, boson_ops, boson_ops_pp,
+    boson_modes, BosonCoupling,
+    Lindbladian, ppdress, ttno_from_opsum
 # L5
 export dmrg1!, dmrg2!, dmrg1_3s!, expand!,
     Evolver, step!, evolve!, supports_complex_step,
