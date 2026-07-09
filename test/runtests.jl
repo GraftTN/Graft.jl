@@ -96,6 +96,26 @@ function dense_two_site_ttno(O)
     return reshape(M, droot * dchild, droot * dchild)
 end
 
+function dense_two_leaf_star_ttno(O)
+    topo = topology(O)
+    @assert nnodes(topo) == 3
+    root = topo.root
+    children_ = topo.children[root]
+    @assert length(children_) == 2
+    W0 = convert(Array, O[root])
+    W1 = convert(Array, O[children_[1]])
+    W2 = convert(Array, O[children_[2]])
+    χ1, χ2 = size(W1, 3), size(W2, 3)
+    d0, d1, d2 = size(W0, 3), size(W1, 1), size(W2, 1)
+    M = zeros(eltype(W0), d0, d1, d2, d0, d1, d2)
+    for a in 1:χ1, b in 1:χ2,
+        o0 in 1:d0, o1 in 1:d1, o2 in 1:d2,
+        i0 in 1:d0, i1 in 1:d1, i2 in 1:d2
+        M[o0, o1, o2, i0, i1, i2] += W0[a, b, o0, i0, 1] * W1[o1, i1, a] * W2[o2, i2, b]
+    end
+    return reshape(M, d0 * d1 * d2, d0 * d1 * d2)
+end
+
 @testset "GRAFT.jl" begin
 
 @testset "Trees: topology & paths" begin
@@ -203,6 +223,7 @@ end
     end
     Ostar = ttno_from_opsum(Hstar, topo_star, phys_star; hermitian=true)
     @test check_arrows(Ostar)
+    @test norm(dense_two_leaf_star_ttno(Ostar) - dense_hamiltonian(Hstar, topo_star, phys_star)) < 1e-12
 
     B = u1_boson_ops(2)
     topo_b = mps_topology(2)
@@ -223,6 +244,17 @@ end
     @test collect(sectors(virtualspace(Of, nodeindex(topo_b, :site1)))) == [FermionParity(1)]
     @test_logs (:warn, r"FermionParity Arrays") begin
         @test norm(dense_two_site_ttno(Of) - dense_hamiltonian(Hf, topo_b, phys_f)) < 1e-12
+    end
+
+    topo_fstar = star_topology(2, 1)
+    phys_fstar = Dict(nodeid(topo_fstar, i) => F.P for i in 1:nnodes(topo_fstar))
+    Hfs = OpSum()
+    Hfs += Term(-1.0, SiteOp(:b1_1, :Cd, F.Cd), SiteOp(:b2_1, :C, F.C))
+    Hfs += Term(-1.0, SiteOp(:b1_1, :C, F.C), SiteOp(:b2_1, :Cd, F.Cd))
+    Ofs = ttno_from_opsum(Hfs, topo_fstar, phys_fstar; hermitian=true)
+    @test check_arrows(Ofs)
+    @test_logs (:warn, r"FermionParity Arrays") begin
+        @test norm(dense_two_leaf_star_ttno(Ofs) - dense_hamiltonian(Hfs, topo_fstar, phys_fstar)) < 1e-12
     end
 end
 
