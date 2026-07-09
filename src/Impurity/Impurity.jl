@@ -1,7 +1,8 @@
 """
 L6 — GRAFT.Impurity: embedded impurity-solver module (architecture §6).
-**Backbone types + signatures only; implementations TODO (M0 bath fitting →
-M2 thermofield → M5 EDMFT).**
+Forwarded B4 implements T=0 boson bath fitting plus star/chain branch mounting.
+Finite-T thermofield baths and self-consistency-facing solver glue remain later
+milestones.
 
 Never referenced by any lower layer (§9.10). Owns *no* private geometry code
 (§0.1): geometry builders emit plain `Trees.TreeTopology`.
@@ -242,8 +243,10 @@ end
 # ---------------------------------------------------------------------------
 # §6.1 geometry constructors — thin wrappers over Trees.Geometries that mount
 # bath branches according to the Partition (mechanical expansion, §6.2).
-# TODO(M0): star/chain/fork assembly from (Partition, BathParametrization).
-# Trees already provides: mps/star/binary/fork topologies, is_t3ns predicate.
+# Star/chain branch assembly from (Partition, BathParametrization) is implemented
+# by `mount_bath`; generic fork-layout construction from partitions remains a
+# future M5+ topology-planning surface. Trees already provides:
+# mps/star/binary/fork topologies and the is_t3ns predicate.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------

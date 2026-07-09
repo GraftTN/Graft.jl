@@ -603,6 +603,10 @@ end
     @test nnodes(mounted.topology) == 4
     @test mounted.sites == [:ph1_1_1, :ph1_2_1, :ph1_3_1]
     @test all(==(:imp), mounted.anchors)
+    mounted_chain = mount_bath(topo, bath, P; mode=:chain, prefix=:ch)
+    @test nnodes(mounted_chain.topology) == 4
+    @test mounted_chain.sites == [:ch1_1, :ch1_2, :ch1_3]
+    @test mounted_chain.block_sites == [mounted_chain.sites]
 
     bb = BosonBath(J; partition=P, topology=topo, matter_ops=S, boson_ops=B,
                    nmodes=2, ωmin=0.5, ωmax=1.5, prefix=:bfit, density=:Z)
