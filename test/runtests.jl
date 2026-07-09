@@ -221,6 +221,9 @@ end
     Of = ttno_from_opsum(Hf, topo_b, phys_f; hermitian=true)
     @test check_arrows(Of)
     @test collect(sectors(virtualspace(Of, nodeindex(topo_b, :site1)))) == [FermionParity(1)]
+    @test_logs (:warn, r"FermionParity Arrays") begin
+        @test norm(dense_two_site_ttno(Of) - dense_hamiltonian(Hf, topo_b, phys_f)) < 1e-12
+    end
 end
 
 @testset "expectation values & overlaps" begin
