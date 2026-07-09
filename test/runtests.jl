@@ -340,6 +340,8 @@ end
     @test charge(SiteOp(:b, :Bbd, PP.Bbd)) == U1Irrep(-1)
     @test charge(SiteOp(:p, :Bp, PP.Bp)) == U1Irrep(-1)
     @test charge(SiteOp(:b, :Bb, PP.Bb)) == U1Irrep(1)
+    @test reshape(convert(Array, PP.Bb), 3, 3, 1)[:, :, 1][1, 2] == 1
+    @test reshape(convert(Array, PP.Bbd), 3, 3, 1)[:, :, 1][2, 1] == 1
 
     topo = mps_topology(1)
     phys = Dict(:site1 => B.P)
@@ -353,6 +355,12 @@ end
     @test all(t -> fused_u1_charge(t.ops) == U1Irrep(0), Hp)
     Op = ttno_from_opsum(Hp, topop, physp; hermitian=true)
     @test check_arrows(Op)
+    H0 = dense_hamiltonian(H, topo, phys)
+    Hpp = dense_hamiltonian(Hp, topop, physp)
+    d = 3
+    # B leaves carry the dual representation, so fixed PP charge is nB_index == nP.
+    pp_subspace = [n + 1 + d * n for n in 0:2]
+    @test norm(Hpp[pp_subspace, pp_subspace] - H0) < 1e-12
 
     topo_m = star_topology(1, 1; center=:spin, prefix=:b)
     phys_m = Dict(:spin => spin_ops().P, :b1_1 => B.P)

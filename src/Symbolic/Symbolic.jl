@@ -207,7 +207,9 @@ LinearAlgebra_I(d::Int) = [i == j ? 1.0 : 0.0 for i in 1:d, j in 1:d]
 Projected-purification boson operators over a shared U(1) charge. `P` carries
 occupation sectors `0:nmax`; `Bspace` is the dual ancilla representation. The
 charged pair rewrite is `b† -> Bpd_P * Bbd_B` and `b -> Bp_P * Bb_B`, while
-`N`/`I` stay neutral on the physical P site.
+`N`/`I` stay neutral on the physical P site. `Bb`/`Bbd` are balancing
+operators: they shift the ancilla basis with unit matrix elements, not
+canonical bosonic `sqrt(n)` amplitudes.
 """
 function boson_ops_pp(nmax::Int; elt::Type{<:Number}=Float64)
     nmax >= 0 || throw(ArgumentError("nmax must be nonnegative"))
@@ -218,16 +220,21 @@ function boson_ops_pp(nmax::Int; elt::Type{<:Number}=Float64)
     Cm = U1Space(-1 => 1)
     lower = zeros(elt, d, d, 1)
     raise = zeros(elt, d, d, 1)
+    # Projected-purification balancing operators are unit shifts, not bosons.
+    bal_lower = zeros(elt, d, d, 1)
+    bal_raise = zeros(elt, d, d, 1)
     for n in 1:nmax
         lower[n, n + 1, 1] = sqrt(elt(n))
         raise[n + 1, n, 1] = sqrt(elt(n))
+        bal_lower[n, n + 1, 1] = one(elt)
+        bal_raise[n + 1, n, 1] = one(elt)
     end
     Bp = TensorMap(lower, P ← P ⊗ Cm)
     Bpd = TensorMap(raise, P ← P ⊗ Cp)
     # Ancilla operators act in the dual representation; the charge legs are
     # opposite so each P-B pair is neutral.
-    Bb = TensorMap(lower, Bspace ← Bspace ⊗ Cp)
-    Bbd = TensorMap(raise, Bspace ← Bspace ⊗ Cm)
+    Bb = TensorMap(bal_lower, Bspace ← Bspace ⊗ Cp)
+    Bbd = TensorMap(bal_raise, Bspace ← Bspace ⊗ Cm)
     nmat = zeros(elt, d, d)
     for n in 0:nmax
         nmat[n + 1, n + 1] = elt(n)
