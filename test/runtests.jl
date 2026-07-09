@@ -123,6 +123,20 @@ function dense_two_leaf_star_ttno(O)
     return reshape(M, d0 * d1 * d2, d0 * d1 * d2)
 end
 
+struct LocalZEvolver <: Evolver
+    site::Symbol
+    omega::Float64
+end
+
+function GRAFT.step!(ev::LocalZEvolver, ψ::TTNS, ::TTNO, dz::Number)
+    P = physspace(ψ, nodeindex(topology(ψ), ev.site))
+    U = TensorMap(ComplexF64[exp(dz * ev.omega) 0; 0 exp(-dz * ev.omega)], P ← P)
+    ϕ = apply_local(ψ, U, ev.site)
+    ψ.tensors .= ϕ.tensors
+    ψ.center = center(ϕ)
+    return ψ
+end
+
 @testset "GRAFT.jl" begin
 
 @testset "Trees: topology & paths" begin
@@ -504,6 +518,33 @@ end
     @test real(expect(ψ, O)) ≈ E0 atol = 1e-3
     @test supports_complex_step(TDVP1)
     @test !supports_complex_step(ImplicitLogTime)
+end
+
+@testset "local insertions and zero-temperature correlators" begin
+    S = spin_ops()
+    topo = mps_topology(2)
+    phys = allspin(topo)
+    ψ0 = product_ttns(ComplexF64, topo, Dict(:site1 => [1.0, 0.0], :site2 => [0.0, 1.0]))
+    ω = 0.4
+    H = OpSum()
+    H += Term(ω, SiteOp(:site1, :Z, S.Z))
+    O = ttno_from_opsum(H, topo, phys; hermitian=true)
+    v0 = to_dense(ψ0)
+    E0 = real(dot(v0, dense_hamiltonian(H, ψ0) * v0))
+
+    ϕ = apply_local(ψ0, S.X, :site1)
+    @test center(ϕ) == nodeindex(topo, :site1)
+    @test check_arrows(ϕ)
+    @test norm(to_dense(ϕ) - dense_hamiltonian(OpSum() + Term(1.0, SiteOp(:site1, :X, S.X)), ψ0) * v0) < 1e-12
+    @test norm(to_dense(ψ0) - v0) < 1e-12
+
+    ts = [0.0, 0.05, 0.11]
+    vals = correlator(ψ0, E0, :site1 => S.X, :site1 => S.X, ts;
+                      H=O, evolver=LocalZEvolver(:site1, ω))
+    X1 = dense_hamiltonian(OpSum() + Term(1.0, SiteOp(:site1, :X, S.X)), ψ0)
+    Hd = dense_hamiltonian(H, ψ0)
+    ref = [exp(im * E0 * t) * dot(X1 * v0, exact_evolve(Hd, X1 * v0, -im * t)) for t in ts]
+    @test norm(vals - ref) < 1e-10
 end
 
 @testset "checkpoint / resume" begin

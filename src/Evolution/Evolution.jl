@@ -26,7 +26,7 @@ using ..Trees
 using ..Networks
 using ..Contractions
 
-export Evolver, step!, evolve!, supports_complex_step,
+export Evolver, step!, evolve!, correlator, supports_complex_step,
     TDVP1, TDVP2, TDVP1_CBE, GlobalKrylov, GSE_TDVP, LSE_TDVP, TEBD, BUG,
     FixedBUG, ImplicitLogTime
 
@@ -55,6 +55,64 @@ function evolve!(ev::Evolver, ψ::TTNS, H::TTNO, dz::Number, nsteps::Int;
         callback === nothing || callback(ψ, i)
     end
     return ψ
+end
+
+"""
+    correlator(ψ0, E0, A, B, ts; H, evolver) -> Vector
+
+Single-evolution zero-temperature real-time correlator
+
+`⟨ψ0| A exp(-im * (H - E0) * t) B |ψ0⟩`
+
+for neutral local insertions `A = site => op`, `B = site => op`. The initial
+state is assumed to be an eigenstate with energy `E0`; for non-eigenstate
+snapshots the two-evolution form `⟨Aψ0(t)|Bψ0(t)⟩` should be implemented as a
+separate driver. `ts` must be real, nonnegative, and nondecreasing. `H` is a
+required keyword to avoid hidden solver state (§9.9), and the supplied evolver
+is deep-copied with its cache reset when it owns one.
+"""
+function correlator(ψ0::TTNS, E0::Number, A, B, ts; H::TTNO, evolver::Evolver)
+    eltype(ψ0) <: Complex ||
+        throw(ArgumentError("correlator real-time evolution requires a complex-eltype TTNS; convert explicitly"))
+    topology(H) == topology(ψ0) || throw(ArgumentError("correlator: H and ψ0 have mismatched topologies"))
+    Asite, Aop = _local_insertion(A)
+    Bsite, Bop = _local_insertion(B)
+    bra = apply_local(ψ0, Aop', Asite)
+    ket = apply_local(ψ0, Bop, Bsite)
+    times = collect(ts)
+    valtype = typeof(inner(bra, ket))
+    isempty(times) && return valtype[]
+
+    ev = _fresh_evolver(evolver)
+    τprev = zero(real(times[1]))
+    vals = Vector{typeof(exp(im * E0 * τprev) * inner(bra, ket))}(undef, length(times))
+    for i in eachindex(times)
+        isreal(times[i]) || throw(ArgumentError("correlator times must be real"))
+        τ = real(times[i])
+        τ >= zero(τ) || throw(ArgumentError("correlator times must be nonnegative"))
+        τ >= τprev || throw(ArgumentError("correlator times must be nondecreasing"))
+        dt = τ - τprev
+        iszero(dt) || step!(ev, ket, H, -im * dt)
+        vals[i] = exp(im * E0 * τ) * inner(bra, ket)
+        τprev = τ
+    end
+    return vals
+end
+
+_local_insertion(x) =
+    throw(ArgumentError("local insertion must be `site::Symbol => op::AbstractTensorMap`"))
+function _local_insertion(x::Pair)
+    x.first isa Symbol || throw(ArgumentError("local insertion site must be a Symbol"))
+    x.second isa AbstractTensorMap || throw(ArgumentError("local insertion operator must be an AbstractTensorMap"))
+    return x.first, x.second
+end
+
+function _fresh_evolver(ev::Evolver)
+    evrun = deepcopy(ev)
+    if hasproperty(evrun, :cache)
+        setproperty!(evrun, :cache, nothing)
+    end
+    return evrun
 end
 
 """

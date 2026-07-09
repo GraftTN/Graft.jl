@@ -13,7 +13,7 @@ using ..Trees
 
 export TTNS, TTNO, TTNDO, topology, center, hasphys, physleg, parentleg,
     physspace, virtualspace, check_arrows, move_center!, update_tensor!,
-    normalize!, ishermitian, invalidate_node!, invalidate_edge!
+    normalize!, apply_local, ishermitian, invalidate_node!, invalidate_edge!
 
 include("ttns.jl")
 include("ttno.jl")

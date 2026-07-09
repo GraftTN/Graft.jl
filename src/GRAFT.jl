@@ -68,7 +68,7 @@ export TreeTopology, nnodes, nodeid, nodeindex, isleaf, leaves, neighbors,
     is_t3ns
 # L2/L3
 export TTNS, TTNO, TTNDO, topology, center, move_center!, update_tensor!,
-    normalize!, check_arrows, physspace, virtualspace,
+    normalize!, check_arrows, physspace, virtualspace, apply_local,
     EnvCache, inner, expect, eff_h1, eff_h0, eff_h2
 # L4
 export OpSum, Term, SiteOp, charge, spin_ops, boson_ops, boson_ops_pp,
@@ -76,7 +76,7 @@ export OpSum, Term, SiteOp, charge, spin_ops, boson_ops, boson_ops_pp,
     Lindbladian, ppdress, ttno_from_opsum
 # L5
 export dmrg1!, dmrg2!, dmrg1_3s!, expand!,
-    Evolver, step!, evolve!, supports_complex_step,
+    Evolver, step!, evolve!, correlator, supports_complex_step,
     TDVP1, TDVP2, TDVP1_CBE, GlobalKrylov, TEBD, BUG, ImplicitLogTime,
     ThermalRep, Purified, METTS, thermalize
 # L6 + cross-cutting

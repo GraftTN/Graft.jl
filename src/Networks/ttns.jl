@@ -157,6 +157,30 @@ function update_tensor!(ψ::TTNS, n::Int, A::AbstractTensorMap; caches=(), gauge
     return ψ
 end
 
+"""
+    apply_local(ψ, op, site; cache=nothing) -> TTNS
+
+Return the unnormalized state `op_site * ψ` for a neutral local operator
+`op :: P <- P`. The orthogonality center is moved through [`move_center!`](@ref)
+and the tensor write goes through [`update_tensor!`](@ref), so any supplied
+cache receives the normal invalidation event. Charged insertions that change
+the root sector are TODO(B5b).
+"""
+function apply_local(ψ::TTNS, op::AbstractTensorMap, site::Symbol; cache=nothing)
+    numout(op) == numin(op) == 1 ||
+        throw(ArgumentError("apply_local currently supports neutral single-site operators only; TODO(B5b) charged root-sector shifts"))
+    ϕ = copy(ψ)
+    n = nodeindex(ϕ.topo, site)
+    move_center!(ϕ, n; cache)
+    p = physleg(ϕ, n)
+    A = ϕ.tensors[n]
+    codomain(op)[1] == space(A, p) && domain(op)[1] == space(A, p) ||
+        throw(SpaceMismatch("apply_local: operator space does not match physical leg at $site"))
+    out = absorb_on_leg(A, op, p)
+    update_tensor!(ϕ, n, repartition(out, numout(A), numin(A)); caches=cache === nothing ? () : (cache,))
+    return ϕ
+end
+
 # Cache-notification hooks; Contractions owns the real implementations for its
 # EnvCache. Defined here as generic no-op fallbacks so Networks stays below
 # Contractions in the layering.
