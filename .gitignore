@@ -1,0 +1,18 @@
+# Julia artifacts
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+/Manifest.toml
+/docs/Manifest.toml
+/docs/build/
+/deps/deps.jl
+/deps/build.log
+
+# checkpoints / data produced by runs
+*.jld2
+*.h5
+*.hdf5
+
+# editors / OS
+*.swp
+.vscode/

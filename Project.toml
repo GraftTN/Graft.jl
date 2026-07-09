@@ -1,0 +1,25 @@
+name = "GRAFT"
+uuid = "917c9ffe-6c79-4950-b61c-1fe8fbfdf188"
+authors = ["weiyiguo9"]
+version = "0.1.0"
+
+[deps]
+JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
+KrylovKit = "0b1a1467-8014-51b9-945f-bf0ae24f4b77"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+TensorKit = "07d1fe3e-3e46-537d-9eac-e9e13d0d4cec"
+TensorOperations = "6aa20fa7-93e2-5fca-9bc0-fbd0db3c71a2"
+
+[compat]
+JLD2 = "0.6"
+KrylovKit = "0.10"
+TensorKit = "0.17"
+TensorOperations = "5"
+julia = "1.10"
+
+[extras]
+Test = "8dfed614-c452-5f7f-a2b2-ea7d01f6da05"
+
+[targets]
+test = ["Test"]
