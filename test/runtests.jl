@@ -663,6 +663,7 @@ end
 
 if lowercase(get(ENV, "GRAFT_LONG_B5", "false")) in ("1", "true", "yes")
     include("b5_holstein_tdvp_chi.jl")
+    include("b5_fz2_hopping_green.jl")
 end
 
 @testset "checkpoint / resume" begin
