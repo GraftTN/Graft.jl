@@ -177,8 +177,8 @@ end
 
 # TODO: als!/lobpcg! ports (PyTreeNet dmrg/als.py, lobpcg.py) as alternative
 #   local eigensolvers; als.py doubles as the starting point for `linsolve!`.
-# TODO(M0): Networks.fit! (variational fitting) — PyTreeNet
-#   dmrg/variational_fitting.py; shared with GK/GSE/METTS (§11.6).
+# Variational fitting lives in Networks.fit! (§11.6), where it can be shared by
+# GK/GSE/METTS-style compression without creating a GroundState dependency path.
 
 function _edge_child_parent(t::TreeTopology, edge::Pair)
     a, b = nodeindex(t, edge.first), nodeindex(t, edge.second)

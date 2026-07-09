@@ -22,10 +22,9 @@ include("apply.jl")
 include("fit.jl")
 
 # ---------------------------------------------------------------------------
-# TODO(M0/M1, architecture §3 "通用操作"):
-#   operator-weighted fitting `fit!(φ, sources; Hs, coeffs)` — PyTreeNet
-#       variational_fitting generalizes this state-compression primitive to
-#       sums of operator applications for GK/GSE/METTS (§11.6).
+# Generic operations implemented here: `apply(O::TTNO, ψ::TTNS)` and
+# `fit!(φ, sources; Hs, coeffs)` (§3/§11.6). Future extensions should build on
+# these public primitives rather than adding private compression paths.
 # ---------------------------------------------------------------------------
 
 end # module Networks
