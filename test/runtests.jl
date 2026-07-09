@@ -248,6 +248,23 @@ end
     initial = norm(to_dense(φlow) - to_dense(target))
     _, errslow = fit!(φlow, target; nsweeps=4)
     @test errslow[end] < initial
+
+    target2 = apply(ttno_from_opsum(OpSum() + Term(0.3, SiteOp(:site1, :Z, S.Z)),
+                                    topo, phys; hermitian=true), ψ)
+    coeffs = ComplexF64[1.0, -0.4im]
+    φsum = random_ttns(RNG, ComplexF64, topo, phys, ℂ^4)
+    _, errsum = fit!(φsum, (target, target2); coeffs, nsweeps=4)
+    refsum = coeffs[1] * to_dense(target) + coeffs[2] * to_dense(target2)
+    @test errsum[end] < 1e-8
+    @test norm(to_dense(φsum) - refsum) < 1e-8
+
+    O2 = ttno_from_opsum(OpSum() + Term(0.3, SiteOp(:site1, :Z, S.Z)),
+                         topo, phys; hermitian=true)
+    φop = random_ttns(RNG, ComplexF64, topo, phys, ℂ^4)
+    _, errop = fit!(φop, (ψ, ψ); Hs=(O, O2), coeffs, nsweeps=4)
+    refop = coeffs[1] * to_dense(apply(O, ψ)) + coeffs[2] * to_dense(apply(O2, ψ))
+    @test errop[end] < 1e-8
+    @test norm(to_dense(φop) - refop) < 1e-8
 end
 
 @testset "charged TTNO builder vs dense" begin
