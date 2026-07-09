@@ -128,7 +128,8 @@ A sum of product terms. Build with `+=`:
 Implemented discrete boson helpers: [`boson_modes`](@ref) and
 [`BosonCoupling`](@ref). Local abelian charged libraries are provided by
 [`spin_ops_u1`](@ref), [`boson_ops_u1`](@ref), and
-[`fermion_ops_z2`](@ref). TODO(M0+/M5, §4a): structured matrix generators
+[`fermion_ops_z2`](@ref). TODO(future structured-generator milestone, §4a):
+structured matrix generators
 `Hopping(t)`, `Coulomb(V)` (via ISDF-THC/SVD pre-factorization, §4b),
 `Hybridization(Vk, εk)`. Continuous `BosonBath(ImU)` lives in `Impurity` and
 lowers to these discrete helpers after fitting.

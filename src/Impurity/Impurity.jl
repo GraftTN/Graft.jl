@@ -127,8 +127,9 @@ from day one (§6.3).
 Mandatory self-checks to implement with it (§6.3): (1) β·δε ≪ 1 resolution
 check; (2) loop-bath vs final-bath both projected back to Δ(iωₙ) and compared.
 Global fitting across the whole Δ matrix while ignoring `P` is a forbidden
-path — the interface does not offer it. TODO(M0+): replace/augment midpoint
-with adapol-style AAA initialization plus nonlinear refinement.
+path — the interface does not offer it. TODO(B4+ future refinement):
+replace/augment midpoint with adapol-style AAA initialization plus nonlinear
+refinement.
 """
 function fit_bath(J, P::Partition; T::Real=0, kind::Symbol=:boson,
                   nmodes::Integer=8, wmin=nothing, wmax=nothing,
@@ -136,7 +137,7 @@ function fit_bath(J, P::Partition; T::Real=0, kind::Symbol=:boson,
                   method::Symbol=:midpoint, crossblock::Symbol=:highmount)
     T == 0 || throw(ArgumentError("fit_bath T > 0 is TODO(M2): thermofield star fitting is not part of the forwarded T=0 boson path"))
     kind == :boson || throw(ArgumentError("fit_bath currently implements only kind=:boson for the forwarded B4 path"))
-    method == :midpoint || throw(ArgumentError("fit_bath method=$method is unavailable; TODO(M0+) adapol/AAA refinement"))
+    method == :midpoint || throw(ArgumentError("fit_bath method=$method is unavailable; TODO(B4+ future) adapol/AAA refinement"))
     crossblock in (:highmount, :rotate) ||
         throw(ArgumentError("crossblock must be :highmount or :rotate"))
     nmodes > 0 || throw(ArgumentError("nmodes must be positive"))
@@ -250,17 +251,18 @@ end
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# §6.4 measurements — G(τ) on sparse IR/DLR grids, G(t), F(t) improved
-# estimators (Σ = F·G⁻¹), χ_ch(τ) two-particle (EDMFT W-loop), TRIQS BlockGf
-# round-trip. TODO(M0–M2). §6.5 Spectral post-processing (LP/ESPRIT +
-# complex-time Krylov Gram matrices) is milestone-1 scope but consumes evolver
-# snapshots only — lands as a separate file once Evolution is validated. TODO.
+# §6.4 measurements — impurity-solver data products beyond the forwarded B5
+# local correlator snapshots: sparse IR/DLR grids, F(t) improved estimators
+# (Σ = F·G⁻¹), χ_ch(τ) two-particle output, and TRIQS BlockGf round-trip.
+# TODO(future impurity-measurement milestone). §6.5 spectral post-processing
+# consumes Evolver snapshots but is a separate M1+ post-processing surface.
 # ---------------------------------------------------------------------------
 
-# TODO(M0+): the single self-consistency-facing entry point (§6.6). GRAFT does
-# NOT implement the DMFT/EDMFT loop itself. Contract: `ψ0` warm starts are
-# first-class (topology hash validated — refuse silently rebuilt geometry);
-# basis rotations `U` are returned with the results, loop side stays oblivious.
+# TODO(future impurity-solver integration): the single self-consistency-facing
+# entry point (§6.6). GRAFT does NOT implement the DMFT/EDMFT loop itself.
+# Contract: `ψ0` warm starts are first-class (topology hash validated — refuse
+# silently rebuilt geometry); basis rotations `U` are returned with the results,
+# loop side stays oblivious.
 """
     solve(bath, H_loc; partition, T, observables, ψ0=nothing) -> (; G, Σ, χ, ψ, U)
 
