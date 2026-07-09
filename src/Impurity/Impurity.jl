@@ -9,12 +9,13 @@ Never referenced by any lower layer (§9.10). Owns *no* private geometry code
 """
 module Impurity
 
+using LinearAlgebra: norm
 using ..Trees
 using ..Networks
 using ..Symbolic
 
 export Partition, audit_partition, BathParametrization, RealPoles, ComplexPoles,
-    couplings, mount_bath, fit_bath, BosonBath, solve
+    couplings, matsubara_reconstruct, mount_bath, fit_bath, BosonBath, solve
 
 # ---------------------------------------------------------------------------
 # §6.2 Partition: a *user declaration* on the impurity orbitals; H_bath never
@@ -99,6 +100,25 @@ Base.length(b::RealPoles) = length(b.poles)
 couplings(b::RealPoles) = sqrt.(b.residues)
 
 """
+    matsubara_reconstruct(bath::RealPoles, frequencies; block=1, kind=:boson)
+
+Project a real-pole Hamiltonian bath back to the supplied Matsubara grid. For
+the forwarded boson path, `kind=:boson` uses
+`sum_k 2ω_k g_k^2 / (ν_n^2 + ω_k^2)` for each partition block.
+"""
+function matsubara_reconstruct(bath::RealPoles, frequencies; block::Integer=1,
+                               kind::Symbol=:boson)
+    kind == :boson ||
+        throw(ArgumentError("matsubara_reconstruct currently supports kind=:boson"))
+    1 <= block <= length(bath.block_ranges) ||
+        throw(ArgumentError("block index out of range"))
+    νs = _matsubara_frequencies(frequencies)
+    r = bath.block_ranges[block]
+    A = _boson_matsubara_kernel(νs, bath.poles[r])
+    return A * bath.residues[r]
+end
+
+"""
     ComplexPoles
 
 Type slot ONLY (§6.3): quasi-Lindblad pseudomode baths (complex poles). Kept so
@@ -109,14 +129,16 @@ struct ComplexPoles <: BathParametrization end
 
 """
     fit_bath(J, P::Partition; T=0, kind=:boson, nmodes, ωmin, ωmax,
-             grid=:linear, method=:midpoint, crossblock=:highmount) -> RealPoles
+             grid=:linear, method=:midpoint, domain=:real_axis,
+             crossblock=:highmount) -> RealPoles
 
-Blockwise T=0 real-pole fitting of a continuous boson spectral density `J(ω)`.
-The M0 implementation is deterministic midpoint quadrature: each bin produces
-one pole at the bin midpoint and a residue `g_k^2 = ∫_bin J(ω)dω` approximated
-by the midpoint rule. `J` may be one function shared by all blocks or a vector
-of one function per partition block. The partition argument is in the signature
-from day one (§6.3).
+Blockwise real-pole Hamiltonian-bath fitting for the forwarded boson path.
+`domain=:real_axis` consumes a continuous boson spectral density `J(ω)` and
+uses deterministic midpoint quadrature: each bin produces one pole at the bin
+midpoint and a residue `g_k^2 = ∫_bin J(ω)dω` approximated by the midpoint
+rule. `domain=:matsubara` consumes samples `(; frequencies, values)` (or one
+such object per partition block) and solves for nonnegative real-pole residues
+whose Matsubara reconstruction matches the input grid.
 
 * `T = 0`: Δ(iωₙ)/Δ(ω) → real-pole fit per block.
 * `T > 0` (TODO M2): thermofield star encoding — fit Γf and Γ(1−f) (fermions) /
@@ -134,34 +156,42 @@ refinement.
 function fit_bath(J, P::Partition; T::Real=0, kind::Symbol=:boson,
                   nmodes::Integer=8, wmin=nothing, wmax=nothing,
                   ωmin=nothing, ωmax=nothing, grid::Symbol=:linear,
-                  method::Symbol=:midpoint, crossblock::Symbol=:highmount)
+                  method::Symbol=:midpoint, domain::Symbol=:real_axis,
+                  crossblock::Symbol=:highmount)
     T == 0 || throw(ArgumentError("fit_bath T > 0 is TODO(M2): thermofield star fitting is not part of the forwarded T=0 boson path"))
     kind == :boson || throw(ArgumentError("fit_bath currently implements only kind=:boson for the forwarded B4 path"))
-    method == :midpoint || throw(ArgumentError("fit_bath method=$method is unavailable; TODO(B4+ future) adapol/AAA refinement"))
     crossblock in (:highmount, :rotate) ||
         throw(ArgumentError("crossblock must be :highmount or :rotate"))
     nmodes > 0 || throw(ArgumentError("nmodes must be positive"))
     lo = _bound("ωmin", wmin, ωmin)
     hi = _bound("ωmax", wmax, ωmax)
     lo < hi || throw(ArgumentError("ωmin must be smaller than ωmax"))
+    dom = _canonical_domain(domain)
+    fitmethod = _canonical_fit_method(method, dom)
 
-    targets = _block_targets(J, P)
+    targets = dom == :real_axis ? _block_targets(J, P) : _matsubara_targets(J, P)
     poles = Float64[]
     residues = Float64[]
     ranges = UnitRange{Int}[]
     block_diags = map(enumerate(targets)) do (i, target)
         start = length(poles) + 1
-        p, r = _midpoint_modes(target, lo, hi, Int(nmodes), grid)
+        p, r, diag = if dom == :real_axis
+            p, r = _midpoint_modes(target, lo, hi, Int(nmodes), grid)
+            p, r, _fit_diagnostics(target, p, r, lo, hi, Int(nmodes), grid, i)
+        else
+            _fit_matsubara_modes(target, lo, hi, Int(nmodes), grid, i)
+        end
         append!(poles, p)
         append!(residues, r)
         stop = length(poles)
         push!(ranges, start:stop)
-        _fit_diagnostics(target, p, r, lo, hi, Int(nmodes), grid, i)
+        diag
     end
     diagnostics = (;
         kind,
         T = 0.0,
-        method,
+        method = fitmethod,
+        domain = dom,
         grid,
         nmodes = Int(nmodes),
         ωmin = lo,
@@ -302,6 +332,145 @@ function _block_targets(J, P::Partition)
     else
         throw(ArgumentError("fit_bath expects a spectral-density function or one function per partition block"))
     end
+end
+
+function _canonical_domain(domain::Symbol)
+    domain in (:real_axis, :real, :spectral) && return :real_axis
+    domain in (:matsubara, :iw, :iω, :iν) && return :matsubara
+    throw(ArgumentError("fit_bath domain must be :real_axis or :matsubara"))
+end
+
+function _canonical_fit_method(method::Symbol, domain::Symbol)
+    if domain == :real_axis
+        method == :midpoint ||
+            throw(ArgumentError("fit_bath method=$method is unavailable for domain=:real_axis; TODO(B4+ future) adapol/AAA refinement"))
+        return method
+    end
+    method in (:midpoint, :least_squares, :lsq) ||
+        throw(ArgumentError("fit_bath method=$method is unavailable for domain=:matsubara; use :least_squares"))
+    return :least_squares
+end
+
+function _matsubara_targets(data, P::Partition)
+    n = length(P.blocks)
+    if data isa NamedTuple
+        νs, vals = _matsubara_dataset(data)
+        if vals isa AbstractMatrix
+            size(vals, 1) == length(νs) ||
+                throw(ArgumentError("Matsubara value matrix must have one row per frequency"))
+            size(vals, 2) == n ||
+                throw(ArgumentError("Matsubara value matrix needs one column per partition block"))
+            return [(νs, collect(vals[:, i])) for i in 1:n]
+        elseif vals isa AbstractVector && length(vals) == n &&
+               all(v -> v isa AbstractVector, vals)
+            return [(νs, _matsubara_values(v)) for v in vals]
+        else
+            n == 1 ||
+                throw(ArgumentError("single Matsubara value vector only fits a one-block partition"))
+            return [(νs, _matsubara_values(vals))]
+        end
+    elseif data isa AbstractVector && length(data) == n &&
+           all(x -> x isa NamedTuple, data)
+        return [_matsubara_dataset(x) for x in data]
+    else
+        throw(ArgumentError("domain=:matsubara expects `(; frequencies, values)` or one such NamedTuple per partition block"))
+    end
+end
+
+function _matsubara_dataset(data::NamedTuple)
+    fkey = _first_present(data, (:frequencies, :freqs, :ω, :omega, :ν, :nu,
+                                 :iω, :iw, :iν, :iv, :iwn))
+    vkey = _first_present(data, (:values, :data, :U, :u, :Δ, :Delta, :delta))
+    νs = _matsubara_frequencies(getfield(data, fkey))
+    vals = getfield(data, vkey)
+    if vals isa AbstractMatrix
+        return νs, vals
+    end
+    ys = _matsubara_values(vals)
+    length(ys) == length(νs) ||
+        throw(ArgumentError("Matsubara data needs one value per frequency"))
+    return νs, ys
+end
+
+function _first_present(data::NamedTuple, keys)
+    for k in keys
+        haskey(data, k) && return k
+    end
+    throw(ArgumentError("Matsubara data is missing one of $(keys)"))
+end
+
+function _matsubara_frequencies(xs)
+    νs = Float64[_matsubara_frequency(x) for x in xs]
+    all(isfinite, νs) || throw(ArgumentError("Matsubara frequencies must be finite"))
+    all(x -> x >= 0, νs) || throw(ArgumentError("Matsubara frequencies must be nonnegative"))
+    return νs
+end
+
+function _matsubara_frequency(x)
+    z = complex(x)
+    if abs(imag(z)) > 100eps(Float64) &&
+       abs(real(z)) <= 100eps(Float64) * max(abs(imag(z)), 1)
+        return abs(Float64(imag(z)))
+    elseif abs(imag(z)) <= 100eps(Float64) * max(abs(real(z)), 1)
+        return abs(Float64(real(z)))
+    else
+        throw(ArgumentError("Matsubara frequencies must be real magnitudes or pure-imaginary points"))
+    end
+end
+
+_matsubara_values(xs) = Float64[_matsubara_value(x) for x in xs]
+
+function _matsubara_value(x)
+    z = complex(x)
+    abs(imag(z)) <= 100eps(Float64) * max(abs(real(z)), 1) ||
+        throw(ArgumentError("bosonic Matsubara samples must be real-valued"))
+    return Float64(real(z))
+end
+
+function _fit_matsubara_modes(target, lo::Float64, hi::Float64, nmodes::Int,
+                              grid::Symbol, block_index::Int)
+    νs, values = target
+    poles = _pole_midpoints(lo, hi, nmodes, grid)
+    A = _boson_matsubara_kernel(νs, poles)
+    raw = A \ values
+    residues = max.(Float64.(raw), 0.0)
+    if any(raw .< -sqrt(eps(Float64)))
+        active = findall(>(0), residues)
+        isempty(active) || (residues[active] = max.(A[:, active] \ values, 0.0))
+    end
+    reconstructed = A * residues
+    err = reconstructed - values
+    rel = norm(err) / max(norm(values), eps(Float64))
+    maxabs = isempty(err) ? 0.0 : maximum(abs.(err))
+    maxrel = isempty(err) ? 0.0 :
+        maximum(abs(err[i]) / max(abs(values[i]), eps(Float64)) for i in eachindex(err))
+    diag = (;
+        block_index,
+        source_domain = :matsubara,
+        npoints = length(νs),
+        relative_residual = rel,
+        max_abs_error = maxabs,
+        max_rel_error = maxrel,
+        frequencies = copy(νs),
+        values = copy(values),
+        reconstructed,
+    )
+    return poles, residues, diag
+end
+
+function _pole_midpoints(lo::Float64, hi::Float64, nmodes::Int, grid::Symbol)
+    edges = _grid_edges(lo, hi, nmodes, grid)
+    return [grid == :log ? sqrt(edges[k] * edges[k + 1]) :
+            (edges[k] + edges[k + 1]) / 2 for k in 1:nmodes]
+end
+
+function _boson_matsubara_kernel(νs, poles)
+    A = Matrix{Float64}(undef, length(νs), length(poles))
+    for i in eachindex(νs), j in eachindex(poles)
+        ω = poles[j]
+        A[i, j] = 2 * ω / (νs[i]^2 + ω^2)
+    end
+    return A
 end
 
 function _grid_edges(lo::Float64, hi::Float64, nmodes::Int, grid::Symbol)
