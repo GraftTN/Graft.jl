@@ -141,7 +141,7 @@ end
 end
 
 @testset "DMRG vs ED" begin
-    topo = star_topology(3, 2)
+    topo = star_topology(3, 1)
     phys = allspin(topo)
     H = tfi(topo; g=0.9)
     O = ttno_from_opsum(H, topo, phys; hermitian=true)
@@ -151,6 +151,23 @@ end
     @test Es[end] ≈ E0 atol = 1e-10
     _, Es1 = dmrg1!(ψ, O; nsweeps=4)
     @test Es1[end] ≈ E0 atol = 1e-10
+
+    ψx = random_ttns(RNG, ComplexF64, topo, phys, ℂ^1)
+    vx = to_dense(ψx)
+    leaf = leaves(topo)[1]
+    expand!(ψx, O, (leaf, topo.parent[leaf]);
+            trunc=TruncationScheme(maxdim=4), max_add=3)
+    @test norm(to_dense(ψx) - vx) < 1e-10
+    @test maximum(bonddims(ψx)) > 1
+    @test_throws ArgumentError expand!(ψx, O, (leaf, topo.parent[leaf]);
+                                       scheme=:rsvd,
+                                       trunc=TruncationScheme(maxdim=4), max_add=1)
+
+    ψ3 = random_ttns(RNG, ComplexF64, topo, phys, ℂ^1)
+    _, Es3 = dmrg1_3s!(ψ3, O; trunc=TruncationScheme(maxdim=16),
+                       nsweeps=5, max_add=4)
+    @test Es3[end] ≈ E0 atol = 1e-8
+    @test maximum(bonddims(ψ3)) > 1
 end
 
 @testset "bosons (trivial sector)" begin

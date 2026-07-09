@@ -74,7 +74,7 @@ export TTNS, TTNO, TTNDO, topology, center, move_center!, update_tensor!,
 export OpSum, Term, SiteOp, spin_ops, boson_ops, boson_modes, BosonCoupling,
     Lindbladian, ttno_from_opsum
 # L5
-export dmrg1!, dmrg2!, expand!,
+export dmrg1!, dmrg2!, dmrg1_3s!, expand!,
     Evolver, step!, evolve!, supports_complex_step,
     TDVP1, TDVP2, TDVP1_CBE, GlobalKrylov, TEBD, BUG, ImplicitLogTime,
     ThermalRep, Purified, METTS, thermalize
