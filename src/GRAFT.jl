@@ -64,13 +64,15 @@ export TruncationScheme, FermionSector, AbelianSector
 # L1
 export TreeTopology, nnodes, nodeid, nodeindex, isleaf, leaves, neighbors,
     postorder, preorder, path_between, tdvp_update_path,
-    mps_topology, star_topology, binary_topology, fork_topology, is_t3ns
+    mps_topology, star_topology, binary_topology, fork_topology, mount_chain,
+    is_t3ns
 # L2/L3
 export TTNS, TTNO, TTNDO, topology, center, move_center!, update_tensor!,
     normalize!, check_arrows, physspace, virtualspace,
     EnvCache, inner, expect, eff_h1, eff_h0, eff_h2
 # L4
-export OpSum, Term, SiteOp, spin_ops, boson_ops, Lindbladian, ttno_from_opsum
+export OpSum, Term, SiteOp, spin_ops, boson_ops, boson_modes, BosonCoupling,
+    Lindbladian, ttno_from_opsum
 # L5
 export dmrg1!, dmrg2!, expand!,
     Evolver, step!, evolve!, supports_complex_step,

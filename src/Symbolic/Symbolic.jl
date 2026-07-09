@@ -19,7 +19,7 @@ module Symbolic
 using ..Backend
 
 export SiteOp, Term, OpSum, sites, coefficient, nterms, spin_ops, boson_ops,
-    Lindbladian, ppdress, su2reduce, modereorder
+    boson_modes, BosonCoupling, Lindbladian, ppdress, su2reduce, modereorder
 
 """
     SiteOp(site, name, op)
@@ -76,10 +76,11 @@ A sum of product terms. Build with `+=`:
     H = OpSum()
     H += Term(-1.0, SiteOp(:s1, :Z, Z), SiteOp(:s2, :Z, Z))
 
-TODO(M0/M5, §4a): structured generators `Hopping(t)`, `Coulomb(V)` (via
-ISDF-THC/SVD pre-factorization, §4b), `Hybridization(Vk, εk)`,
-`BosonBath(ImU)`, `BosonCoupling(g, :density|:hopping)` — each expands into
-plain `Term`s here.
+Implemented discrete boson helpers: [`boson_modes`](@ref) and
+[`BosonCoupling`](@ref). TODO(M0/M5, §4a): structured fermion generators
+`Hopping(t)`, `Coulomb(V)` (via ISDF-THC/SVD pre-factorization, §4b),
+`Hybridization(Vk, εk)`. Continuous `BosonBath(ImU)` lives in `Impurity` and
+lowers to these discrete helpers after fitting.
 """
 struct OpSum
     terms::Vector{Term}
@@ -128,7 +129,7 @@ function spin_ops(; elt::Type{<:Number}=ComplexF64)
 end
 
 """
-    boson_ops(nmax; elt=Float64) -> (; B, Bd, N, I, P)
+    boson_ops(nmax; elt=Float64) -> (; B, Bd, X, N, I, P)
 
 Truncated boson (d = nmax+1) on trivial-sector space. TODO(M5): U(1)_PP graded
 version for projected purification (PPDress pass).
@@ -140,15 +141,131 @@ function boson_ops(nmax::Int; elt::Type{<:Number}=Float64)
     for n in 1:nmax
         b[n, n + 1] = sqrt(elt(n))
     end
+    bd = collect(transpose(b))
     B = TensorMap(b, P ← P)
-    Bd = TensorMap(collect(b'), P ← P)
+    Bd = TensorMap(bd, P ← P)
+    X = TensorMap(b .+ bd, P ← P)
     N = TensorMap(collect((b' * b)), P ← P)
     I = TensorMap(Matrix{elt}(LinearAlgebra_I(d)), P ← P)
-    return (; B, Bd, N, I, P)
+    return (; B, Bd, X, N, I, P)
 end
 
 # small identity helper without pulling LinearAlgebra into the public surface
 LinearAlgebra_I(d::Int) = [i == j ? 1.0 : 0.0 for i in 1:d, j in 1:d]
+
+"""
+    boson_modes(modes; ops, site_prefix=:b) -> OpSum
+
+Expand already-discretized boson modes into `sum_k omega_k n_k`. `ops` is the
+operator tuple from [`boson_ops`](@ref). Each mode may be `site => omega`,
+`(omega, site)`, `(site, omega)`, a bare `omega` (site `Symbol(site_prefix, k)`),
+or a named tuple with `site` and `omega`/`ω`.
+"""
+function boson_modes(modes; ops, site_prefix::Symbol=:b)
+    H = OpSum()
+    for (k, mode) in enumerate(modes)
+        site, omega = _mode_site_omega(mode, k, site_prefix)
+        H += Term(omega, SiteOp(site, :N, ops.N))
+    end
+    return H
+end
+
+"""
+    BosonCoupling(couplings, kind; matter_ops, boson_ops, density=:N) -> OpSum
+
+Expand discrete matter-boson couplings into plain product terms. `kind=:density`
+accepts couplings as `(g, matter_site, boson_site)` or
+`(matter_site, boson_site) => g` and emits `g n_m X_b`.
+
+`kind=:hopping` accepts `(g, left_site, right_site, boson_site)` or
+`(left_site, right_site, boson_site) => g` and emits the SSH/Peierls form
+`g Sp_left Sm_right X_b + conj(g) Sm_left Sp_right X_b`. The default
+`Sp`/`Sm` names match `spin_ops`; callers with fermionic charged operators can
+pass compatible operator tuples once B2 lands.
+"""
+function BosonCoupling(couplings, kind::Symbol; matter_ops, boson_ops,
+                       density::Symbol=:N, create::Symbol=:Sp,
+                       destroy::Symbol=:Sm)
+    H = OpSum()
+    X = _opfield(boson_ops, :X)
+    if kind == :density
+        n_op = _opfield(matter_ops, density)
+        for c in couplings
+            g, matter_site, boson_site = _density_coupling(c)
+            H += Term(g, SiteOp(matter_site, density, n_op),
+                      SiteOp(boson_site, :X, X))
+        end
+    elseif kind == :hopping
+        c_op = _opfield(matter_ops, create)
+        a_op = _opfield(matter_ops, destroy)
+        for c in couplings
+            g, left_site, right_site, boson_site = _hopping_coupling(c)
+            H += Term(g, SiteOp(left_site, create, c_op),
+                      SiteOp(right_site, destroy, a_op),
+                      SiteOp(boson_site, :X, X))
+            H += Term(conj(g), SiteOp(left_site, destroy, a_op),
+                      SiteOp(right_site, create, c_op),
+                      SiteOp(boson_site, :X, X))
+        end
+    else
+        throw(ArgumentError("unknown BosonCoupling kind $kind; expected :density or :hopping"))
+    end
+    return H
+end
+
+function _mode_site_omega(mode::Pair, ::Int, ::Symbol)
+    mode.first isa Symbol || throw(ArgumentError("mode pair must be site => omega"))
+    return mode.first, mode.second
+end
+function _mode_site_omega(mode::Tuple, ::Int, ::Symbol)
+    length(mode) == 2 || throw(ArgumentError("mode tuple must have two entries"))
+    a, b = mode
+    if a isa Number && b isa Symbol
+        return b, a
+    elseif a isa Symbol && b isa Number
+        return a, b
+    else
+        throw(ArgumentError("mode tuple must be (omega, site) or (site, omega)"))
+    end
+end
+_mode_site_omega(omega::Number, k::Int, site_prefix::Symbol) = Symbol(site_prefix, k), omega
+function _mode_site_omega(mode::NamedTuple, ::Int, ::Symbol)
+    haskey(mode, :site) || throw(ArgumentError("mode named tuple needs a `site` field"))
+    omega = haskey(mode, :omega) ? mode.omega :
+        (haskey(mode, :ω) ? getproperty(mode, :ω) :
+         throw(ArgumentError("mode named tuple needs `omega` or `ω`")))
+    return mode.site, omega
+end
+
+function _density_coupling(c::Pair)
+    sites = c.first
+    sites isa Tuple && length(sites) == 2 ||
+        throw(ArgumentError("density coupling pair must be (matter_site, boson_site) => g"))
+    return c.second, sites[1], sites[2]
+end
+function _density_coupling(c::Tuple)
+    length(c) == 3 ||
+        throw(ArgumentError("density coupling tuple must be (g, matter_site, boson_site)"))
+    return c[1], c[2], c[3]
+end
+
+function _hopping_coupling(c::Pair)
+    sites = c.first
+    sites isa Tuple && length(sites) == 3 ||
+        throw(ArgumentError("hopping coupling pair must be (left_site, right_site, boson_site) => g"))
+    return c.second, sites[1], sites[2], sites[3]
+end
+function _hopping_coupling(c::Tuple)
+    length(c) == 4 ||
+        throw(ArgumentError("hopping coupling tuple must be (g, left_site, right_site, boson_site)"))
+    return c[1], c[2], c[3], c[4]
+end
+
+function _opfield(ops, name::Symbol)
+    hasproperty(ops, name) ||
+        throw(ArgumentError("operator tuple has no field `$name`"))
+    return getproperty(ops, name)
+end
 
 # ---------------------------------------------------------------------------
 # rewrite passes — compiler-style, applied in order to the term list (§4a)

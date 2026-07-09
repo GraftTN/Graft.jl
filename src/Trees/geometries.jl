@@ -78,6 +78,36 @@ function fork_topology(nteeth::Int, toothlength::Int; prefix::Symbol=:spine)
 end
 
 """
+    mount_chain(topo, at, len; prefix) -> TreeTopology
+
+Return a new topology with a length-`len` chain mounted below node `at`.
+`prefix` names the new nodes as `Symbol(prefix, i)`. A boson leaf is
+`len == 1`. The input topology is unchanged (§9.4).
+"""
+mount_chain(topo::TreeTopology, at::Symbol, len::Int; prefix::Symbol) =
+    mount_chain(topo, nodeindex(topo, at), len; prefix)
+function mount_chain(topo::TreeTopology, at::Int, len::Int; prefix::Symbol)
+    len >= 0 || throw(ArgumentError("mounted chain length must be nonnegative"))
+    1 <= at <= nnodes(topo) || throw(ArgumentError("invalid mount node index $at"))
+    len == 0 && return topo
+
+    new_edges = Pair{Symbol,Symbol}[
+        nodeid(topo, topo.parent[i]) => nodeid(topo, i)
+        for i in 2:nnodes(topo)
+    ]
+    existing = Set(topo.ids)
+    prev = nodeid(topo, at)
+    for i in 1:len
+        node = Symbol(prefix, i)
+        node in existing && throw(ArgumentError("mounted node id $node already exists"))
+        push!(existing, node)
+        push!(new_edges, prev => node)
+        prev = node
+    end
+    return TreeTopology(nodeid(topo, topo.root), new_edges)
+end
+
+"""
     is_t3ns(t::TreeTopology; physical=Symbol[]) -> Bool
 
 T3NS constraint predicate (architecture §6.1): every tensor has at most 3 legs.
@@ -94,5 +124,4 @@ function is_t3ns(t::TreeTopology; physical::AbstractVector{Symbol}=Symbol[])
 end
 
 # TODO(M5+): cayley_topology (Bethe lattice, coordination z), interleaved orderings,
-# boson-branch mounting helpers (they mechanically expand from the impurity
-# Partition, §6.2 — belongs to GRAFT.Impurity's geometry builder).
+# impurity-specific geometry builders from Partition (§6.2).

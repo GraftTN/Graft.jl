@@ -153,6 +153,87 @@ end
     @test Es1[end] ≈ E0 atol = 1e-10
 end
 
+@testset "bosons (trivial sector)" begin
+    S = spin_ops()
+    B = boson_ops(2)
+    @test norm(convert(Array, B.X) - (convert(Array, B.B) + convert(Array, B.Bd))) < 1e-14
+    @test eltype(convert(Array, B.X)) == Float64
+
+    topo = star_topology(2, 1; center=:spin, prefix=:b)
+    phys = Dict(:spin => S.P, :b1_1 => B.P, :b2_1 => B.P)
+    H = boson_modes([:b1_1 => 0.7, :b2_1 => 1.1]; ops=B)
+    H += Term(-0.35, SiteOp(:spin, :X, S.X))
+    H += BosonCoupling([(:spin, :b1_1) => 0.22, (:spin, :b2_1) => -0.18],
+                       :density; matter_ops=S, boson_ops=B, density=:Z)
+    O = ttno_from_opsum(H, topo, phys; hermitian=true)
+    ψ0 = random_ttns(RNG, ComplexF64, topo, phys, ℂ^6)
+    Hd = dense_hamiltonian(H, ψ0)
+    E0, _ = exact_groundstate(Hd)
+    ψd = copy(ψ0)
+    _, Es = dmrg2!(ψd, O; trunc=TruncationScheme(maxdim=12, atol=1e-12), nsweeps=6)
+    @test Es[end] ≈ E0 atol = 1e-9
+
+    dt = 0.01
+    nsteps = 2
+    ψt = random_ttns(RNG, ComplexF64, topo, phys, ℂ^8)
+    vex = exact_evolve(Hd, to_dense(ψt), -im * dt * nsteps)
+    for ev in (TDVP1(order=2),
+               TDVP2(trunc=TruncationScheme(maxdim=16, atol=1e-12)),
+               TDVP1_CBE(trunc=TruncationScheme(maxdim=16, atol=1e-12),
+                         d_tilde_max=4, enr_rtol=1e-12, enr_atol=1e-12))
+        ψe = copy(ψt)
+        for _ in 1:nsteps
+            step!(ev, ψe, O, -im * dt)
+        end
+        @test abs(1 - abs(dot(to_dense(ψe), vex))) < 1e-7
+    end
+
+    ψim = random_ttns(RNG, ComplexF64, topo, phys, ℂ^4)
+    evi = TDVP2(trunc=TruncationScheme(maxdim=12, atol=1e-10))
+    for _ in 1:30
+        step!(evi, ψim, O, -0.12)
+        normalize!(ψim)
+    end
+    @test real(expect(ψim, O)) ≈ E0 atol = 5e-3
+
+    base = mps_topology(3)
+    hol = base
+    for i in 1:3
+        hol = mount_chain(hol, Symbol(:site, i), 1; prefix=Symbol(:ph, i, :_))
+    end
+    @test nnodes(base) == 3
+    @test nnodes(hol) == 6
+    @test all(nodeindex(hol, Symbol(:ph, i, :_1)) > 0 for i in 1:3)
+
+    Bh = boson_ops(1)
+    phys_h = Dict{Symbol,typeof(S.P)}()
+    for i in 1:3
+        phys_h[Symbol(:site, i)] = S.P
+        phys_h[Symbol(:ph, i, :_1)] = Bh.P
+    end
+    Hh = boson_modes([Symbol(:ph, i, :_1) => 0.65 for i in 1:3]; ops=Bh)
+    for i in 1:3
+        Hh += Term(-0.45, SiteOp(Symbol(:site, i), :N, S.N))
+        Hh += BosonCoupling([(Symbol(:site, i), Symbol(:ph, i, :_1)) => 0.35],
+                            :density; matter_ops=S, boson_ops=Bh, density=:N)
+    end
+    for i in 1:2
+        a = Symbol(:site, i)
+        b = Symbol(:site, i + 1)
+        Hh += Term(-0.25, SiteOp(a, :Sp, S.Sp), SiteOp(b, :Sm, S.Sm))
+        Hh += Term(-0.25, SiteOp(a, :Sm, S.Sm), SiteOp(b, :Sp, S.Sp))
+        Hh += Term(0.08, SiteOp(a, :Z, S.Z), SiteOp(b, :Z, S.Z))
+    end
+    Oh = ttno_from_opsum(Hh, hol, phys_h; hermitian=true)
+    ψh = random_ttns(RNG, ComplexF64, hol, phys_h, ℂ^4)
+    Hdh = dense_hamiltonian(Hh, ψh)
+    E0h, v0h = exact_groundstate(Hdh)
+    _, Esh = dmrg2!(ψh, Oh; trunc=TruncationScheme(maxdim=16, atol=1e-12), nsweeps=6)
+    @test Esh[end] ≈ E0h atol = 1e-9
+    Nb = boson_modes([Symbol(:ph, i, :_1) => 1.0 for i in 1:3]; ops=Bh)
+    @test real(v0h' * dense_hamiltonian(Nb, ψh) * v0h) > 1e-4
+end
+
 @testset "TDVP vs exact propagation" begin
     topo = star_topology(3, 2)
     phys = allspin(topo)
