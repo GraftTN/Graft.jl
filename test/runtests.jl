@@ -455,9 +455,20 @@ end
             trunc=TruncationScheme(maxdim=4), max_add=3)
     @test norm(to_dense(ψx) - vx) < 1e-10
     @test maximum(bonddims(ψx)) > 1
-    @test_throws ArgumentError expand!(ψx, O, (leaf, topo.parent[leaf]);
+    ψr = random_ttns(MersenneTwister(1101), ComplexF64, topo, phys, ℂ^1)
+    @test_throws ArgumentError expand!(copy(ψr), O, (leaf, topo.parent[leaf]);
                                        scheme=:rsvd,
                                        trunc=TruncationScheme(maxdim=4), max_add=1)
+    ψr1, ψr2 = copy(ψr), copy(ψr)
+    expand!(ψr1, O, (leaf, topo.parent[leaf]); scheme=:rsvd,
+            rng=MersenneTwister(2202), trunc=TruncationScheme(maxdim=4),
+            max_add=3, rsvd_oversample=2)
+    expand!(ψr2, O, (leaf, topo.parent[leaf]); scheme=:rsvd,
+            rng=MersenneTwister(2202), trunc=TruncationScheme(maxdim=4),
+            max_add=3, rsvd_oversample=2)
+    @test norm(to_dense(ψr1) - to_dense(ψr)) < 1e-10
+    @test norm(to_dense(ψr1) - to_dense(ψr2)) < 1e-12
+    @test maximum(bonddims(ψr1)) > 1
 
     ψ3 = random_ttns(RNG, ComplexF64, topo, phys, ℂ^1)
     _, Es3 = dmrg1_3s!(ψ3, O; trunc=TruncationScheme(maxdim=16),
