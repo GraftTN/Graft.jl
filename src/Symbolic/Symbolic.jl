@@ -448,9 +448,18 @@ function _pp_factor(so::SiteOp, bsites, anc, pp, liftspaces)
                 [SiteOp(so.site, :Bp, pp.Bp), SiteOp(anc[so.site], :Bb, pp.Bb)]]
     elseif so.name in (:N, :I)
         return [[SiteOp(so.site, so.name, so.name == :N ? pp.N : pp.I)]]
+    elseif _pp_is_diagonal_neutral(so.op)
+        return [[SiteOp(so.site, so.name, _pp_lift_neutral_op(so.op, pp.P))]]
     else
         throw(ArgumentError("ppdress does not know how to rewrite boson operator `$(so.name)` at $(so.site)"))
     end
+end
+
+function _pp_is_diagonal_neutral(op::AbstractTensorMap)
+    numout(op) == 1 && numin(op) == 1 || return false
+    codomain(op)[1] == domain(op)[1] || return false
+    A = convert(Array, op)
+    return all(i == j || iszero(A[i, j]) for i in axes(A, 1), j in axes(A, 2))
 end
 
 # TODO(M3): SU2Reduce pass — c† as spin-1/2 tensor operator, hoppings and
