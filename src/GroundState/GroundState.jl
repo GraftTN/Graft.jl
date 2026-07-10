@@ -145,11 +145,13 @@ function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(;
         end
         α = _mixing_value(mixing, sweep)
         if !iszero(α)
+            root_targets = Contractions._physless_root_growth_targets(ψ, trunc, max_add)
             for n in bonds
                 expand!(ψ, H, (n, t.parent[n]); scheme=expand_scheme, cache,
                         rng, trunc, max_add, mixing=α, enr_rtol, enr_atol,
                         rsvd_oversample, rsvd_poweriter)
             end
+            Contractions._bootstrap_physless_root!(ψ, cache, root_targets)
         end
         push!(energies, E)
         converged = _energy_converged(energies, tol)

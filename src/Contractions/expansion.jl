@@ -138,3 +138,73 @@ function _expand_enrich_split(A::AbstractTensorMap, P::AbstractTensorMap;
     R = U' * A
     return U, R
 end
+
+"""
+    _physless_root_growth_targets(ψ, trunc, max_add) -> Vector{Tuple{Int,Int}}
+
+Per-edge target dimensions for the two children of a physical-leg-free binary
+root.  A two-site predictor on either root edge is rank-limited by its sibling
+edge: when both start at the same narrow dimension, neither one can provide the
+other with a larger predictor basis.  Record their ordinary per-sweep caps
+before any one-edge expansion so the paired bootstrap never exceeds `max_add`.
+"""
+function _physless_root_growth_targets(ψ::TTNS, trunc::TruncationScheme,
+                                       max_add::Int)
+    t = ψ.topo
+    root = t.root
+    (!hasphys(ψ, root) && length(t.children[root]) == 2) || return Tuple{Int,Int}[]
+    return [(n, min(trunc.maxdim, dim(virtualspace(ψ, n)) + max_add))
+            for n in t.children[root]]
+end
+
+"""
+    _null_enrich_split(A; maxdim) -> (U, R)
+
+State-preserving completion of the column space of `A`: `A == U * R` while
+`U` contains up to `maxdim` orthonormal columns.  This is only the bootstrap
+fallback for the two sibling edges of a physical-leg-free binary root.  The
+Hamiltonian-selected predictor remains the primary enrichment everywhere else;
+without this paired completion its rank is bounded by the opposite root edge
+and cannot start the growth at all.
+"""
+function _null_enrich_split(A::AbstractTensorMap; maxdim::Int)
+    olddim = dim(domain(A))
+    room = maxdim - olddim
+    room > 0 && dim(codomain(A)) > olddim || return A, nothing
+
+    N = left_null(A)
+    dim(domain(N)) > 0 || return A, nothing
+    E, _, _ = split_svd(N, TruncationScheme(; maxdim=room))
+    if isdual(domain(A)[1]) != isdual(domain(E)[1])
+        E = flip(E, numind(E))
+    end
+    U, _, _ = split_svd(catdomain(A, E), TruncationScheme(; maxdim))
+    return U, U' * A
+end
+
+"""
+    _bootstrap_physless_root!(ψ, cache, targets) -> ψ
+
+Jointly complete the two root-child subspaces recorded in `targets`.  Each
+completion is a gauge-preserving zero-weight embedding, so it cannot alter the
+TTNS vector.  Performing both before the next one-site root update removes the
+otherwise circular rank bound between the siblings.
+"""
+function _bootstrap_physless_root!(ψ::TTNS, cache::EnvCache,
+                                   targets::Vector{Tuple{Int,Int}})
+    isempty(targets) && return ψ
+    t = ψ.topo
+    root = t.root
+    for (n, target) in targets
+        t.parent[n] == root || throw(ArgumentError("root bootstrap target is not a root child"))
+        dim(virtualspace(ψ, n)) >= target && continue
+        move_center!(ψ, n; cache)
+        U, R = _null_enrich_split(ψ.tensors[n]; maxdim=target)
+        R === nothing && continue
+        ψ.tensors[n] = U
+        ψ.tensors[root] = absorb_on_leg(ψ.tensors[root], R, childslot(t, root, n))
+        ψ.center = root
+        invalidate_edge!(cache, n, root)
+    end
+    return ψ
+end

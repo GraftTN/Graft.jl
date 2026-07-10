@@ -29,6 +29,18 @@ function tfi(topo; J=1.0, g=0.7)
     return H
 end
 
+"Heisenberg chain over physical leaves; internal branching nodes stay physless."
+function heisenberg_chain(sites; J::Real=1.0)
+    S = spin_ops()
+    H = OpSum()
+    for (a, b) in zip(sites[1:end-1], sites[2:end])
+        H += Term(J / 2, SiteOp(a, :Sp, S.Sp), SiteOp(b, :Sm, S.Sm))
+        H += Term(J / 2, SiteOp(a, :Sm, S.Sm), SiteOp(b, :Sp, S.Sp))
+        H += Term(J / 4, SiteOp(a, :Z, S.Z), SiteOp(b, :Z, S.Z))
+    end
+    return H
+end
+
 allspin(topo) = Dict(nodeid(topo, i) => spin_ops().P for i in 1:nnodes(topo))
 bonddims(ψ) = [dim(domain(ψ.tensors[c])[1]) for c in 1:nnodes(ψ.topo) if ψ.topo.parent[c] != 0]
 function fused_u1_charge(ops)
@@ -479,6 +491,35 @@ end
                        nsweeps=5, max_add=4, verbose=TEST_VERBOSE)
     @test Es3[end] ≈ E0 atol = 1e-8
     @test maximum(bonddims(ψ3)) > 1
+end
+
+@testset "3S bootstrap at a physless binary root" begin
+    # With only two root-child edges, one-edge H|ψ⟩ predictors are each rank
+    # limited by the other edge.  The paired zero-weight completion must open
+    # both root subspaces while leaving the represented state exactly unchanged.
+    topo = binary_topology(2; prefix=:rootexp)
+    sites = [nodeid(topo, n) for n in leaves(topo)]
+    phys = Dict(site => spin_ops().P for site in sites)
+    H = heisenberg_chain(sites)
+    O = ttno_from_opsum(H, topo, phys; hermitian=true)
+    trunc = TruncationScheme(maxdim=4)
+    root_children = topo.children[topo.root]
+
+    ψembed = random_ttns(Xoshiro(20260710), ComplexF64, topo, phys, ℂ^2)
+    vembed = to_dense(ψembed)
+    targets = GRAFT.Contractions._physless_root_growth_targets(ψembed, trunc, 2)
+    GRAFT.Contractions._bootstrap_physless_root!(ψembed, EnvCache(topo), targets)
+    @test [dim(domain(ψembed.tensors[n])[1]) for n in root_children] == [4, 4]
+    @test norm(to_dense(ψembed) - vembed) < 1e-12
+    @test check_arrows(ψembed)
+
+    ψ = random_ttns(Xoshiro(20260710), ComplexF64, topo, phys, ℂ^2)
+    E0, _ = exact_groundstate(dense_hamiltonian(H, ψ))
+    _, Es = dmrg1_3s!(ψ, O; trunc, nsweeps=4, max_add=2,
+                       expand_scheme=:rsvd, rng=Xoshiro(20260711),
+                       verbose=TEST_VERBOSE)
+    @test [dim(domain(ψ.tensors[n])[1]) for n in root_children] == [4, 4]
+    @test Es[end] ≈ E0 atol = 1e-10
 end
 
 @testset "bosons (trivial sector)" begin
