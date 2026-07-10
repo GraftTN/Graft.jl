@@ -46,7 +46,7 @@ export left_orth, right_orth, left_null, qr_compact, svd_compact, svd_trunc,
 # contraction primitives
 export @tensor, ncon, contract_pair, pair_cost, space_signature,
     sector_cost_supported, sector_cost_nontrivial, sector_block_peak,
-    tensor_scalar
+    tensor_scalar, contract_pair!
 # GRAFT-defined
 export FermionSector, AbelianSector, TruncationScheme, truncspec, split_svd,
     absorb_on_leg, orth_factor_leg, trivialspace, ones_tensor
@@ -99,6 +99,23 @@ function contract_pair(A::AbstractTensorMap, pA::Tuple, conjA::Bool,
                        B::AbstractTensorMap, pB::Tuple, conjB::Bool,
                        pAB::Tuple)
     return TensorOperations.tensorcontract(A, pA, conjA, B, pB, conjB, pAB)
+end
+
+"""
+    contract_pair!(C, A, pA, conjA, B, pB, conjB, pAB, α=1, β=0) -> C
+
+Accumulate one pre-planned binary contraction directly into the caller-owned
+destination `C`.  This is deliberately an L0 wrapper around TensorOperations'
+expert API: upper layers retain compiled leg partitions but do not need to
+know its allocation or backend details.  `C` must be distinct from both input
+maps, as required by TensorOperations.
+"""
+function contract_pair!(C::AbstractTensorMap,
+                        A::AbstractTensorMap, pA::Tuple, conjA::Bool,
+                        B::AbstractTensorMap, pB::Tuple, conjB::Bool,
+                        pAB::Tuple, α::Number=1, β::Number=0)
+    return TensorOperations.tensorcontract!(C, A, pA, conjA, B, pB, conjB,
+                                             pAB, α, β)
 end
 
 """

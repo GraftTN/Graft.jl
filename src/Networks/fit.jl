@@ -1,3 +1,5 @@
+import ..Contractions: Planning
+
 """
     fit!(φ, ψ; nsweeps=4, tol=1e-10, normalize=false, verbose=false) -> (φ, errors)
     fit!(φ, sources; Hs=nothing, coeffs=nothing, kwargs...) -> (φ, errors)
@@ -89,11 +91,24 @@ function _fit_coeffs(φ::TTNS, sources, coeffs)
     return convert(Vector{T}, coeffv)
 end
 
+"""
+Value environments, shape-only plans, and immutable root caps for one source
+inside a fit sweep.  Invalidation deliberately removes only `envs`: tensor
+values do not change exact TensorKit spaces, so plans and caps remain valid.
+"""
 struct _FitCache
     topo::TreeTopology
     envs::Dict{Tuple{Int,Int},AbstractTensorMap}
+    plans::Dict{Planning.PlanKey,Planning.ContractionPlan}
+    rootcaps::Dict{Tuple,AbstractTensorMap}
 end
-_FitCache(topo::TreeTopology) = _FitCache(topo, Dict{Tuple{Int,Int},AbstractTensorMap}())
+_FitCache(topo::TreeTopology) =
+    _FitCache(topo, Dict{Tuple{Int,Int},AbstractTensorMap}(),
+              Dict{Planning.PlanKey,Planning.ContractionPlan}(),
+              Dict{Tuple,AbstractTensorMap}())
+_FitCache(topo::TreeTopology, envs::Dict{Tuple{Int,Int},AbstractTensorMap}) =
+    _FitCache(topo, envs, Dict{Planning.PlanKey,Planning.ContractionPlan}(),
+              Dict{Tuple,AbstractTensorMap}())
 
 function _invalidate_fit_node!(c::_FitCache, n::Int)
     filter!(p -> !_fit_on_side(c.topo, n, p.first[1], p.first[2]), c.envs)
@@ -106,13 +121,30 @@ function _fit_on_side(t::TreeTopology, n::Int, u::Int, v::Int)
     return u in path_between(t, n, v)
 end
 
+_fit_scalar_type(φ::TTNS, ψ::TTNS) = promote_type(eltype(φ), eltype(ψ))
+
+"""Return a root cap owned by the fit cache and keyed only by type and space."""
+function _fit_root_cap!(c::_FitCache, T::DataType, capspace)
+    return get!(c.rootcaps, (T, capspace)) do
+        ones_tensor(T, capspace)
+    end
+end
+
+"""Execute a complete-tuple fit network through its independent plan cache."""
+function _fit_planned_execute!(c::_FitCache, kind::Symbol,
+                               spec::Planning.ContractionSpec,
+                               operands::Tuple, T::DataType)
+    plan, _ = Planning.get_or_plan!(c.plans, kind, spec, operands, T)
+    return Planning.execute(plan, operands)
+end
+
 function _fit_env!(c::_FitCache, φ::TTNS, ψ::TTNS, u::Int, v::Int)
     return get!(c.envs, (u, v)) do
         for w in neighbors(c.topo, u)
             w == v && continue
             _fit_env!(c, φ, ψ, w, u)
         end
-        _fit_build_env(φ, ψ, u, v, c.envs)
+        _fit_build_env(c, φ, ψ, u, v)
     end
 end
 
@@ -121,21 +153,30 @@ function _fit_local_tensor(c::_FitCache, φ::TTNS, ψ::TTNS, n::Int)
     for w in neighbors(t, n)
         _fit_env!(c, φ, ψ, w, n)
     end
-    return _fit_project_tensor(φ, ψ, n, c.envs)
+    return _fit_project_tensor(c, φ, ψ, n)
 end
 
 function _fit_local_tensor(caches::Vector{_FitCache}, φ::TTNS, sources,
                            coeffs::AbstractVector, n::Int)
-    A = nothing
+    length(caches) == length(sources) == length(coeffs) ||
+        throw(ArgumentError("fit local projection: cache/source/coefficient length mismatch"))
+    # The destination is fresh for `update_tensor!`; every source writes its
+    # final contraction into it, so no full per-source `Ai` is retained.
+    A = zeros(eltype(φ), space(φ.tensors[n]))
     for (c, src, α) in zip(caches, sources, coeffs)
-        Ai = _fit_local_tensor(c, φ, src, n)
-        A = A === nothing ? α * Ai : A + α * Ai
+        _fit_project_tensor!(A, c, φ, src, n, α)
     end
     return A
 end
 
-function _fit_build_env(φ::TTNS, ψ::TTNS, u::Int, v::Int,
-                        envs::Dict{Tuple{Int,Int},AbstractTensorMap})
+"""
+    _fit_build_env_ncon_reference(φ, ψ, u, v, envs)
+
+Retained direct `ncon` transfer environment for small planned-versus-legacy
+tests.  The planned lowering keeps this operand order and labels unchanged.
+"""
+function _fit_build_env_ncon_reference(φ::TTNS, ψ::TTNS, u::Int, v::Int,
+                                       envs::Dict{Tuple{Int,Int},AbstractTensorMap})
     t = φ.topo
     A = ψ.tensors[u]
     B = φ.tensors[u]
@@ -185,8 +226,84 @@ function _fit_build_env(φ::TTNS, ψ::TTNS, u::Int, v::Int,
     return v == 0 ? repartition(y, numout(B), 1) : y
 end
 
-function _fit_project_tensor(φ::TTNS, ψ::TTNS, n::Int,
-                             envs::Dict{Tuple{Int,Int},AbstractTensorMap})
+"""Lower a fit transfer environment into a complete-operand contraction spec."""
+function _fit_build_env_spec(c::_FitCache, φ::TTNS, ψ::TTNS, u::Int, v::Int)
+    t = φ.topo
+    A = ψ.tensors[u]
+    B = φ.tensors[u]
+    hp = hasphys(ψ, u)
+    aidx = zeros(Int, numind(A))
+    bidx = zeros(Int, numind(B))
+    operands = Any[A]
+    labels = Vector{Int}[aidx]
+    conjs = Bool[false]
+    envslots = Int[]
+    nxt = Ref(0)
+    fresh() = (nxt[] += 1; nxt[])
+
+    if hp
+        p = physleg(ψ, u)
+        lbl = fresh()
+        aidx[p] = lbl
+        bidx[p] = v == 0 ? -p : lbl
+    end
+    for w in neighbors(t, u)
+        la = _fit_stateleg(t, hp, u, w)
+        if w == v
+            aidx[la] = -1
+            bidx[la] = -2
+        else
+            E = c.envs[(w, u)]
+            eidx = [fresh(), fresh()]
+            aidx[la] = eidx[1]
+            bidx[la] = eidx[2]
+            push!(operands, E); push!(labels, eidx); push!(conjs, false)
+            push!(envslots, length(labels))
+        end
+    end
+    caps = Int[]
+    if t.parent[u] == 0
+        ka, kb = fresh(), fresh()
+        aidx[end] = ka
+        bidx[end] = kb
+        T = _fit_scalar_type(φ, ψ)
+        cap = _fit_root_cap!(c, T, dual(domain(B)[1]) ⊗ domain(A)[1])
+        push!(operands, cap); push!(labels, [kb, ka]); push!(conjs, false)
+        push!(caps, length(labels))
+    end
+    if v == 0
+        for i in eachindex(bidx)
+            iszero(bidx[i]) && (bidx[i] = -i)
+        end
+    end
+    push!(operands, B); push!(labels, bidx); push!(conjs, true)
+    preferred = Int[1]
+    append!(preferred, envslots)
+    append!(preferred, caps)
+    push!(preferred, length(labels))
+    nopen = v == 0 ? numind(B) : 2
+    partition = v == 0 ? (numout(B), 1) : (2, 0)
+    spec = Planning.ContractionSpec(labels, conjs, nopen, partition, nothing;
+                                    preferred_slots=preferred)
+    return spec, Tuple(operands)
+end
+
+function _fit_build_env(c::_FitCache, φ::TTNS, ψ::TTNS, u::Int, v::Int)
+    spec, operands = _fit_build_env_spec(c, φ, ψ, u, v)
+    return _fit_planned_execute!(c, :fit_env, spec, operands,
+                                 _fit_scalar_type(φ, ψ))
+end
+
+"""
+    _fit_project_tensor_ncon_reference(φ, ψ, n, envs)
+
+Retained direct `ncon` local projection.  Its flat target-leg labels are the
+authoritative reference for the planned projection below.
+"""
+function _fit_project_tensor_ncon_reference(
+    φ::TTNS, ψ::TTNS, n::Int,
+    envs::Dict{Tuple{Int,Int},AbstractTensorMap},
+)
     t = φ.topo
     A = ψ.tensors[n]
     B = φ.tensors[n]
@@ -219,6 +336,72 @@ function _fit_project_tensor(φ::TTNS, ψ::TTNS, n::Int,
     return repartition(y, numout(B), 1)
 end
 
+"""Lower one local fit projection into a complete-operand planned spec."""
+function _fit_project_spec(c::_FitCache, φ::TTNS, ψ::TTNS, n::Int)
+    t = φ.topo
+    A = ψ.tensors[n]
+    B = φ.tensors[n]
+    hp = hasphys(ψ, n)
+    aidx = zeros(Int, numind(A))
+    operands = Any[A]
+    labels = Vector{Int}[aidx]
+    conjs = Bool[false]
+    envslots = Int[]
+    nxt = Ref(0)
+    fresh() = (nxt[] += 1)
+
+    if hp
+        aidx[physleg(ψ, n)] = -(nchildren(t, n) + 1)
+    end
+    for w in neighbors(t, n)
+        la = _fit_stateleg(t, hp, n, w)
+        E = c.envs[(w, n)]
+        eidx = [fresh(), -la]
+        aidx[la] = eidx[1]
+        push!(operands, E); push!(labels, eidx); push!(conjs, false)
+        push!(envslots, length(labels))
+    end
+    caps = Int[]
+    if t.parent[n] == 0
+        ka = fresh()
+        aidx[end] = ka
+        T = _fit_scalar_type(φ, ψ)
+        cap = _fit_root_cap!(c, T, dual(domain(B)[1]) ⊗ domain(A)[1])
+        push!(operands, cap); push!(labels, [-numind(B), ka]); push!(conjs, false)
+        push!(caps, length(labels))
+    end
+    preferred = Int[1]
+    append!(preferred, envslots)
+    append!(preferred, caps)
+    spec = Planning.ContractionSpec(labels, conjs, numind(B),
+                                    (numout(B), 1), nothing;
+                                    preferred_slots=preferred)
+    return spec, Tuple(operands)
+end
+
+function _fit_project_plan(c::_FitCache, φ::TTNS, ψ::TTNS, n::Int)
+    spec, operands = _fit_project_spec(c, φ, ψ, n)
+    plan, _ = Planning.get_or_plan!(c.plans, :fit_project, spec, operands,
+                                    _fit_scalar_type(φ, ψ))
+    return plan, operands
+end
+
+function _fit_project_tensor(c::_FitCache, φ::TTNS, ψ::TTNS, n::Int)
+    plan, operands = _fit_project_plan(c, φ, ψ, n)
+    return Planning.execute(plan, operands)
+end
+
+"""Accumulate one source projection directly into a fresh target tensor."""
+function _fit_project_tensor!(dest::AbstractTensorMap, c::_FitCache,
+                              φ::TTNS, ψ::TTNS, n::Int, α::Number)
+    for w in neighbors(φ.topo, n)
+        _fit_env!(c, φ, ψ, w, n)
+    end
+    plan, operands = _fit_project_plan(c, φ, ψ, n)
+    return Planning.execute_accumulate!(dest, plan, operands;
+                                        α=α, β=one(eltype(φ)))
+end
+
 _fit_stateleg(t::TreeTopology, hasphys_u::Bool, u::Int, w::Int) =
     t.parent[u] == w ? nchildren(t, u) + (hasphys_u ? 1 : 0) + 1 : childslot(t, u, w)
 
@@ -229,11 +412,16 @@ function _fit_overlap(φ::TTNS, ψ::TTNS)
     for w in neighbors(φ.topo, r)
         _fit_env!(c, φ, ψ, w, r)
     end
-    return _fit_scalar(φ, ψ, r, c.envs)
+    return _fit_scalar(c, φ, ψ, r)
 end
 
-function _fit_scalar(φ::TTNS, ψ::TTNS, u::Int,
-                     envs::Dict{Tuple{Int,Int},AbstractTensorMap})
+"""
+    _fit_scalar_ncon_reference(φ, ψ, u, envs)
+
+Retained direct `ncon` overlap closure for small fixture A/B tests.
+"""
+function _fit_scalar_ncon_reference(φ::TTNS, ψ::TTNS, u::Int,
+                                    envs::Dict{Tuple{Int,Int},AbstractTensorMap})
     t = φ.topo
     A = ψ.tensors[u]
     B = φ.tensors[u]
@@ -268,6 +456,60 @@ function _fit_scalar(φ::TTNS, ψ::TTNS, u::Int,
     end
     push!(tensors, B); push!(indices, bidx); push!(conjs, true)
     return ncon(tensors, indices, conjs)
+end
+
+"""Lower a fully contracted one-node fit overlap into a planned spec."""
+function _fit_scalar_spec(c::_FitCache, φ::TTNS, ψ::TTNS, u::Int)
+    t = φ.topo
+    A = ψ.tensors[u]
+    B = φ.tensors[u]
+    hp = hasphys(ψ, u)
+    aidx = zeros(Int, numind(A))
+    bidx = zeros(Int, numind(B))
+    operands = Any[A]
+    labels = Vector{Int}[aidx]
+    conjs = Bool[false]
+    envslots = Int[]
+    nxt = Ref(0)
+    fresh() = (nxt[] += 1)
+    if hp
+        lbl = fresh()
+        aidx[physleg(ψ, u)] = lbl
+        bidx[physleg(φ, u)] = lbl
+    end
+    for w in neighbors(t, u)
+        la = _fit_stateleg(t, hp, u, w)
+        E = c.envs[(w, u)]
+        eidx = [fresh(), fresh()]
+        aidx[la] = eidx[1]
+        bidx[la] = eidx[2]
+        push!(operands, E); push!(labels, eidx); push!(conjs, false)
+        push!(envslots, length(labels))
+    end
+    caps = Int[]
+    if t.parent[u] == 0
+        ka, kb = fresh(), fresh()
+        aidx[end] = ka
+        bidx[end] = kb
+        T = _fit_scalar_type(φ, ψ)
+        cap = _fit_root_cap!(c, T, dual(domain(B)[1]) ⊗ domain(A)[1])
+        push!(operands, cap); push!(labels, [kb, ka]); push!(conjs, false)
+        push!(caps, length(labels))
+    end
+    push!(operands, B); push!(labels, bidx); push!(conjs, true)
+    preferred = Int[1]
+    append!(preferred, envslots)
+    append!(preferred, caps)
+    push!(preferred, length(labels))
+    spec = Planning.ContractionSpec(labels, conjs, 0, (0, 0), nothing;
+                                    preferred_slots=preferred)
+    return spec, Tuple(operands)
+end
+
+function _fit_scalar(c::_FitCache, φ::TTNS, ψ::TTNS, u::Int)
+    spec, operands = _fit_scalar_spec(c, φ, ψ, u)
+    return _fit_planned_execute!(c, :fit_scalar, spec, operands,
+                                 _fit_scalar_type(φ, ψ))
 end
 
 function _fit_error(φ::TTNS, ψ::TTNS)

@@ -33,6 +33,9 @@ include("Backend/Backend.jl")
 include("Trees/Trees.jl")
 include("Networks/Networks.jl")
 include("Contractions/Contractions.jl")
+# `fit!` uses the generic complete-tuple planner.  Load its methods after the
+# lower-level Networks data types and Contractions.Planning are both available.
+Base.include(Networks, joinpath(@__DIR__, "Networks", "fit.jl"))
 include("Symbolic/Symbolic.jl")
 include("TTNOBuild/TTNOBuild.jl")
 include("GroundState/GroundState.jl")

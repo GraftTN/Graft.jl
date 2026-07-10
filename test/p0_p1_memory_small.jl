@@ -63,6 +63,22 @@ function _p0p1_env_matches_ncon!(cache, ket, O, bra, u, v)
     return got, ref
 end
 
+"""Independent retained-ncon recursion for planned fit A/B checks."""
+function _p0p1_fit_ref_env!(φ, ψ, u, v,
+                             envs::Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap})
+    return get!(envs, (u, v)) do
+        for w in neighbors(topology(φ), u)
+            w == v || _p0p1_fit_ref_env!(φ, ψ, w, u, envs)
+        end
+        GRAFT.Networks._fit_build_env_ncon_reference(φ, ψ, u, v, envs)
+    end
+end
+
+function _p0p1_fit_maps_match(got, ref; rtol=1e-12, atol=1e-12)
+    @test norm(got - ref) <= atol + rtol * max(norm(ref), 1)
+    return nothing
+end
+
 if _p0p1_enabled(:m1)
 @testset "P0/P1: live contraction memory model" begin
     rng = MersenneTwister(20260710)
@@ -374,3 +390,108 @@ if _p0p1_enabled(:m2)
     @test uscalar isa Number
 end
 end # :m2 target
+
+if _p0p1_enabled(:m3)
+@testset "P0/P1: planned variational fit contractions" begin
+    topo, _, _, ψ, φ = _p0p1_sandwich_fixture(MersenneTwister(20260717))
+    root = topo.root
+    child = only(topo.children[root])
+    F = GRAFT.Networks
+
+    # Both directions of the ket-bra fit environment use a fresh retained
+    # ncon recursion, so this does not compare a planned value with itself.
+    cache = F._FitCache(topo)
+    for (u, v) in ((child, root), (root, child))
+        got = F._fit_env!(cache, φ, ψ, u, v)
+        refenvs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+        ref = _p0p1_fit_ref_env!(φ, ψ, u, v, refenvs)
+        _p0p1_fit_maps_match(got, ref)
+    end
+
+    # Local projection and the scalar overlap are complete-operand plans;
+    # their named direct paths remain private A/B references.
+    got_project = F._fit_local_tensor(cache, φ, ψ, root)
+    refenvs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+    for w in neighbors(topo, root)
+        _p0p1_fit_ref_env!(φ, ψ, w, root, refenvs)
+    end
+    ref_project = F._fit_project_tensor_ncon_reference(φ, ψ, root, refenvs)
+    _p0p1_fit_maps_match(got_project, ref_project)
+    ref_overlap = F._fit_scalar_ncon_reference(φ, ψ, root, refenvs)
+    @test F._fit_overlap(φ, ψ) ≈ ref_overlap rtol=1e-12 atol=1e-12
+
+    # Gauge moves must not alter the planned overlap.  This covers root and
+    # non-root scalar closure layouts without materializing a dense state.
+    φg, ψg = copy(φ), copy(ψ)
+    move_center!(φg, child)
+    move_center!(ψg, child)
+    @test F._fit_overlap(φg, ψg) ≈ ref_overlap rtol=1e-12 atol=1e-12
+
+    # Value invalidation preserves independent shape plans and immutable caps.
+    # Rebuilding after a same-shape target update must use fresh values.
+    plan_count = length(cache.plans)
+    cap_count = length(cache.rootcaps)
+    cap = only(values(cache.rootcaps))
+    @test haskey(cache.envs, (root, child))
+    update_tensor!(φ, root, 1.01 * φ.tensors[root])
+    F._invalidate_fit_node!(cache, root)
+    @test !haskey(cache.envs, (root, child))
+    @test length(cache.plans) == plan_count
+    @test length(cache.rootcaps) == cap_count
+    @test only(values(cache.rootcaps)) === cap
+    rebuilt = F._fit_env!(cache, φ, ψ, root, child)
+    rebuilt_refs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+    rebuilt_ref = _p0p1_fit_ref_env!(φ, ψ, root, child, rebuilt_refs)
+    _p0p1_fit_maps_match(rebuilt, rebuilt_ref)
+    @test length(cache.plans) == plan_count
+
+    # Two source projections accumulate through one caller-owned destination;
+    # the result agrees with the retained sum while not aliasing either source.
+    target = copy(φ)
+    src2 = copy(φ)
+    sources = (ψ, src2)
+    coeffs = ComplexF64[0.7 - 0.2im, -0.3 + 0.5im]
+    got_sum = F._fit_local_tensor([F._FitCache(topo), F._FitCache(topo)],
+                                  target, sources, coeffs, root)
+    refsum = nothing
+    for (src, α) in zip(sources, coeffs)
+        srcenvs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+        for w in neighbors(topo, root)
+            _p0p1_fit_ref_env!(target, src, w, root, srcenvs)
+        end
+        localref = F._fit_project_tensor_ncon_reference(target, src, root, srcenvs)
+        refsum = refsum === nothing ? α * localref : refsum + α * localref
+    end
+    _p0p1_fit_maps_match(got_sum, refsum)
+    @test got_sum !== ψ.tensors[root]
+    @test got_sum !== src2.tensors[root]
+
+    # A one-sweep public fit touches planned environments, local projections,
+    # and repeated scalar error evaluations together.
+    fitted = copy(target)
+    _, errors = fit!(fitted, sources; coeffs, nsweeps=1)
+    @test length(errors) == 1 && isfinite(only(errors))
+    @test check_arrows(fitted)
+    @test center(fitted) == center(target)
+
+    # Small abelian-sector A/Bs retain TensorKit's stored block structure.
+    utopo, _, _, uψ, uφ = _p0p1_sandwich_fixture(MersenneTwister(20260718);
+                                                  u1=true)
+    uroot = utopo.root
+    uchild = only(utopo.children[uroot])
+    ucache = F._FitCache(utopo)
+    uenv = F._fit_env!(ucache, uφ, uψ, uchild, uroot)
+    urefs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+    uenv_ref = _p0p1_fit_ref_env!(uφ, uψ, uchild, uroot, urefs)
+    _p0p1_fit_maps_match(uenv, uenv_ref)
+    uproject = F._fit_local_tensor(ucache, uφ, uψ, uroot)
+    upro_refs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+    for w in neighbors(utopo, uroot)
+        _p0p1_fit_ref_env!(uφ, uψ, w, uroot, upro_refs)
+    end
+    uproject_ref = F._fit_project_tensor_ncon_reference(uφ, uψ, uroot, upro_refs)
+    _p0p1_fit_maps_match(uproject, uproject_ref)
+    uscalar_ref = F._fit_scalar_ncon_reference(uφ, uψ, uroot, upro_refs)
+    @test F._fit_overlap(uφ, uψ) ≈ uscalar_ref rtol=1e-12 atol=1e-12
+end
+end # :m3 target
