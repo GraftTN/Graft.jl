@@ -18,7 +18,6 @@ export TTNS, TTNO, TTNDO, topology, center, hasphys, physleg, parentleg,
 
 include("ttns.jl")
 include("ttno.jl")
-include("apply.jl")
 
 # ---------------------------------------------------------------------------
 # Generic operations implemented here: `apply(O::TTNO, ψ::TTNS)` and

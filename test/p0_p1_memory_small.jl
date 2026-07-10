@@ -652,3 +652,101 @@ if _p0p1_enabled(:m4)
     @test solve_info.numops >= 1
 end
 end # :m4 target
+
+if _p0p1_enabled(:m5)
+@testset "P0/P1: planned exact TTNO application" begin
+    topo, S, O, ψ, _ = _p0p1_sandwich_fixture(MersenneTwister(20260721))
+    root = topo.root
+    child = only(topo.children[root])
+    F = GRAFT.Networks
+    T = promote_type(eltype(O), eltype(ψ))
+
+    # A node plan preserves the historical operand/open-leg layout while using
+    # the exact prebuilt child fusion object rather than rebuilding it.
+    fusions = F._apply_edge_fusions(T, ψ, O)
+    plans = Dict{_P0P1Planning.PlanKey,_P0P1Planning.ContractionPlan}()
+    spec, operands = F._apply_node_spec(O, ψ, root, fusions)
+    @test operands[3] === fusions[child]
+    planned_node = F._apply_node_tensor(plans, O, ψ, root, fusions)
+    legacy_node = F._apply_node_tensor_ncon_reference(O, ψ, root, fusions[root])
+    _p0p1_fit_maps_match(planned_node, legacy_node)
+    plan_count = length(plans)
+    repeat_node = F._apply_node_tensor(plans, O, ψ, root, fusions)
+    _p0p1_fit_maps_match(repeat_node, legacy_node)
+    @test length(plans) == plan_count
+
+    # Full application retains exact output and requested canonical center.
+    planned = apply(O, ψ; center=child)
+    legacy = F._apply_ncon_reference(O, ψ; center=child)
+    @test check_arrows(planned) && center(planned) == child
+    @test norm(to_dense(planned) - to_dense(legacy)) <= 1e-12
+
+    # A small U(1) fixture validates fusion and arrow conventions in sectors.
+    utopo, _, uO, uψ, _ = _p0p1_sandwich_fixture(MersenneTwister(20260722);
+                                                  u1=true)
+    uchild = only(utopo.children[utopo.root])
+    uplanned = apply(uO, uψ; center=uchild)
+    ulegacy = F._apply_ncon_reference(uO, uψ; center=uchild)
+    @test check_arrows(uplanned) && center(uplanned) == uchild
+    @test norm(to_dense(uplanned) - to_dense(ulegacy)) <= 1e-12
+
+    # A three-node star exercises two distinct child fusion maps at one node
+    # and mirrors the preorder lifetime release used by public apply.
+    stopo = star_topology(2, 1)
+    sphys = Dict(nodeid(stopo, i) => S.P for i in 1:nnodes(stopo))
+    sH = OpSum()
+    for i in 1:nnodes(stopo)
+        sH += Term(0.08 + 0.03im * i, SiteOp(nodeid(stopo, i), :Z, S.Z))
+    end
+    sO = ttno_from_opsum(sH, stopo, sphys; hermitian=false)
+    sψ = random_ttns(MersenneTwister(20260723), ComplexF64, stopo, sphys, ℂ^2)
+    sT = promote_type(eltype(sO), eltype(sψ))
+    sfusions = F._apply_edge_fusions(sT, sψ, sO)
+    sroot = stopo.root
+    sspec, soperands = F._apply_node_spec(sO, sψ, sroot, sfusions)
+    schildren = stopo.children[sroot]
+    @test soperands[3] === sfusions[schildren[1]]
+    @test soperands[4] === sfusions[schildren[2]]
+    splans = Dict{_P0P1Planning.PlanKey,_P0P1Planning.ContractionPlan}()
+    sgot = F._apply_node_tensor(splans, sO, sψ, sroot, sfusions)
+    sref = F._apply_node_tensor_ncon_reference(sO, sψ, sroot, sfusions[sroot])
+    _p0p1_fit_maps_match(sgot, sref)
+    stensors = Vector{GRAFT.Backend.AbstractTensorMap}(undef, nnodes(stopo))
+    for n in preorder(stopo)
+        stensors[n] = F._apply_node_tensor(splans, sO, sψ, n, sfusions)
+        delete!(sfusions, n)
+    end
+    @test isempty(sfusions)
+    sout = TTNS(stopo, stensors, stopo.root)
+    F._canonicalize_apply!(sout, schildren[1])
+    slegacy = F._apply_ncon_reference(sO, sψ; center=schildren[1])
+    @test check_arrows(sout) && center(sout) == schildren[1]
+    @test norm(to_dense(sout) - to_dense(slegacy)) <= 1e-12
+
+    # A non-root physless junction takes the special preferred fold through
+    # child fusions before W, avoiding a disconnected state/operator product.
+    jtopo = TreeTopology(:root, [:root => :junction, :junction => :left,
+                                  :junction => :right])
+    jphys = Dict(:root => S.P, :left => S.P, :right => S.P)
+    jH = OpSum()
+    for site in (:root, :left, :right)
+        jH += Term(0.11 + 0.02im, SiteOp(site, :Z, S.Z))
+    end
+    jO = ttno_from_opsum(jH, jtopo, jphys; hermitian=false)
+    jψ = random_ttns(MersenneTwister(20260724), ComplexF64, jtopo, jphys, ℂ^2)
+    jT = promote_type(eltype(jO), eltype(jψ))
+    jfusions = F._apply_edge_fusions(jT, jψ, jO)
+    junction = nodeindex(jtopo, :junction)
+    jspec, _ = F._apply_node_spec(jO, jψ, junction, jfusions)
+    @test jspec.preferred_slots == [1, 3, 4, 2, 5]
+    jplans = Dict{_P0P1Planning.PlanKey,_P0P1Planning.ContractionPlan}()
+    jnode = F._apply_node_tensor(jplans, jO, jψ, junction, jfusions)
+    jnode_ref = F._apply_node_tensor_ncon_reference(jO, jψ, junction,
+                                                     jfusions[junction])
+    _p0p1_fit_maps_match(jnode, jnode_ref)
+    jout = apply(jO, jψ; center=junction)
+    jlegacy = F._apply_ncon_reference(jO, jψ; center=junction)
+    @test check_arrows(jout) && center(jout) == junction
+    @test norm(to_dense(jout) - to_dense(jlegacy)) <= 1e-12
+end
+end # :m5 target
