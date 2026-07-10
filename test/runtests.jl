@@ -13,6 +13,8 @@ using Random
 using LinearAlgebra: I, dot, norm
 
 const RNG = Xoshiro(20260709)
+const TEST_VERBOSE = lowercase(get(ENV, "GRAFT_TEST_VERBOSE", "true")) in
+    ("1", "true", "yes", "on")
 
 "Transverse-field Ising OpSum on all edges/nodes of a topology."
 function tfi(topo; J=1.0, g=0.7)
@@ -444,9 +446,10 @@ end
     O = ttno_from_opsum(H, topo, phys; hermitian=true)
     ψ = random_ttns(RNG, ComplexF64, topo, phys, ℂ^2)
     E0, _ = exact_groundstate(dense_hamiltonian(H, ψ))
-    _, Es = dmrg2!(ψ, O; trunc=TruncationScheme(maxdim=16), nsweeps=8)
+    _, Es = dmrg2!(ψ, O; trunc=TruncationScheme(maxdim=16), nsweeps=8,
+                   verbose=TEST_VERBOSE)
     @test Es[end] ≈ E0 atol = 1e-10
-    _, Es1 = dmrg1!(ψ, O; nsweeps=4)
+    _, Es1 = dmrg1!(ψ, O; nsweeps=4, verbose=TEST_VERBOSE)
     @test Es1[end] ≈ E0 atol = 1e-10
 
     ψx = random_ttns(RNG, ComplexF64, topo, phys, ℂ^1)
@@ -473,7 +476,7 @@ end
 
     ψ3 = random_ttns(RNG, ComplexF64, topo, phys, ℂ^1)
     _, Es3 = dmrg1_3s!(ψ3, O; trunc=TruncationScheme(maxdim=16),
-                       nsweeps=5, max_add=4)
+                       nsweeps=5, max_add=4, verbose=TEST_VERBOSE)
     @test Es3[end] ≈ E0 atol = 1e-8
     @test maximum(bonddims(ψ3)) > 1
 end
@@ -495,17 +498,20 @@ end
     Hd = dense_hamiltonian(H, ψ0)
     E0, _ = exact_groundstate(Hd)
     ψd = copy(ψ0)
-    _, Es = dmrg2!(ψd, O; trunc=TruncationScheme(maxdim=12, atol=1e-12), nsweeps=6)
+    _, Es = dmrg2!(ψd, O; trunc=TruncationScheme(maxdim=12, atol=1e-12),
+                   nsweeps=6, verbose=TEST_VERBOSE)
     @test Es[end] ≈ E0 atol = 1e-9
 
     dt = 0.01
     nsteps = 2
     ψt = random_ttns(RNG, ComplexF64, topo, phys, ℂ^8)
     vex = exact_evolve(Hd, to_dense(ψt), -im * dt * nsteps)
-    for ev in (TDVP1(order=2),
-               TDVP2(trunc=TruncationScheme(maxdim=16, atol=1e-12)),
+    for ev in (TDVP1(order=2, verbose=TEST_VERBOSE),
+               TDVP2(trunc=TruncationScheme(maxdim=16, atol=1e-12),
+                     verbose=TEST_VERBOSE),
                TDVP1_CBE(trunc=TruncationScheme(maxdim=16, atol=1e-12),
-                         d_tilde_max=4, enr_rtol=1e-12, enr_atol=1e-12))
+                         d_tilde_max=4, enr_rtol=1e-12, enr_atol=1e-12,
+                         verbose=TEST_VERBOSE))
         ψe = copy(ψt)
         for _ in 1:nsteps
             step!(ev, ψe, O, -im * dt)
@@ -514,7 +520,8 @@ end
     end
 
     ψim = random_ttns(RNG, ComplexF64, topo, phys, ℂ^4)
-    evi = TDVP2(trunc=TruncationScheme(maxdim=12, atol=1e-10))
+    evi = TDVP2(trunc=TruncationScheme(maxdim=12, atol=1e-10),
+                verbose=TEST_VERBOSE)
     for _ in 1:30
         step!(evi, ψim, O, -0.12)
         normalize!(ψim)
@@ -553,13 +560,20 @@ end
     ψh = random_ttns(RNG, ComplexF64, hol, phys_h, ℂ^4)
     Hdh = dense_hamiltonian(Hh, ψh)
     E0h, v0h = exact_groundstate(Hdh)
-    _, Esh = dmrg2!(ψh, Oh; trunc=TruncationScheme(maxdim=16, atol=1e-12), nsweeps=6)
+    _, Esh = dmrg2!(ψh, Oh; trunc=TruncationScheme(maxdim=16, atol=1e-12),
+                    nsweeps=6, verbose=TEST_VERBOSE)
     @test Esh[end] ≈ E0h atol = 1e-9
     Nb = boson_modes([Symbol(:ph, i, :_1) => 1.0 for i in 1:3]; ops=Bh)
     @test real(v0h' * dense_hamiltonian(Nb, ψh) * v0h) > 1e-4
 end
 
 @testset "TDVP vs exact propagation" begin
+    @test TDVP1().verbose
+    @test TDVP2().verbose
+    @test TDVP1_CBE().verbose
+    @test GSE_TDVP().verbose
+    @test LSE_TDVP().verbose
+
     topo = star_topology(3, 2)
     phys = allspin(topo)
     H = tfi(topo; g=0.9)
@@ -570,7 +584,7 @@ end
     ψ = random_ttns(RNG, ComplexF64, topo, phys, ℂ^8)
     Hd = dense_hamiltonian(H, ψ)
     vex = exact_evolve(Hd, to_dense(ψ), -im * dt * nsteps)
-    ev = TDVP1(order=2)
+    ev = TDVP1(order=2, verbose=TEST_VERBOSE)
     for _ in 1:nsteps
         step!(ev, ψ, O, -im * dt)
     end
@@ -584,7 +598,8 @@ end
     vex = exact_evolve(Hd, to_dense(ψ1), -im * dt * 10)
     ψ2 = copy(ψ1); ψ3 = copy(ψ1)
 
-    ev2 = TDVP2(trunc=TruncationScheme(maxdim=16, atol=1e-12))
+    ev2 = TDVP2(trunc=TruncationScheme(maxdim=16, atol=1e-12),
+                verbose=TEST_VERBOSE)
     for _ in 1:10
         step!(ev2, ψ2, O, -im * dt)
     end
@@ -592,7 +607,8 @@ end
     @test maximum(bonddims(ψ2)) > 1
 
     evc = TDVP1_CBE(trunc=TruncationScheme(maxdim=16, atol=1e-12),
-                    d_tilde_max=8, enr_rtol=1e-10, enr_atol=1e-12)
+                    d_tilde_max=8, enr_rtol=1e-10, enr_atol=1e-12,
+                    verbose=TEST_VERBOSE)
     for _ in 1:10
         step!(evc, ψ3, O, -im * dt)
     end
@@ -602,8 +618,8 @@ end
     # behavioral contract from the PyTreeNet fork's test suite:
     # disabled enrichment reproduces TDVP1 exactly
     ψa = copy(ψ1); ψb = copy(ψ1)
-    eva = TDVP1(order=2)
-    evb = TDVP1_CBE(order=2, enabled=false)
+    eva = TDVP1(order=2, verbose=TEST_VERBOSE)
+    evb = TDVP1_CBE(order=2, enabled=false, verbose=TEST_VERBOSE)
     for _ in 1:3
         step!(eva, ψa, O, -im * dt)
         step!(evb, ψb, O, -im * dt)
@@ -670,9 +686,11 @@ end
     vex = exact_evolve(Hd, v0, dz)
 
     for ev in (GSE_TDVP(order=2, trunc=TruncationScheme(maxdim=4, atol=1e-12),
-                        max_add=3, krylovdim=8, tol=1e-10),
+                        max_add=3, krylovdim=8, tol=1e-10,
+                        verbose=TEST_VERBOSE),
                LSE_TDVP(order=2, trunc=TruncationScheme(maxdim=4, atol=1e-12),
-                        max_add=3, krylovdim=8, tol=1e-10))
+                        max_add=3, krylovdim=8, tol=1e-10,
+                        verbose=TEST_VERBOSE))
         ψ = copy(ψ0)
         step!(ev, ψ, O, dz)
         @test check_arrows(ψ)
@@ -691,7 +709,8 @@ end
     O = ttno_from_opsum(H, topo, phys; hermitian=true)
     ψ = random_ttns(RNG, ComplexF64, topo, phys, ℂ^2)
     E0, _ = exact_groundstate(dense_hamiltonian(H, ψ))
-    ev = TDVP2(trunc=TruncationScheme(maxdim=16, atol=1e-10))
+    ev = TDVP2(trunc=TruncationScheme(maxdim=16, atol=1e-10),
+               verbose=TEST_VERBOSE)
     for _ in 1:80
         step!(ev, ψ, O, -0.1)          # dz = -δτ: e^{-τH}
         normalize!(ψ)

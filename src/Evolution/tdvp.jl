@@ -18,48 +18,57 @@
 # so nothing here assumes hermiticity or a purely imaginary step (§0.2).
 
 """
-    TDVP1(; order=2, krylovdim=30, tol=1e-12)
+    TDVP1(; order=2, krylovdim=30, tol=1e-12, verbose=true)
 
 Single-site TDVP evolver. Constant bond dimension (the tangent-space
 projection never grows bonds) — pair with `TDVP1_CBE` when the state needs to
 grow. An instance owns its `EnvCache` and is bound to one evolution run: all
 mutations of `ψ` between its `step!` calls must go through
-`update_tensor!`/`move_center!` with that cache, or the cache goes stale.
+`update_tensor!`/`move_center!` with that cache, or the cache goes stale. With
+`verbose=true`, emits step and half-sweep `@info` records with topology,
+solver, step size, direction, center, update counts, and bond statistics.
 """
 Base.@kwdef mutable struct TDVP1 <: Evolver
     order::Int = 2
     krylovdim::Int = 30
     tol::Float64 = 1e-12
+    verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
 end
 
 """
-    TDVP2(; order=2, trunc=TruncationScheme(), krylovdim=30, tol=1e-12)
+    TDVP2(; order=2, trunc=TruncationScheme(), krylovdim=30, tol=1e-12,
+          verbose=true)
 
 Two-site TDVP (benchmark kernel, §5b; PyTreeNet twositetdvp.py +
 secondordertwosite.py). Every bond's two-site block is forward-evolved once
 per sweep (post-order edge sweep, truncated split through `TruncationScheme`),
 with a single-site *backward* evolution at the connecting parent between
-consecutive bond updates. Bond dimensions adapt up to `trunc.maxdim`.
+consecutive bond updates. Bond dimensions adapt up to `trunc.maxdim`. With
+`verbose=true`, emits step and half-sweep `@info` records including the
+truncation policy and bond growth.
 """
 Base.@kwdef mutable struct TDVP2 <: Evolver
     order::Int = 2
     trunc::TruncationScheme = TruncationScheme()
     krylovdim::Int = 30
     tol::Float64 = 1e-12
+    verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
 end
 
 """
     TDVP1_CBE(; order=2, trunc, d_tilde_max=32, enr_rtol=1e-10, enr_atol=1e-12,
-              enabled=true, krylovdim=30, tol=1e-12)
+              enabled=true, krylovdim=30, tol=1e-12, verbose=true)
 
 Single-site TDVP with controlled bond expansion (local PyTreeNet fork's
 1TDVP-CBE; see the implementation notes further down). `trunc` is the main
 `TruncationScheme` (its `maxdim` caps the final bond); `d_tilde_max` caps how
 many *new* directions are proposed per bond per step; `enr_rtol`/`enr_atol`
 are the enrichment singular-value tolerances (PyTreeNet
-`enrichment_rel_tol`/`enrichment_total_tol`).
+`enrichment_rel_tol`/`enrichment_total_tol`). With `verbose=true`, emits the
+TDVP1 step and half-sweep records together with the CBE enrichment policy and
+observed bond growth.
 """
 Base.@kwdef mutable struct TDVP1_CBE <: Evolver
     order::Int = 2
@@ -70,13 +79,97 @@ Base.@kwdef mutable struct TDVP1_CBE <: Evolver
     enabled::Bool = true
     krylovdim::Int = 30
     tol::Float64 = 1e-12
+    verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
 end
 
+_tdvp_name(::TDVP1) = "TDVP1"
+_tdvp_name(::TDVP2) = "TDVP2"
+_tdvp_name(::TDVP1_CBE) = "TDVP1_CBE"
+
+function _tdvp_max_bond_dim(ψ::TTNS)
+    ds = [dim(virtualspace(ψ, n))
+          for n in 1:nnodes(ψ.topo) if ψ.topo.parent[n] != 0]
+    return isempty(ds) ? 1 : maximum(ds)
+end
+
+_tdvp_center_site(ψ::TTNS) = nodeid(ψ.topo, center(ψ))
+
+function _log_tdvp_step_start(ev::TDVP1, ψ::TTNS, H::TTNO, dz::Number;
+                              cache_reused::Bool)
+    t = ψ.topo
+    nodes = nnodes(t)
+    physical_sites = count(identity, ψ.hasphys)
+    bonds = nodes - 1
+    center_site = _tdvp_center_site(ψ)
+    initial_maxbond = _tdvp_max_bond_dim(ψ)
+    order = ev.order
+    krylovdim = ev.krylovdim
+    tol = ev.tol
+    hermitian = ishermitian(H)
+    @info "TDVP1 step start" dz order nodes physical_sites bonds center_site initial_maxbond krylovdim tol hermitian cache_reused
+    return nothing
+end
+
+function _log_tdvp_step_start(ev::TDVP2, ψ::TTNS, H::TTNO, dz::Number;
+                              cache_reused::Bool)
+    t = ψ.topo
+    nodes = nnodes(t)
+    physical_sites = count(identity, ψ.hasphys)
+    bonds = nodes - 1
+    center_site = _tdvp_center_site(ψ)
+    initial_maxbond = _tdvp_max_bond_dim(ψ)
+    order = ev.order
+    krylovdim = ev.krylovdim
+    tol = ev.tol
+    hermitian = ishermitian(H)
+    trunc_maxdim = ev.trunc.maxdim
+    trunc_atol = ev.trunc.atol
+    trunc_rtol = ev.trunc.rtol
+    trunc_discarded_weight = ev.trunc.discarded_weight
+    @info "TDVP2 step start" dz order nodes physical_sites bonds center_site initial_maxbond krylovdim tol hermitian cache_reused trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight
+    return nothing
+end
+
+function _log_tdvp_step_start(ev::TDVP1_CBE, ψ::TTNS, H::TTNO, dz::Number;
+                              cache_reused::Bool)
+    t = ψ.topo
+    nodes = nnodes(t)
+    physical_sites = count(identity, ψ.hasphys)
+    bonds = nodes - 1
+    center_site = _tdvp_center_site(ψ)
+    initial_maxbond = _tdvp_max_bond_dim(ψ)
+    order = ev.order
+    krylovdim = ev.krylovdim
+    tol = ev.tol
+    hermitian = ishermitian(H)
+    enabled = ev.enabled
+    d_tilde_max = ev.d_tilde_max
+    enr_rtol = ev.enr_rtol
+    enr_atol = ev.enr_atol
+    trunc_maxdim = ev.trunc.maxdim
+    trunc_atol = ev.trunc.atol
+    trunc_rtol = ev.trunc.rtol
+    trunc_discarded_weight = ev.trunc.discarded_weight
+    @info "TDVP1_CBE step start" dz order nodes physical_sites bonds center_site initial_maxbond krylovdim tol hermitian cache_reused enabled d_tilde_max enr_rtol enr_atol trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight
+    return nothing
+end
+
+function _log_tdvp_step_complete(ev, ψ::TTNS; initial_maxbond::Int)
+    name = _tdvp_name(ev)
+    center_site = _tdvp_center_site(ψ)
+    final_maxbond = _tdvp_max_bond_dim(ψ)
+    @info "$name step complete" center_site initial_maxbond final_maxbond
+    return nothing
+end
+
 function step!(ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO, dz::Number)
-    if ev.cache === nothing || ev.cache.topo != ψ.topo
+    cache_reused = ev.cache !== nothing && ev.cache.topo == ψ.topo
+    if !cache_reused
         ev.cache = EnvCache(ψ.topo)
     end
+    initial_maxbond = ev.verbose ? _tdvp_max_bond_dim(ψ) : 0
+    ev.verbose && _log_tdvp_step_start(ev, ψ, H, dz; cache_reused)
     if ev.order == 1
         _tdvp1_sweep!(ev, ψ, H, dz; rev=false)
     elseif ev.order == 2
@@ -85,6 +178,7 @@ function step!(ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO, dz::Number)
     else
         throw(ArgumentError("order must be 1 or 2"))
     end
+    ev.verbose && _log_tdvp_step_complete(ev, ψ; initial_maxbond)
     return ψ
 end
 
@@ -93,6 +187,7 @@ function _tdvp1_sweep!(ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO, dz::Number
     cache = ev.cache::EnvCache
     order = rev ? reverse(postorder(t)) : postorder(t)
     herm = ishermitian(H)
+    maxbond_before = ev.verbose ? _tdvp_max_bond_dim(ψ) : 0
     move_center!(ψ, order[1]; cache)
     for i in eachindex(order)
         n = order[i]
@@ -114,6 +209,15 @@ function _tdvp1_sweep!(ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO, dz::Number
                 move_center!(ψ, v; cache)      # plain gauge move, no link evolution
             end
         end
+    end
+    if ev.verbose
+        name = _tdvp_name(ev)
+        direction = rev ? :reverse : :forward
+        site_updates = length(order)
+        link_updates = nnodes(t) - 1
+        center_site = _tdvp_center_site(ψ)
+        maxbond_after = _tdvp_max_bond_dim(ψ)
+        @info "$name sweep complete" direction dz site_updates link_updates center_site maxbond_before maxbond_after
     end
     return ψ
 end
@@ -165,9 +269,12 @@ end
 # ---------------------------------------------------------------------------
 
 function step!(ev::TDVP2, ψ::TTNS, H::TTNO, dz::Number)
-    if ev.cache === nothing || ev.cache.topo != ψ.topo
+    cache_reused = ev.cache !== nothing && ev.cache.topo == ψ.topo
+    if !cache_reused
         ev.cache = EnvCache(ψ.topo)
     end
+    initial_maxbond = ev.verbose ? _tdvp_max_bond_dim(ψ) : 0
+    ev.verbose && _log_tdvp_step_start(ev, ψ, H, dz; cache_reused)
     if ev.order == 1
         _tdvp2_sweep!(ev, ψ, H, dz; rev=false)
     elseif ev.order == 2
@@ -176,6 +283,7 @@ function step!(ev::TDVP2, ψ::TTNS, H::TTNO, dz::Number)
     else
         throw(ArgumentError("order must be 1 or 2"))
     end
+    ev.verbose && _log_tdvp_step_complete(ev, ψ; initial_maxbond)
     return ψ
 end
 
@@ -191,6 +299,7 @@ function _tdvp2_sweep!(ev::TDVP2, ψ::TTNS, H::TTNO, dz::Number; rev::Bool)
     herm = ishermitian(H)
     bonds = [n for n in postorder(t) if t.parent[n] != 0]
     B = lastindex(bonds)
+    maxbond_before = ev.verbose ? _tdvp_max_bond_dim(ψ) : 0
     for j in (rev ? reverse(eachindex(bonds)) : eachindex(bonds))
         n = bonds[j]
         m = t.parent[n]
@@ -203,6 +312,14 @@ function _tdvp2_sweep!(ev::TDVP2, ψ::TTNS, H::TTNO, dz::Number; rev::Bool)
             _bond_forward!(ev, ψ, H, n, m, dz; herm, center_on=:m)
             j == B || _site_backward!(ev, ψ, H, m, dz; herm)
         end
+    end
+    if ev.verbose
+        direction = rev ? :reverse : :forward
+        bond_updates = length(bonds)
+        backward_site_updates = max(bond_updates - 1, 0)
+        center_site = _tdvp_center_site(ψ)
+        maxbond_after = _tdvp_max_bond_dim(ψ)
+        @info "TDVP2 sweep complete" direction dz bond_updates backward_site_updates center_site maxbond_before maxbond_after
     end
     return ψ
 end

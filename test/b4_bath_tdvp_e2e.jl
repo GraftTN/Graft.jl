@@ -22,7 +22,8 @@ using Random
     dt = 0.015
     nsteps = 2
     vex = exact_evolve(Hd, to_dense(ψ), -im * dt * nsteps)
-    ev = TDVP2(trunc=TruncationScheme(maxdim=8, atol=1e-12))
+    ev = TDVP2(trunc=TruncationScheme(maxdim=8, atol=1e-12),
+               verbose=TEST_VERBOSE)
     for _ in 1:nsteps
         step!(ev, ψ, O, -im * dt)
     end

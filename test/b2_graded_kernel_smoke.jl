@@ -20,7 +20,8 @@ end
 
     ψd = product_ttns(ComplexF64, topo, phys,
                       Dict(:site1 => FermionParity(1), :site2 => FermionParity(0)))
-    _, Es = dmrg2!(ψd, O; trunc=TruncationScheme(maxdim=4, atol=1e-12), nsweeps=4)
+    _, Es = dmrg2!(ψd, O; trunc=TruncationScheme(maxdim=4, atol=1e-12),
+                   nsweeps=4, verbose=TEST_VERBOSE)
     @test Es[end] ≈ E0 atol = 1e-10
     @test collect(sectors(domain(ψd[topo.root])[1])) == [FermionParity(1)]
 
@@ -30,7 +31,8 @@ end
     dt = 0.04
     nsteps = 2
     vex = exact_evolve(Hd, to_dense(ψt), -im * dt * nsteps)
-    ev = TDVP2(trunc=TruncationScheme(maxdim=4, atol=1e-12))
+    ev = TDVP2(trunc=TruncationScheme(maxdim=4, atol=1e-12),
+               verbose=TEST_VERBOSE)
     for _ in 1:nsteps
         step!(ev, ψt, O, -im * dt)
     end

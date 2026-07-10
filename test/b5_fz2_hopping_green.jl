@@ -18,7 +18,8 @@ using LinearAlgebra: I, dot, norm
                       Dict(:site1 => FermionParity(0), :site2 => FermionParity(0)))
     ts = [0.0, 0.04, 0.08]
     vals = correlator(ψ0, 0.0, :site1 => F.C, :site1 => F.Cd, ts;
-                      H=O, evolver=TDVP2(trunc=TruncationScheme(maxdim=4, atol=1e-12)))
+                      H=O, evolver=TDVP2(trunc=TruncationScheme(maxdim=4, atol=1e-12),
+                                         verbose=TEST_VERBOSE))
 
     Hd = dense_hamiltonian(H, topo, phys)
     v0 = to_dense(ψ0)

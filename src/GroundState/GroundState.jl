@@ -28,14 +28,18 @@ Single-site DMRG: post-order + reverse sweeps, local Lanczos ground state of
 the one-site effective Hamiltonian at every node. Bond dimensions are fixed —
 start from a state with the target bond spaces (or wait for `dmrg1_3s!`).
 Returns the per-half-sweep energy trace; stops early when the energy change
-drops below `tol`.
+drops below `tol`. With `verbose=true`, emits setup and per-sweep `@info`
+records with topology, solver, energy, convergence, center, and bond statistics.
 """
 function dmrg1!(ψ::TTNS, H::TTNO; nsweeps::Int=10, tol::Float64=1e-10,
-                krylovdim::Int=20, verbose::Bool=false)
+                krylovdim::Int=20, verbose::Bool=true)
     ishermitian(H) || throw(ArgumentError("dmrg1!: DMRG requires ishermitian(H) == true (§9.8)"))
     cache = EnvCache(ψ.topo)
     energies = Float64[]
     order = postorder(ψ.topo)
+    verbose && _log_dmrg_start("dmrg1!", ψ; nsweeps, tol, krylovdim,
+                               updates_per_sweep=2 * length(order),
+                               fixed_bonds=true)
     for sweep in 1:nsweeps
         E = NaN
         for n in Iterators.flatten((order, Iterators.reverse(order)))
@@ -47,8 +51,10 @@ function dmrg1!(ψ::TTNS, H::TTNO; nsweeps::Int=10, tol::Float64=1e-10,
             update_tensor!(ψ, n, vecs[1]; caches=(cache,))
         end
         push!(energies, E)
-        verbose && @info "dmrg1! sweep $sweep" E
-        length(energies) > 1 && abs(energies[end] - energies[end - 1]) < tol && break
+        converged = _energy_converged(energies, tol)
+        verbose && _log_dmrg_sweep("dmrg1!", ψ, sweep, energies; converged,
+                                   updates=2 * length(order))
+        converged && break
     end
     return ψ, energies
 end
@@ -58,16 +64,21 @@ end
 
 Two-site DMRG: sweeps every edge (post-order and reverse), Lanczos on the
 bond's two-site block, truncated split through `TruncationScheme` (§9.5).
-Grows bond dimensions up to `trunc.maxdim`.
+Grows bond dimensions up to `trunc.maxdim`. With `verbose=true`, emits setup
+and per-sweep `@info` records with topology, solver, truncation, energy,
+convergence, center, and bond statistics.
 """
 function dmrg2!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(),
                 nsweeps::Int=10, tol::Float64=1e-10, krylovdim::Int=20,
-                verbose::Bool=false)
+                verbose::Bool=true)
     ishermitian(H) || throw(ArgumentError("dmrg2!: DMRG requires ishermitian(H) == true (§9.8)"))
     t = ψ.topo
     cache = EnvCache(t)
     energies = Float64[]
     bonds = [n for n in postorder(t) if t.parent[n] != 0]   # edge ≡ its child node
+    verbose && _log_dmrg_trunc_start("dmrg2!", ψ; nsweeps, tol, krylovdim,
+                                     updates_per_sweep=2 * length(bonds),
+                                     trunc)
     for sweep in 1:nsweeps
         E = NaN
         for (n, center_on) in Iterators.flatten(
@@ -82,8 +93,10 @@ function dmrg2!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(),
             split_two_site!(ψ, vecs[1], n, m; trunc, center_on)
         end
         push!(energies, E)
-        verbose && @info "dmrg2! sweep $sweep" E
-        length(energies) > 1 && abs(energies[end] - energies[end - 1]) < tol && break
+        converged = _energy_converged(energies, tol)
+        verbose && _log_dmrg_sweep("dmrg2!", ψ, sweep, energies; converged,
+                                   updates=2 * length(bonds))
+        converged && break
     end
     return ψ, energies
 end
@@ -97,7 +110,9 @@ optimization is `dmrg1!`'s one-site Lanczos update; the bond growth step is the
 shared [`expand!`](@ref) primitive and therefore uses `TruncationScheme` as the
 single truncation entry point. `mixing` may be a number, vector, or function
 `sweep -> α`; `α == 0` skips expansion for that sweep. If
-`expand_scheme=:rsvd`, pass an explicit `rng`.
+`expand_scheme=:rsvd`, pass an explicit `rng`. With `verbose=true`, emits setup
+and per-sweep `@info` records with topology, solver, expansion, truncation,
+energy, convergence, center, and bond statistics.
 """
 function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(; maxdim=100),
                    nsweeps::Int=10, tol::Float64=1e-10, krylovdim::Int=20,
@@ -105,13 +120,18 @@ function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(;
                    rng::Union{Nothing,AbstractRNG}=nothing,
                    rsvd_oversample::Int=8, rsvd_poweriter::Int=0,
                    enr_rtol::Float64=1e-10, enr_atol::Float64=1e-12,
-                   verbose::Bool=false)
+                   verbose::Bool=true)
     ishermitian(H) || throw(ArgumentError("dmrg1_3s!: DMRG requires ishermitian(H) == true (§9.8)"))
     t = ψ.topo
     cache = EnvCache(t)
     energies = Float64[]
     order = postorder(t)
     bonds = [n for n in order if t.parent[n] != 0]
+    verbose && _log_dmrg_expansion_start("dmrg1_3s!", ψ; nsweeps, tol, krylovdim,
+                                         updates_per_sweep=2 * length(order),
+                                         trunc, expand_scheme, max_add,
+                                         rsvd_oversample, rsvd_poweriter,
+                                         enr_rtol, enr_atol)
     for sweep in 1:nsweeps
         E = NaN
         for n in Iterators.flatten((order, Iterators.reverse(order)))
@@ -131,8 +151,12 @@ function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(;
             end
         end
         push!(energies, E)
-        verbose && @info "dmrg1_3s! sweep $sweep" E α maxbond=maximum(_bond_dims(ψ))
-        length(energies) > 1 && abs(energies[end] - energies[end - 1]) < tol && break
+        converged = _energy_converged(energies, tol)
+        verbose && _log_dmrg_expansion_sweep("dmrg1_3s!", ψ, sweep, energies;
+                                             converged, updates=2 * length(order),
+                                             alpha=α,
+                                             expanded_bonds=iszero(α) ? 0 : length(bonds))
+        converged && break
     end
     return ψ, energies
 end
@@ -147,5 +171,86 @@ _mixing_value(αs::AbstractVector, sweep::Int) = αs[min(sweep, lastindex(αs))]
 _mixing_value(f, sweep::Int) = f(sweep)
 
 _bond_dims(ψ::TTNS) = [dim(virtualspace(ψ, n)) for n in 1:nnodes(ψ.topo) if ψ.topo.parent[n] != 0]
+function _max_bond_dim(ψ::TTNS)
+    ds = _bond_dims(ψ)
+    return isempty(ds) ? 1 : maximum(ds)
+end
+_delta_energy(energies::Vector{Float64}) =
+    length(energies) > 1 ? energies[end] - energies[end - 1] : NaN
+_energy_converged(energies::Vector{Float64}, tol::Float64) =
+    length(energies) > 1 && abs(_delta_energy(energies)) < tol
+
+function _log_dmrg_start(name::String, ψ::TTNS; nsweeps::Int, tol::Float64,
+                         krylovdim::Int, updates_per_sweep::Int,
+                         fixed_bonds::Bool=false)
+    t = ψ.topo
+    nodes = nnodes(t)
+    physical_sites = count(identity, ψ.hasphys)
+    bonds = nnodes(t) - 1
+    center_site = nodeid(t, center(ψ))
+    initial_maxbond = _max_bond_dim(ψ)
+    @info "$name start" nodes physical_sites bonds center_site nsweeps tol krylovdim updates_per_sweep initial_maxbond fixed_bonds
+    return nothing
+end
+
+function _log_dmrg_trunc_start(name::String, ψ::TTNS; nsweeps::Int, tol::Float64,
+                               krylovdim::Int, updates_per_sweep::Int,
+                               trunc::TruncationScheme)
+    t = ψ.topo
+    nodes = nnodes(t)
+    physical_sites = count(identity, ψ.hasphys)
+    bonds = nnodes(t) - 1
+    center_site = nodeid(t, center(ψ))
+    initial_maxbond = _max_bond_dim(ψ)
+    trunc_maxdim = trunc.maxdim
+    trunc_atol = trunc.atol
+    trunc_rtol = trunc.rtol
+    trunc_discarded_weight = trunc.discarded_weight
+    @info "$name start" nodes physical_sites bonds center_site nsweeps tol krylovdim updates_per_sweep initial_maxbond trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight
+    return nothing
+end
+
+function _log_dmrg_expansion_start(name::String, ψ::TTNS; nsweeps::Int, tol::Float64,
+                                   krylovdim::Int, updates_per_sweep::Int,
+                                   trunc::TruncationScheme, expand_scheme::Symbol,
+                                   max_add::Int, rsvd_oversample::Int,
+                                   rsvd_poweriter::Int, enr_rtol::Float64,
+                                   enr_atol::Float64)
+    t = ψ.topo
+    nodes = nnodes(t)
+    physical_sites = count(identity, ψ.hasphys)
+    bonds = nnodes(t) - 1
+    center_site = nodeid(t, center(ψ))
+    initial_maxbond = _max_bond_dim(ψ)
+    trunc_maxdim = trunc.maxdim
+    trunc_atol = trunc.atol
+    trunc_rtol = trunc.rtol
+    trunc_discarded_weight = trunc.discarded_weight
+    @info "$name start" nodes physical_sites bonds center_site nsweeps tol krylovdim updates_per_sweep initial_maxbond trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight expand_scheme max_add rsvd_oversample rsvd_poweriter enr_rtol enr_atol
+    return nothing
+end
+
+function _log_dmrg_sweep(name::String, ψ::TTNS, sweep::Int,
+                         energies::Vector{Float64};
+                         converged::Bool, updates::Int)
+    energy = energies[end]
+    delta_energy = _delta_energy(energies)
+    center_site = nodeid(ψ.topo, center(ψ))
+    maxbond = _max_bond_dim(ψ)
+    @info "$name sweep complete" sweep energy delta_energy converged updates center_site maxbond
+    return nothing
+end
+
+function _log_dmrg_expansion_sweep(name::String, ψ::TTNS, sweep::Int,
+                                   energies::Vector{Float64};
+                                   converged::Bool, updates::Int,
+                                   alpha, expanded_bonds::Int)
+    energy = energies[end]
+    delta_energy = _delta_energy(energies)
+    center_site = nodeid(ψ.topo, center(ψ))
+    maxbond = _max_bond_dim(ψ)
+    @info "$name sweep complete" sweep energy delta_energy converged updates center_site maxbond alpha expanded_bonds
+    return nothing
+end
 
 end # module GroundState

@@ -43,7 +43,8 @@ end
     Hd = dense_hamiltonian(H, ψ)
     E0, v0 = exact_groundstate(Hd)
 
-    _, Es = dmrg2!(ψ, O; trunc=TruncationScheme(maxdim=16, atol=1e-12), nsweeps=8)
+    _, Es = dmrg2!(ψ, O; trunc=TruncationScheme(maxdim=16, atol=1e-12),
+                   nsweeps=8, verbose=TEST_VERBOSE)
     @test abs(Es[end] - E0) < 1e-8
 
     Nop = S.N
@@ -53,7 +54,8 @@ end
     ts = [0.0, 0.05, 0.1]
 
     vals = correlator(ψ, E0, :site2 => Nop, :site2 => Nop, ts;
-                      H=O, evolver=TDVP2(trunc=TruncationScheme(maxdim=16, atol=1e-12))) .- nbar^2
+                      H=O, evolver=TDVP2(trunc=TruncationScheme(maxdim=16, atol=1e-12),
+                                         verbose=TEST_VERBOSE)) .- nbar^2
     ref = [exp(im * E0 * t) * dot(Nmat * v0, exact_evolve(Hd, Nmat * v0, -im * t)) - nbar_ref^2
            for t in ts]
 
