@@ -37,10 +37,12 @@ plan_cache_stats(c::EnvCache) =
 function _effective_map!(c::EnvCache, kind::Symbol, spec::ContractionSpec,
                          protos, statics::Tuple, T::DataType;
                          optimize::Bool=true, memory_weight::Real=1,
-                         sector_aware::Bool=true)
+                         sector_aware::Bool=true,
+                         memory_cap_bytes::Union{Nothing,Real}=nothing)
     plan, hit = Planning.get_or_plan!(c.plans, kind, spec, protos, T;
                                       optimize=optimize, memory_weight=memory_weight,
-                                      sector_aware=sector_aware)
+                                      sector_aware=sector_aware,
+                                      memory_cap_bytes=memory_cap_bytes)
     if hit
         c.plan_hits += 1
     else

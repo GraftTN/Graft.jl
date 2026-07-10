@@ -27,6 +27,100 @@ function _prototype_dims(proto)
     return Int[dim(_prototype_leg(proto, i)) for i in 1:numind(proto)]
 end
 
+"""Best scalar type available from data-valued prototypes, else Float64."""
+function _planning_scalar_type(protos)
+    for proto in protos
+        proto isa AbstractTensorMap && return scalartype(proto)
+    end
+    # Shape-only TensorMapSpace fixtures intentionally carry no scalar type.
+    # Float64 preserves the former element-only planner's neutral default;
+    # cache-backed production planning passes the actual scalar type explicitly.
+    return Float64
+end
+
+function _scalar_byte_width(T::DataType)
+    isconcretetype(T) || throw(ArgumentError("planning scalar type must be concrete, got $T"))
+    return sizeof(T)
+end
+
+"""
+    _stored_payload_elements(space_, dense_fallback) -> Float64
+
+TensorKit's `dim(::TensorMapSpace)` is the number of stored scalar payload
+entries across blocks.  It is therefore the right input model for symmetric
+maps; ordinary spaces simply report their dense product.  A few deliberately
+minimal dimensions-only fixtures have no structural `dim` implementation, in
+which case the dense payload remains the conservative fallback.
+"""
+function _stored_payload_elements(space_, dense_fallback::Real)
+    try
+        return Float64(dim(space_))
+    catch err
+        err isa InterruptException && rethrow()
+        return Float64(dense_fallback)
+    end
+end
+
+@inline function _is_identity_layout(order, n::Int)
+    length(order) == n || return false
+    for (i, j) in enumerate(order)
+        i == j || return false
+    end
+    return true
+end
+
+"""
+    _known_transform_payloads(metrics, out, ...)
+
+Return conservative dense and sector-stored payloads for transformation
+buffers whose shape is known from TensorOperations' expert-mode partitions.
+Each non-identity input/output permutation may require a full extra payload;
+conjugated operands are conservatively charged as a transform too.  This does
+not invent a BLAS workspace estimate -- unknown backend scratch remains
+outside the model -- but makes every known full-payload temporary explicit.
+"""
+function _known_transform_payloads(metrics, out::Tuple,
+                                   dense_a::Real, dense_b::Real, dense_out::Real,
+                                   sector_a::Real, sector_b::Real, sector_out::Real,
+                                   ninds_a::Int, ninds_b::Int,
+                                   conj_a::Bool, conj_b::Bool;
+                                   profile=nothing)
+    pA = (metrics.oindA..., metrics.cindA...)
+    pB = (metrics.cindB..., metrics.oindB...)
+    pAB = (out[1]..., out[2]...)
+    perm_dense = 0.0
+    perm_sector = 0.0
+    permuted_a_sector = profile === nothing ? sector_a :
+                        profile.left_permuted_stored_elements
+    permuted_b_sector = profile === nothing ? sector_b :
+                        profile.right_permuted_stored_elements
+    product_sector = profile === nothing ? sector_out :
+                     profile.product_stored_elements
+    if !_is_identity_layout(pA, ninds_a)
+        perm_dense += dense_a
+        perm_sector += permuted_a_sector
+    end
+    if !_is_identity_layout(pB, ninds_b)
+        perm_dense += dense_b
+        perm_sector += permuted_b_sector
+    end
+    if !_is_identity_layout(pAB, length(metrics.dims))
+        perm_dense += dense_out
+        perm_sector += product_sector
+    end
+    # TensorOperations can often fuse conjugation into a block kernel, but a
+    # full transformed operand is a known safe upper bound when that is not
+    # possible.  Keep it distinct from permutation diagnostics below.
+    temporary_dense = perm_dense + (conj_a ? dense_a : 0.0) +
+                      (conj_b ? dense_b : 0.0)
+    temporary_sector = perm_sector + (conj_a ? sector_a : 0.0) +
+                       (conj_b ? sector_b : 0.0)
+    return (temporary_dense=temporary_dense,
+            permutation_dense=perm_dense,
+            temporary_sector=temporary_sector,
+            permutation_sector=perm_sector)
+end
+
 function _label_dimensions(spec::ContractionSpec, protos)
     length(protos) == length(spec.labels) ||
         throw(ArgumentError("planning prototypes do not match ContractionSpec slots"))
@@ -96,9 +190,9 @@ function _sector_pair_profile(metrics, spaceA, conjA::Bool, spaceB, conjB::Bool,
 end
 
 function _score(plan::ContractionPlan, memory_weight::Real)
-    return plan.flops + Float64(memory_weight) * plan.peak_elements
+    return plan.flops + Float64(memory_weight) * plan.live_peak_bytes
 end
 
 function _sector_score(plan::ContractionPlan, memory_weight::Real)
-    return plan.sector_flops + Float64(memory_weight) * plan.sector_peak_elements
+    return plan.sector_flops + Float64(memory_weight) * plan.sector_live_peak_bytes
 end

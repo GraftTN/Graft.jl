@@ -184,7 +184,10 @@ actual per-sector GEMM costs `Σ_q 2m_qk_qn_q`; `output_elements` is the exact
 symmetry-reduced stored payload of the output; and `largest_block_elements`
 is the largest GEMM result block.  `output_largest_block_elements` records the
 largest block after `pAB`'s final repartition, while `peak_block_elements` is
-their maximum and is the safe live-block diagnostic for Planning.
+their maximum and is the safe live-block diagnostic for Planning.  The three
+`*_stored_elements` fields expose the known full-payload transform layouts for
+Planning's live-memory model: the two matrix-product operands and the product
+before final output repartition.
 
 The block loop intentionally follows the *matrix-product* structure
 `compose(permute(A, pA), permute(B, pB))`, not the final repartitioned output:
@@ -223,6 +226,9 @@ function pair_cost(A::TensorMapSpace, pA::Tuple, conjA::Bool,
     return (output=output,
             sector_flops=supported ? flops : NaN,
             output_elements=Float64(dim(output)),
+            left_permuted_stored_elements=Float64(dim(LA)),
+            right_permuted_stored_elements=Float64(dim(LB)),
+            product_stored_elements=Float64(dim(product_space)),
             block_count=nblocks,
             largest_block_elements=largest,
             output_largest_block_elements=output_largest,

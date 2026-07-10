@@ -88,20 +88,23 @@ One-site effective Hamiltonian at node `n`. The returned callable maps a tensor
 with the structure of `ψ[n]` to the same `(N-1, 1)` TensorMap partition. The
 plan cache is shape-only and safely survives ordinary environment invalidation.
 Set `optimize=false` to force the Phase-1 env-first plan; `memory_weight`
-selects the Phase-2 dense FLOP-plus-memory objective and is part of cache
-identity.  `sector_aware=true` (the default) uses the Phase-3 exact
+selects the dense FLOP-plus-live-byte objective and is part of cache identity.
+`memory_cap_bytes` is a hard conservative live-memory cap and is likewise
+part of cache identity.  `sector_aware=true` (the default) uses the Phase-3 exact
 unique-fusion block-GEMM objective when the TensorKit spaces support it;
 non-unique fusion spaces retain the dense model.  Planar/anyonic execution is
 outside the current regular TensorOperations backend surface.
 """
 function eff_h1(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int;
                 optimize::Bool=true, memory_weight::Real=1,
-                sector_aware::Bool=true)
+                sector_aware::Bool=true,
+                memory_cap_bytes::Union{Nothing,Real}=nothing)
     spec, statics, protos = _h1_spec(cache, ψ, H, n)
     return _effective_map!(cache, :h1, spec, protos, statics,
                            scalartype(ψ.tensors[n]);
                            optimize=optimize, memory_weight=memory_weight,
-                           sector_aware=sector_aware)
+                           sector_aware=sector_aware,
+                           memory_cap_bytes=memory_cap_bytes)
 end
 
 function _h0_input_space(En::AbstractTensorMap, Em::AbstractTensorMap)
@@ -131,12 +134,14 @@ keywords have the same semantics as `eff_h1`.
 """
 function eff_h0(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int, m::Int;
                 optimize::Bool=true, memory_weight::Real=1,
-                sector_aware::Bool=true)
+                sector_aware::Bool=true,
+                memory_cap_bytes::Union{Nothing,Real}=nothing)
     spec, statics, protos = _h0_spec(cache, ψ, H, n, m)
     return _effective_map!(cache, :h0, spec, protos, statics,
                            scalartype(ψ.tensors[n]);
                            optimize=optimize, memory_weight=memory_weight,
-                           sector_aware=sector_aware)
+                           sector_aware=sector_aware,
+                           memory_cap_bytes=memory_cap_bytes)
 end
 
 """
@@ -324,10 +329,12 @@ keywords have the same semantics as `eff_h1`.
 """
 function eff_h2(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int, m::Int;
                 optimize::Bool=true, memory_weight::Real=1,
-                sector_aware::Bool=true)
+                sector_aware::Bool=true,
+                memory_cap_bytes::Union{Nothing,Real}=nothing)
     spec, statics, protos = _h2_spec(cache, ψ, H, n, m)
     return _effective_map!(cache, :h2, spec, protos, statics,
                            scalartype(ψ.tensors[n]);
                            optimize=optimize, memory_weight=memory_weight,
-                           sector_aware=sector_aware)
+                           sector_aware=sector_aware,
+                           memory_cap_bytes=memory_cap_bytes)
 end

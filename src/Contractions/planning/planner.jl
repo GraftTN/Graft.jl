@@ -54,6 +54,96 @@ function _greedy_tree(spec::ContractionSpec, dims::Vector{Vector{Int}})
 end
 
 """
+Small, bounded dense forest state for the hard-cap fallback.  It models only
+reclaimable intermediate payloads: every leaf operand is an order-independent
+persistent baseline in the full live-byte model, so including it here would
+not improve the beam ordering.
+"""
+struct _MemoryBeamNode
+    tree::Any
+    labels::Vector{Int}
+    dims::Vector{Int}
+    payload::Float64
+    leaf::Bool
+end
+
+struct _MemoryBeamState
+    nodes::Vector{_MemoryBeamNode}
+    live::Float64
+    peak::Float64
+    flops::Float64
+end
+
+"""
+    _memory_beam_trees(spec, dims; width=16) -> Vector{Any}
+
+Deterministic bounded fallback used only when a caller supplied a hard memory
+cap above the exact-DP limit.  It explores forest merges by simulated live
+intermediate payload before FLOPs, retaining at most `width` states at each
+depth.  Final candidates are still compiled and checked against the exact
+byte model and the env-first floors, so this heuristic can never permit an
+over-cap plan merely because its coarse ordering estimate was optimistic.
+"""
+function _memory_beam_trees(spec::ContractionSpec, dims::Vector{Vector{Int}};
+                            width::Integer=16)
+    width > 0 || throw(ArgumentError("memory beam width must be positive"))
+    leaves = _MemoryBeamNode[
+        _MemoryBeamNode(i, copy(spec.labels[i]), copy(dims[i]),
+                        _prod_dims(dims[i]), true)
+        for i in eachindex(spec.labels)
+    ]
+    states = _MemoryBeamState[_MemoryBeamState(leaves, 0.0, 0.0, 0.0)]
+    while any(length(state.nodes) > 1 for state in states)
+        candidates = _MemoryBeamState[]
+        for state in states
+            length(state.nodes) > 1 || begin
+                push!(candidates, state)
+                continue
+            end
+            pairs = Tuple{Int,Int}[]
+            for i in 1:(length(state.nodes) - 1), j in (i + 1):length(state.nodes)
+                _has_shared_positive_label(state.nodes[i].labels,
+                                           state.nodes[j].labels) &&
+                    push!(pairs, (i, j))
+            end
+            if isempty(pairs)
+                for i in 1:(length(state.nodes) - 1), j in (i + 1):length(state.nodes)
+                    push!(pairs, (i, j))
+                end
+            end
+            for (i, j) in pairs
+                left, right = state.nodes[i], state.nodes[j]
+                metrics = dense_cost(left.labels, left.dims, right.labels, right.dims)
+                released = (left.leaf ? 0.0 : left.payload) +
+                           (right.leaf ? 0.0 : right.payload)
+                # One result payload is always live during the contraction.
+                # The complete compiler subsequently adds known permutation
+                # buffers, which is why this beam remains a candidate source
+                # rather than an authority on cap compliance.
+                peak = max(state.peak, state.live + metrics.peak_elements)
+                merged = _MemoryBeamNode(Any[left.tree, right.tree],
+                                         metrics.labels, metrics.dims,
+                                         metrics.peak_elements, false)
+                nodes = _MemoryBeamNode[]
+                for k in eachindex(state.nodes)
+                    k == i || k == j || push!(nodes, state.nodes[k])
+                end
+                push!(nodes, merged)
+                push!(candidates,
+                      _MemoryBeamState(nodes,
+                                       state.live - released + merged.payload,
+                                       peak, state.flops + metrics.flops))
+            end
+        end
+        sort!(candidates; by=state -> (state.peak, state.flops))
+        keep = min(Int(width), length(candidates))
+        states = candidates[1:keep]
+        all(length(state.nodes) == 1 for state in states) && break
+    end
+    return Any[only(state.nodes).tree for state in states]
+end
+
+"""
 Structural DP state used only by the Phase-3 unique-fusion planner.
 `space` is the exact TensorKit HomSpace of the all-codomain intermediate, so
 states with equal label sets but different fusion/leg layouts cannot be
@@ -232,6 +322,12 @@ mutable struct _CompileState
     sector_flops::Float64
     sector_peak::Float64
     sector_block_peak::Float64
+    output_dense_payloads::Vector{Float64}
+    output_sector_payloads::Vector{Float64}
+    temporary_dense_payloads::Vector{Float64}
+    permutation_dense_payloads::Vector{Float64}
+    temporary_sector_payloads::Vector{Float64}
+    permutation_sector_payloads::Vector{Float64}
 end
 
 function _output_partition(source_labels::Vector{Int}, spec::ContractionSpec)
@@ -255,14 +351,17 @@ function _compile_tree!(state::_CompileState, tree, spec::ContractionSpec,
                         root::Bool=false)
     if tree isa Integer
         slot = Int(tree)
-        return slot, copy(spec.labels[slot]), copy(dims[slot]),
-               _prototype_space(protos[slot]), spec.conjs[slot]
+        space_ = _prototype_space(protos[slot])
+        dense_payload = _prod_dims(dims[slot])
+        return slot, copy(spec.labels[slot]), copy(dims[slot]), space_,
+               spec.conjs[slot], dense_payload,
+               _stored_payload_elements(space_, dense_payload)
     end
     length(tree) == 2 || throw(ArgumentError("contraction tree nodes must be binary"))
-    a, labels_a, dims_a, space_a, conj_a =
+    a, labels_a, dims_a, space_a, conj_a, dense_a, sector_a =
         _compile_tree!(state, tree[1], spec, dims, protos,
                        structural_metrics, canonical_intermediates)
-    b, labels_b, dims_b, space_b, conj_b =
+    b, labels_b, dims_b, space_b, conj_b, dense_b, sector_b =
         _compile_tree!(state, tree[2], spec, dims, protos,
                        structural_metrics, canonical_intermediates)
     metrics = dense_cost(labels_a, dims_a, labels_b, dims_b)
@@ -278,11 +377,24 @@ function _compile_tree!(state::_CompileState, tree, spec::ContractionSpec,
     profile = structural_metrics ?
               _sector_pair_profile(metrics, space_a, conj_a, space_b, conj_b, out) :
               nothing
+    dense_out = metrics.peak_elements
+    sector_out = profile === nothing ? dense_out : profile.output_elements
+    transforms = _known_transform_payloads(metrics, out,
+                                           dense_a, dense_b, dense_out,
+                                           sector_a, sector_b, sector_out,
+                                           length(dims_a), length(dims_b),
+                                           conj_a, conj_b; profile=profile)
     push!(state.steps,
           PairStep(a, b, dst,
                    Tuple(metrics.oindA), Tuple(metrics.cindA),
                    Tuple(metrics.oindB), Tuple(metrics.cindB),
                    conj_a, conj_b, out))
+    push!(state.output_dense_payloads, dense_out)
+    push!(state.output_sector_payloads, sector_out)
+    push!(state.temporary_dense_payloads, transforms.temporary_dense)
+    push!(state.permutation_dense_payloads, transforms.permutation_dense)
+    push!(state.temporary_sector_payloads, transforms.temporary_sector)
+    push!(state.permutation_sector_payloads, transforms.permutation_sector)
     state.flops += metrics.flops
     state.peak = max(state.peak, metrics.peak_elements)
     if profile === nothing
@@ -293,7 +405,7 @@ function _compile_tree!(state::_CompileState, tree, spec::ContractionSpec,
         state.sector_flops += 2 * metrics.flops
         state.sector_peak = max(state.sector_peak, metrics.peak_elements)
         state.sector_block_peak = max(state.sector_block_peak, metrics.peak_elements)
-        return dst, out_labels, out_dims, nothing, false
+        return dst, out_labels, out_dims, nothing, false, dense_out, sector_out
     elseif profile.supported && isfinite(state.sector_flops)
         state.sector_flops += profile.sector_flops
     else
@@ -302,12 +414,78 @@ function _compile_tree!(state::_CompileState, tree, spec::ContractionSpec,
     state.sector_peak = max(state.sector_peak, profile.output_elements)
     state.sector_block_peak = max(state.sector_block_peak,
                                   profile.peak_block_elements)
-    return dst, out_labels, out_dims, profile.output, false
+    return dst, out_labels, out_dims, profile.output, false, dense_out, sector_out
+end
+
+"""
+    _compiled_live_memory_metrics(state, dims, spaces, scalar_bytes)
+
+Model the executor's allocation high-water mark rather than only the largest
+result.  Leaf operands are a persistent baseline: the caller owns the dynamic
+input and `EffectiveMap.statics` owns every static input, so clearing executor
+slots cannot release them.  Internal outputs follow the plan's postorder
+liveness.  At a binary step both source intermediates, the new output, and
+the explicit known transformation buffers are live together.
+"""
+function _compiled_live_memory_metrics(state::_CompileState,
+                                       dims::Vector{Vector{Int}}, spaces,
+                                       scalar_bytes::Int)
+    dense_operand_elements = sum(_prod_dims(d) for d in dims; init=0.0)
+    sector_operand_elements = sum(
+        _stored_payload_elements(space_, _prod_dims(dims[i]))
+        for (i, space_) in enumerate(spaces);
+        init=0.0,
+    )
+    dense_live = Dict{Int,Float64}()
+    sector_live = Dict{Int,Float64}()
+    dense_peak = dense_operand_elements
+    sector_peak = sector_operand_elements
+    temporary_peak = 0.0
+    permutation_peak = 0.0
+    sector_temporary_peak = 0.0
+    sector_permutation_peak = 0.0
+
+    for i in eachindex(state.steps)
+        step = state.steps[i]
+        dense_output = state.output_dense_payloads[i]
+        sector_output = state.output_sector_payloads[i]
+        dense_temporary = state.temporary_dense_payloads[i]
+        sector_temporary = state.temporary_sector_payloads[i]
+        dense_peak = max(dense_peak,
+                         dense_operand_elements + sum(values(dense_live)) +
+                         dense_output + dense_temporary)
+        sector_peak = max(sector_peak,
+                          sector_operand_elements + sum(values(sector_live)) +
+                          sector_output + sector_temporary)
+        temporary_peak = max(temporary_peak, dense_temporary)
+        permutation_peak = max(permutation_peak,
+                               state.permutation_dense_payloads[i])
+        sector_temporary_peak = max(sector_temporary_peak, sector_temporary)
+        sector_permutation_peak = max(sector_permutation_peak,
+                                      state.permutation_sector_payloads[i])
+        delete!(dense_live, step.a)
+        delete!(dense_live, step.b)
+        delete!(sector_live, step.a)
+        delete!(sector_live, step.b)
+        dense_live[step.dst] = dense_output
+        sector_live[step.dst] = sector_output
+    end
+
+    scale = Float64(scalar_bytes)
+    return (operand_bytes=dense_operand_elements * scale,
+            live_peak_bytes=dense_peak * scale,
+            known_temporary_peak_bytes=temporary_peak * scale,
+            known_permutation_peak_bytes=permutation_peak * scale,
+            sector_operand_bytes=sector_operand_elements * scale,
+            sector_live_peak_bytes=sector_peak * scale,
+            sector_known_temporary_peak_bytes=sector_temporary_peak * scale,
+            sector_known_permutation_peak_bytes=sector_permutation_peak * scale)
 end
 
 function _compile_plan(tree, spec::ContractionSpec, dims::Vector{Vector{Int}}, protos;
                        strategy::Symbol, structural_metrics::Bool,
-                       canonical_intermediates::Bool=false)
+                       canonical_intermediates::Bool=false,
+                       scalar_type::DataType=_planning_scalar_type(protos))
     spaces = [_prototype_space(proto) for proto in protos]
     initial_peak = maximum(_prod_dims(d) for d in dims; init=0.0)
     initial_sector_peak = structural_metrics ?
@@ -320,43 +498,99 @@ function _compile_plan(tree, spec::ContractionSpec, dims::Vector{Vector{Int}}, p
     initial_sector_flops = 0.0
     state = _CompileState(length(dims), PairStep[], 0.0, initial_peak,
                           initial_sector_flops, initial_sector_peak,
-                          initial_sector_block_peak)
-    output, _, _, _, _ = _compile_tree!(state, tree, spec, dims, protos,
-                                         structural_metrics,
-                                         canonical_intermediates, true)
+                          initial_sector_block_peak,
+                          Float64[], Float64[], Float64[], Float64[],
+                          Float64[], Float64[])
+    output, _, _, _, _, _, _ = _compile_tree!(state, tree, spec, dims, protos,
+                                              structural_metrics,
+                                              canonical_intermediates, true)
+    scalar_bytes = _scalar_byte_width(scalar_type)
+    live = _compiled_live_memory_metrics(state, dims, spaces, scalar_bytes)
     return ContractionPlan(state.nextslot, output, state.steps;
                            strategy, flops=state.flops, peak_elements=state.peak,
                            sector_flops=state.sector_flops,
                            sector_peak_elements=state.sector_peak,
-                           sector_peak_block_elements=state.sector_block_peak)
+                           sector_peak_block_elements=state.sector_block_peak,
+                           scalar_bytes=scalar_bytes,
+                           operand_bytes=live.operand_bytes,
+                           live_peak_bytes=live.live_peak_bytes,
+                           known_temporary_peak_bytes=live.known_temporary_peak_bytes,
+                           known_permutation_peak_bytes=live.known_permutation_peak_bytes,
+                           sector_operand_bytes=live.sector_operand_bytes,
+                           sector_live_peak_bytes=live.sector_live_peak_bytes,
+                           sector_known_temporary_peak_bytes=live.sector_known_temporary_peak_bytes,
+                           sector_known_permutation_peak_bytes=live.sector_known_permutation_peak_bytes)
+end
+
+function _canonical_memory_cap(memory_cap_bytes::Union{Nothing,Real})
+    memory_cap_bytes === nothing && return Inf
+    cap = Float64(memory_cap_bytes)
+    isfinite(cap) && cap >= 0 ||
+        throw(ArgumentError("memory_cap_bytes must be finite and nonnegative"))
+    return cap
+end
+
+"""
+Hard-cap guard.  Dense live bytes are an intentionally conservative upper
+bound; the sector-stored estimate is retained too so a malformed structural
+profile cannot make the cap less strict.  A plan must fit both estimates.
+"""
+@inline function _within_memory_cap(plan::ContractionPlan, cap::Float64)
+    return plan.live_peak_bytes <= cap && plan.sector_live_peak_bytes <= cap
+end
+
+@inline function _within_envfirst_memory_floors(candidate::ContractionPlan,
+                                                 envfirst::ContractionPlan)
+    return candidate.peak_elements <= envfirst.peak_elements &&
+           candidate.sector_peak_elements <= envfirst.sector_peak_elements &&
+           candidate.live_peak_bytes <= envfirst.live_peak_bytes &&
+           candidate.sector_live_peak_bytes <= envfirst.sector_live_peak_bytes
 end
 
 """
     plan_contraction(spec, protos;
-                     optimize=true, memory_weight=1, sector_aware=true) -> ContractionPlan
+                     optimize=true, memory_weight=1, sector_aware=true,
+                     scalar_type=..., memory_cap_bytes=nothing) -> ContractionPlan
 
 Compile the Phase-1 env-first plan plus Phase-2 dense candidates: TensorOperations'
 FLOP-optimal tree and a separate memory-greedy tree.  On eligible unique-fusion
 spaces, `sector_aware=true` additionally supplies an exact local DP (up to ten
 tensors) using TensorKit's per-block GEMM model.  Dense peak and
 symmetry-reduced stored peak are both hard-constrained by the env-first
-candidate; only then does selection optimize the relevant cost model.  Larger
-local networks, non-unique fusion spaces, and non-symmetric braiding cleanly
-retain Phase-2 dense selection until their corresponding cost/execution models
-are calibrated.
+candidate; the new conservative live-byte metrics obey the same floors.  A
+finite `memory_cap_bytes` is hard: no over-cap candidate is returned.  Above
+the exact-DP limit a bounded dense live-memory beam replaces the single greedy
+candidate only when such a cap is requested.  Larger local networks,
+non-unique fusion spaces, and non-symmetric braiding otherwise cleanly retain
+Phase-2 dense selection until their corresponding cost/execution models are
+calibrated.
 """
 function plan_contraction(spec::ContractionSpec, protos;
                           optimize::Bool=true, memory_weight::Real=1,
-                          sector_aware::Bool=true)
+                          sector_aware::Bool=true,
+                          scalar_type::DataType=_planning_scalar_type(protos),
+                          memory_cap_bytes::Union{Nothing,Real}=nothing)
     isfinite(memory_weight) && memory_weight >= 0 ||
         throw(ArgumentError("memory_weight must be finite and nonnegative"))
+    cap = _canonical_memory_cap(memory_cap_bytes)
+    isfinite(cap) && !isbitstype(scalar_type) &&
+        throw(ArgumentError("memory_cap_bytes requires an isbits scalar type; " *
+                            "$scalar_type has heap-owned payload outside the " *
+                            "conservative fixed-width model"))
     dims, label_dims = _label_dimensions(spec, protos)
     spaces = [_prototype_space(proto) for proto in protos]
     structural_metrics = all(Backend.sector_cost_supported, spaces) &&
                          any(Backend.sector_cost_nontrivial, spaces)
     heuristic = _compile_plan(_heuristic_tree(spec), spec, dims, protos;
-                              strategy=:env_first, structural_metrics=structural_metrics)
-    optimize || return heuristic
+                              strategy=:env_first, structural_metrics=structural_metrics,
+                              scalar_type=scalar_type)
+    if !optimize
+        _within_memory_cap(heuristic, cap) ||
+            throw(ArgumentError("env-first contraction plan requires at least " *
+                                "$(max(heuristic.live_peak_bytes, heuristic.sector_live_peak_bytes)) bytes, " *
+                                "above memory_cap_bytes=$cap"))
+        return heuristic
+    end
     candidates = ContractionPlan[heuristic]
 
     use_sector_model = sector_aware && structural_metrics
@@ -367,7 +601,8 @@ function plan_contraction(spec::ContractionSpec, protos;
                       _compile_plan(tree, spec, dims, protos;
                                     strategy=:sector_exact,
                                     structural_metrics=structural_metrics,
-                                    canonical_intermediates=true))
+                                    canonical_intermediates=true,
+                                    scalar_type=scalar_type))
             catch err
                 err isa InterruptException && rethrow()
             end
@@ -381,7 +616,8 @@ function plan_contraction(spec::ContractionSpec, protos;
             push!(candidates,
                   _compile_plan(_optimaltree(spec, label_dims), spec, dims, protos;
                                 strategy=:dense_optimal,
-                                structural_metrics=structural_metrics))
+                                structural_metrics=structural_metrics,
+                                scalar_type=scalar_type))
         catch err
             err isa InterruptException && rethrow()
         end
@@ -392,32 +628,51 @@ function plan_contraction(spec::ContractionSpec, protos;
             push!(candidates,
                   _compile_plan(_greedy_tree(spec, dims), spec, dims, protos;
                                 strategy=:memory_greedy,
-                                structural_metrics=structural_metrics))
+                                structural_metrics=structural_metrics,
+                                scalar_type=scalar_type))
         catch err
             err isa InterruptException && rethrow()
         end
     else
-        try
-            push!(candidates,
-                  _compile_plan(_greedy_tree(spec, dims), spec, dims, protos;
-                                strategy=:dense_greedy,
-                                structural_metrics=structural_metrics))
-        catch err
-            err isa InterruptException && rethrow()
+        if isfinite(cap)
+            for tree in _memory_beam_trees(spec, dims)
+                try
+                    push!(candidates,
+                          _compile_plan(tree, spec, dims, protos;
+                                        strategy=:memory_beam,
+                                        structural_metrics=structural_metrics,
+                                        scalar_type=scalar_type))
+                catch err
+                    err isa InterruptException && rethrow()
+                end
+            end
+        else
+            try
+                push!(candidates,
+                      _compile_plan(_greedy_tree(spec, dims), spec, dims, protos;
+                                    strategy=:dense_greedy,
+                                    structural_metrics=structural_metrics,
+                                    scalar_type=scalar_type))
+            catch err
+                err isa InterruptException && rethrow()
+            end
         end
     end
 
-    best = heuristic
-    best_score = use_sector_model ? _sector_score(best, memory_weight) :
-                                   _score(best, memory_weight)
+    best = nothing
+    best_score = Inf
     for candidate in candidates
-        candidate.peak_elements <= heuristic.peak_elements || continue
-        candidate.sector_peak_elements <= heuristic.sector_peak_elements || continue
+        _within_envfirst_memory_floors(candidate, heuristic) || continue
+        _within_memory_cap(candidate, cap) || continue
         score = use_sector_model ? _sector_score(candidate, memory_weight) :
                                    _score(candidate, memory_weight)
         if score < best_score
             best, best_score = candidate, score
         end
     end
+    best === nothing &&
+        throw(ArgumentError("no contraction plan fits memory_cap_bytes=$cap; " *
+                            "env-first requires at least " *
+                            "$(max(heuristic.live_peak_bytes, heuristic.sector_live_peak_bytes)) bytes"))
     return best
 end

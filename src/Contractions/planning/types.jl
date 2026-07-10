@@ -62,11 +62,18 @@ struct PairStep
 end
 
 """
-A concrete, cacheable sequence of pair contractions plus both Phase-2 dense and
-Phase-3 symmetry-aware metrics.  `peak_elements` remains deliberately dense:
-it is the hard memory-safety guard inherited from Phase 1.  The `sector_*`
-fields describe TensorKit's symmetry-reduced storage/GEMM layout and are only
-an optimization objective for unique-fusion sector types.
+A concrete, cacheable sequence of pair contractions plus dense and
+symmetry-aware metrics.
+
+`peak_elements` and the existing `sector_*_elements` diagnostics retain their
+original meaning: largest individual output/intermediate payload.  The
+`*_live_peak_bytes` fields are a separate conservative allocation model. They
+charge every original operand (which remains owned by the caller or an
+`EffectiveMap`), all simultaneously-live internal outputs, the new pair
+output, and known transformation buffers.  `scalar_bytes` makes the model
+independent of the scalar type.  The `sector_*` byte fields use TensorKit's
+stored block payload where structural planning supports it, and otherwise
+fall back to the dense model.
 """
 struct ContractionPlan
     nslots::Int
@@ -78,6 +85,15 @@ struct ContractionPlan
     sector_flops::Float64
     sector_peak_elements::Float64
     sector_peak_block_elements::Float64
+    scalar_bytes::Int
+    operand_bytes::Float64
+    live_peak_bytes::Float64
+    known_temporary_peak_bytes::Float64
+    known_permutation_peak_bytes::Float64
+    sector_operand_bytes::Float64
+    sector_live_peak_bytes::Float64
+    sector_known_temporary_peak_bytes::Float64
+    sector_known_permutation_peak_bytes::Float64
 end
 
 function ContractionPlan(nslots::Integer, output_slot::Integer,
@@ -85,12 +101,42 @@ function ContractionPlan(nslots::Integer, output_slot::Integer,
                          flops::Real=NaN, peak_elements::Real=NaN,
                          sector_flops::Real=NaN,
                          sector_peak_elements::Real=NaN,
-                         sector_peak_block_elements::Real=NaN)
+                         sector_peak_block_elements::Real=NaN,
+                         scalar_bytes::Integer=sizeof(Float64),
+                         operand_bytes::Real=NaN,
+                         live_peak_bytes::Real=NaN,
+                         known_temporary_peak_bytes::Real=NaN,
+                         known_permutation_peak_bytes::Real=NaN,
+                         sector_operand_bytes::Real=NaN,
+                         sector_live_peak_bytes::Real=NaN,
+                         sector_known_temporary_peak_bytes::Real=NaN,
+                         sector_known_permutation_peak_bytes::Real=NaN)
     return ContractionPlan(Int(nslots), Int(output_slot), steps, strategy,
                            Float64(flops), Float64(peak_elements),
                            Float64(sector_flops),
                            Float64(sector_peak_elements),
-                           Float64(sector_peak_block_elements))
+                           Float64(sector_peak_block_elements),
+                           Int(scalar_bytes), Float64(operand_bytes),
+                           Float64(live_peak_bytes),
+                           Float64(known_temporary_peak_bytes),
+                           Float64(known_permutation_peak_bytes),
+                           Float64(sector_operand_bytes),
+                           Float64(sector_live_peak_bytes),
+                           Float64(sector_known_temporary_peak_bytes),
+                           Float64(sector_known_permutation_peak_bytes))
+end
+
+# Preserve the pre-live-model positional constructor for downstream users that
+# construct a diagnostic plan directly.  Real plans are compiled through the
+# keyword constructor above and therefore always carry byte metrics.
+function ContractionPlan(nslots::Integer, output_slot::Integer,
+                         steps::Vector{PairStep}, strategy::Symbol,
+                         flops::Real, peak_elements::Real,
+                         sector_flops::Real, sector_peak_elements::Real,
+                         sector_peak_block_elements::Real)
+    return ContractionPlan(nslots, output_slot, steps;
+                           strategy, flops, peak_elements, sector_flops,
+                           sector_peak_elements, sector_peak_block_elements)
 end
 
 """
@@ -108,7 +154,8 @@ function Base.show(io::IO, f::EffectiveMap)
     print(io, "EffectiveMap(strategy=", f.plan.strategy,
           ", steps=", length(f.plan.steps),
           ", dense_peak≈", f.plan.peak_elements,
-          ", sector_peak≈", f.plan.sector_peak_elements, " elements)")
+          ", live_peak≈", f.plan.live_peak_bytes,
+          " B, sector_peak≈", f.plan.sector_peak_elements, " elements)")
 end
 
 """
@@ -124,16 +171,25 @@ struct PlanKey
     optimize::Bool
     memory_weight::Float64
     sector_aware::Bool
+    memory_cap_bytes::Float64
 end
 
 Base.:(==)(a::PlanKey, b::PlanKey) =
     a.kind == b.kind && a.shape == b.shape && a.T == b.T &&
     a.optimize == b.optimize && a.memory_weight == b.memory_weight &&
-    a.sector_aware == b.sector_aware
+    a.sector_aware == b.sector_aware &&
+    a.memory_cap_bytes == b.memory_cap_bytes
 Base.hash(k::PlanKey, h::UInt) =
-    hash(k.sector_aware,
-         hash(k.memory_weight, hash(k.optimize,
-                                    hash(k.T, hash(k.shape, hash(k.kind, h))))))
+    hash(k.memory_cap_bytes,
+         hash(k.sector_aware,
+              hash(k.memory_weight, hash(k.optimize,
+                                         hash(k.T, hash(k.shape, hash(k.kind, h)))))))
+
+# Keep the original positional key constructor source-compatible.  `Inf` is
+# the canonical cache identity for the absence of a hard memory cap.
+PlanKey(kind::Symbol, sig::UInt, shape::Tuple, T::DataType,
+        optimize::Bool, memory_weight::Real, sector_aware::Bool) =
+    PlanKey(kind, sig, shape, T, optimize, Float64(memory_weight), sector_aware, Inf)
 
 """Return all dense and symmetry-aware metrics attached to a compiled plan."""
 plan_metrics(plan::ContractionPlan) =
@@ -142,4 +198,13 @@ plan_metrics(plan::ContractionPlan) =
      sector_flops=plan.sector_flops,
      sector_peak_elements=plan.sector_peak_elements,
      sector_peak_block_elements=plan.sector_peak_block_elements,
+     scalar_bytes=plan.scalar_bytes,
+     operand_bytes=plan.operand_bytes,
+     live_peak_bytes=plan.live_peak_bytes,
+     known_temporary_peak_bytes=plan.known_temporary_peak_bytes,
+     known_permutation_peak_bytes=plan.known_permutation_peak_bytes,
+     sector_operand_bytes=plan.sector_operand_bytes,
+     sector_live_peak_bytes=plan.sector_live_peak_bytes,
+     sector_known_temporary_peak_bytes=plan.sector_known_temporary_peak_bytes,
+     sector_known_permutation_peak_bytes=plan.sector_known_permutation_peak_bytes,
      strategy=plan.strategy)

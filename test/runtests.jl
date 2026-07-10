@@ -901,5 +901,6 @@ end
 end
 
 include("contraction_planning.jl")
+include("p0_p1_memory_small.jl")
 
 end
