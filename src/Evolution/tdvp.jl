@@ -194,7 +194,7 @@ function _tdvp1_sweep!(ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO, dz::Number
         @assert ψ.center == n
         # forward-evolve the site
         h1 = eff_h1(cache, ψ, H, n)
-        A, _ = exponentiate(h1, dz, ψ.tensors[n];
+        A, _ = exponentiate(workspace_map(h1), dz, ψ.tensors[n];
                             ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
         update_tensor!(ψ, n, A; caches=(cache,))
         # walk to the next update site, backward-evolving the links that the
@@ -235,7 +235,7 @@ function _evolve_link_and_move!(ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO,
         C = _split_link_up(ev, ψ, H, u, v, dz)      # installs isometry at u; C :: V_new ← V_e
         invalidate_node!(cache, u)
         k0 = eff_h0(cache, ψ, H, u, v)              # env(u→v) rebuilt from the new isometry
-        C, _ = exponentiate(k0, -dz, C;
+        C, _ = exponentiate(workspace_map(k0), -dz, C;
                             ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
         ψ.tensors[v] = absorb_on_leg(ψ.tensors[v], C, childslot(t, v, u))
     else
@@ -244,7 +244,7 @@ function _evolve_link_and_move!(ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO,
         C = _split_link_down(ev, ψ, H, u, v, dz)
         invalidate_node!(cache, u)
         k0 = eff_h0(cache, ψ, H, v, u)              # env(v→u) untouched, env(u→v) rebuilt
-        C, _ = exponentiate(k0, -dz, C;
+        C, _ = exponentiate(workspace_map(k0), -dz, C;
                             ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
         ψ.tensors[v] = ψ.tensors[v] * C
     end
@@ -329,7 +329,8 @@ function _bond_forward!(ev::TDVP2, ψ::TTNS, H::TTNO, n::Int, m::Int, dz::Number
     cache = ev.cache::EnvCache
     Θ = two_site_tensor(ψ, n, m)
     h2 = eff_h2(cache, ψ, H, n, m)
-    Θ, _ = exponentiate(h2, dz, Θ; ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
+    Θ, _ = exponentiate(workspace_map(h2), dz, Θ;
+                         ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
     invalidate_edge!(cache, n, m)
     split_two_site!(ψ, Θ, n, m; trunc=ev.trunc, center_on)
     return ψ
@@ -340,7 +341,7 @@ function _site_backward!(ev::Union{TDVP2,TDVP1_CBE}, ψ::TTNS, H::TTNO, m::Int,
     @assert ψ.center == m
     cache = ev.cache::EnvCache
     h1 = eff_h1(cache, ψ, H, m)
-    A, _ = exponentiate(h1, -dz, ψ.tensors[m];
+    A, _ = exponentiate(workspace_map(h1), -dz, ψ.tensors[m];
                         ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
     update_tensor!(ψ, m, A; caches=(cache,))
     return ψ
@@ -398,7 +399,7 @@ function _cbe_predictor(ev::TDVP1_CBE, ψ::TTNS, H::TTNO, u::Int, v::Int, dz::Nu
     cache = ev.cache::EnvCache
     Θ = two_site_tensor(ψ, n, m)
     h2 = eff_h2(cache, ψ, H, n, m)
-    Θ, _ = exponentiate(h2, dz, Θ;
+    Θ, _ = exponentiate(workspace_map(h2), dz, Θ;
                         ishermitian=ishermitian(H), krylovdim=ev.krylovdim, tol=ev.tol)
     pn = numout(ψ.tensors[n])
     NΘ = numind(Θ)

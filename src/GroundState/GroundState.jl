@@ -45,7 +45,7 @@ function dmrg1!(ψ::TTNS, H::TTNO; nsweeps::Int=10, tol::Float64=1e-10,
         for n in Iterators.flatten((order, Iterators.reverse(order)))
             move_center!(ψ, n; cache)
             h1 = eff_h1(cache, ψ, H, n)
-            vals, vecs, _ = eigsolve(h1, ψ.tensors[n], 1, :SR;
+            vals, vecs, _ = eigsolve(workspace_map(h1), ψ.tensors[n], 1, :SR;
                                      ishermitian=true, krylovdim)
             E = real(vals[1])
             update_tensor!(ψ, n, vecs[1]; caches=(cache,))
@@ -87,7 +87,8 @@ function dmrg2!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(),
             move_center!(ψ, n; cache)
             Θ = two_site_tensor(ψ, n, m)
             h2 = eff_h2(cache, ψ, H, n, m)
-            vals, vecs, _ = eigsolve(h2, Θ, 1, :SR; ishermitian=true, krylovdim)
+            vals, vecs, _ = eigsolve(workspace_map(h2), Θ, 1, :SR;
+                                     ishermitian=true, krylovdim)
             E = real(vals[1])
             invalidate_edge!(cache, n, m)
             split_two_site!(ψ, vecs[1], n, m; trunc, center_on)
@@ -137,7 +138,7 @@ function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(;
         for n in Iterators.flatten((order, Iterators.reverse(order)))
             move_center!(ψ, n; cache)
             h1 = eff_h1(cache, ψ, H, n)
-            vals, vecs, _ = eigsolve(h1, ψ.tensors[n], 1, :SR;
+            vals, vecs, _ = eigsolve(workspace_map(h1), ψ.tensors[n], 1, :SR;
                                      ishermitian=true, krylovdim)
             E = real(vals[1])
             update_tensor!(ψ, n, vecs[1]; caches=(cache,))

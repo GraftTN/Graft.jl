@@ -750,3 +750,112 @@ if _p0p1_enabled(:m5)
     @test norm(to_dense(jout) - to_dense(jlegacy)) <= 1e-12
 end
 end # :m5 target
+
+if _p0p1_enabled(:m6)
+@testset "P0/P1: planned contraction workspaces" begin
+    rng = MersenneTwister(20260725)
+    V = ℂ^2 ← ℂ^2
+    # The env-first fold has three internal outputs. Its first and third
+    # lifetimes do not overlap and have the same HomSpace, so one color-owned
+    # destination can safely serve both after the consuming step finishes.
+    spec = _P0P1Planning.ContractionSpec(
+        Vector{Int}[[-1, 1], [1, 2], [2, 3], [3, 4], [4, -2]],
+        falses(5), 2, (1, 1), 1; preferred_slots=[2, 3, 4, 5],
+    )
+    operands = ntuple(_ -> randn(rng, ComplexF64, V), 5)
+    plan = _P0P1Planning.plan_contraction(spec, operands;
+                                            optimize=false,
+                                            scalar_type=ComplexF64)
+    @test length(plan.steps) == 4
+    workspace = _P0P1Planning.PlanWorkspace(plan)
+    first_slot, third_slot = plan.steps[1].dst, plan.steps[3].dst
+    @test workspace.layout.colors[first_slot] == workspace.layout.colors[third_slot]
+    @test workspace.layout.ncolors == 2
+
+    reference = _P0P1Planning.ncon_reference(spec, operands)
+    y1 = _P0P1Planning.execute(plan, operands; workspace)
+    _p0p1_fit_maps_match(y1, reference)
+    y1_snapshot = copy(y1)
+    stats_first = _P0P1Planning.workspace_stats(workspace)
+    @test stats_first.buffers == 2
+    @test stats_first.allocations == 2
+    @test stats_first.reuses >= 1
+
+    changed = (1.07 * operands[1], operands[2:end]...)
+    y2 = _P0P1Planning.execute(plan, changed; workspace)
+    _p0p1_fit_maps_match(y2, _P0P1Planning.ncon_reference(spec, changed))
+    @test y1 !== y2
+    _p0p1_fit_maps_match(y1, y1_snapshot)
+    stats_second = _P0P1Planning.workspace_stats(workspace)
+    @test stats_second.allocations == stats_first.allocations
+    @test stats_second.reuses > stats_first.reuses
+
+    # Accumulation keeps its public destination caller-owned while reusing the
+    # same strictly internal workspace destinations.
+    dest = zero(y2)
+    _P0P1Planning.execute_accumulate!(dest, plan, changed;
+                                       α=1, β=0, workspace)
+    _p0p1_fit_maps_match(dest, y2)
+    @test dest !== y2
+
+    # `tensorcontract!` must never receive an aliased source/destination.
+    step = plan.steps[1]
+    pA = (step.oindA, step.cindA)
+    pB = (step.cindB, step.oindB)
+    @test_throws ArgumentError _P0P1Planning._workspace_contract!(
+        workspace, operands[step.a], operands[step.a], pA, step.conjA,
+        operands[step.b], pB, step.conjB, step.out,
+    )
+
+    # EffectiveMap remains immutable/shared by default; the wrapper owns a
+    # task-local workspace and nevertheless returns a fresh Krylov-safe root.
+    topo, _, O, ket, _ = _p0p1_sandwich_fixture(MersenneTwister(20260726))
+    root = topo.root
+    cache = EnvCache(topo)
+    move_center!(ket, root; cache)
+    h1 = eff_h1(cache, ket, O, root)
+    wrapped = _P0P1Planning.workspace_map(h1)
+    x = ket.tensors[root]
+    hx_ref = h1(x)
+    hx1 = wrapped(x)
+    hx1_snapshot = copy(hx1)
+    hx2 = wrapped(0.93 * x)
+    _p0p1_fit_maps_match(hx1, hx_ref)
+    _p0p1_fit_maps_match(hx2, h1(0.93 * x))
+    @test hx1 !== hx2
+    _p0p1_fit_maps_match(hx1, hx1_snapshot)
+    @test _P0P1Planning.workspace_stats(wrapped.workspace).owner_bound
+    cross_task_error = fetch(@async begin
+        try
+            wrapped(x)
+            nothing
+        catch err
+            err
+        end
+    end)
+    @test cross_task_error isa ArgumentError
+
+    # Ground-state local Krylov calls construct their own wrapper, proving the
+    # solver integration keeps mutable workspace state out of EffectiveMap.
+    solver_state = copy(ket)
+    solved, energies = dmrg1!(solver_state, O; nsweeps=1, krylovdim=2,
+                               verbose=false)
+    @test solved === solver_state
+    @test length(energies) == 1 && check_arrows(solver_state)
+
+    # A small abelian effective-map fixture exercises TensorKit's block-backed
+    # output storage through the same in-place workspace path.
+    utopo, _, uO, uψ, _ = _p0p1_sandwich_fixture(MersenneTwister(20260727);
+                                                  u1=true)
+    uroot = utopo.root
+    ucache = EnvCache(utopo)
+    move_center!(uψ, uroot; cache=ucache)
+    uh1 = eff_h1(ucache, uψ, uO, uroot)
+    uwrapped = _P0P1Planning.workspace_map(uh1)
+    ux = uψ.tensors[uroot]
+    uref = uh1(ux)
+    ugot = uwrapped(ux)
+    _p0p1_fit_maps_match(ugot, uref)
+    @test _P0P1Planning.workspace_stats(uwrapped.workspace).owner_bound
+end
+end # :m6 target

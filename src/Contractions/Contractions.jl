@@ -39,11 +39,12 @@ import ..Networks: invalidate_node!, invalidate_edge!
 
 export EnvCache, env!, build_env, invalidate_node!, invalidate_edge!,
     EffectiveMap, ContractionPlan, ContractionSpec, PlanKey, plan_cache_stats,
-    inner, expect, eff_h1, eff_h0, eff_h2, two_site_tensor, two_site_space,
-    split_two_site!, expand!
+    PlanWorkspace, workspace_map, workspace_stats, inner, expect, eff_h1,
+    eff_h0, eff_h2, two_site_tensor, two_site_space, split_two_site!, expand!
 
 include("planning/Planning.jl")
-using .Planning: ContractionSpec, ContractionPlan, EffectiveMap, PlanKey
+using .Planning: ContractionSpec, ContractionPlan, EffectiveMap, PlanWorkspace,
+    PlanKey, workspace_map, workspace_stats
 include("envcache.jl")
 include("effective.jl")
 include("expansion.jl")

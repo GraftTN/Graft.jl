@@ -193,6 +193,119 @@ function Base.show(io::IO, f::EffectiveMap)
           " B, sector_peak≈", f.plan.sector_peak_elements, " elements)")
 end
 
+# Workspace colors are compiled from the postorder plan rather than inferred
+# while executing it. A color can be reused only after its prior source has
+# been consumed by an earlier binary step; equality would alias a destination
+# with an input to `tensorcontract!`, which TensorOperations forbids.
+mutable struct _WorkspaceLayout
+    colors::Vector{Int}
+    births::Vector{Int}
+    last_uses::Vector{Int}
+    ncolors::Int
+    representatives::Vector{Int}
+end
+
+function _workspace_layout(plan::ContractionPlan)
+    births = zeros(Int, plan.nslots)
+    last_uses = zeros(Int, plan.nslots)
+    for (i, step) in enumerate(plan.steps)
+        births[step.dst] == 0 ||
+            throw(ArgumentError("compiled contraction plan produces slot $(step.dst) twice"))
+        births[step.dst] = i
+    end
+    for (i, step) in enumerate(plan.steps), slot in (step.a, step.b)
+        births[slot] == 0 && continue
+        last_uses[slot] == 0 ||
+            throw(ArgumentError("compiled contraction plan consumes intermediate slot $slot twice"))
+        last_uses[slot] = i
+    end
+
+    colors = zeros(Int, plan.nslots)
+    color_last_uses = Int[]
+    internal = sort!([step.dst for step in plan.steps if step.dst != plan.output_slot];
+                     by=slot -> births[slot])
+    for slot in internal
+        birth, last_use = births[slot], last_uses[slot]
+        last_use > 0 ||
+            throw(ArgumentError("compiled contraction plan leaves intermediate slot $slot unused"))
+        color = findfirst(last -> last < birth, color_last_uses)
+        if color === nothing
+            push!(color_last_uses, last_use)
+            color = length(color_last_uses)
+        else
+            color_last_uses[color] = last_use
+        end
+        colors[slot] = color
+    end
+    ncolors = length(color_last_uses)
+    return _WorkspaceLayout(colors, births, last_uses, ncolors, zeros(Int, ncolors))
+end
+
+"""
+    PlanWorkspace(plan)
+
+Task-bound mutable storage for the strictly internal outputs of one compiled
+plan. It is intentionally separate from `EffectiveMap` and `EnvCache`: a
+shared map remains safe to call concurrently, while a solver obtains one
+workspace for its own serial Krylov invocation. Root outputs are never kept in
+this workspace and are always allocated fresh.
+"""
+mutable struct PlanWorkspace
+    plan::ContractionPlan
+    layout::_WorkspaceLayout
+    buffers::Vector{Any}
+    allocator::TensorOperations.BufferAllocator
+    owner::Union{Nothing,Task}
+    busy::Bool
+    allocations::Int
+    reuses::Int
+end
+
+function PlanWorkspace(plan::ContractionPlan)
+    layout = _workspace_layout(plan)
+    return PlanWorkspace(plan, layout, Any[nothing for _ in 1:layout.ncolors],
+                         TensorOperations.BufferAllocator(), nothing, false, 0, 0)
+end
+
+"""Observable internal allocation state for a task-local plan workspace."""
+workspace_stats(workspace::PlanWorkspace) =
+    (colors=workspace.layout.ncolors,
+     buffers=count(x -> !isnothing(x), workspace.buffers),
+     allocations=workspace.allocations,
+     reuses=workspace.reuses,
+     temporary_buffer_bytes=length(workspace.allocator),
+     owner_bound=workspace.owner !== nothing,
+     busy=workspace.busy)
+
+function _enter_workspace!(workspace::PlanWorkspace, plan::ContractionPlan)
+    workspace.plan === plan ||
+        throw(ArgumentError("PlanWorkspace belongs to a different ContractionPlan"))
+    task = current_task()
+    if workspace.owner === nothing
+        workspace.owner = task
+    elseif workspace.owner !== task
+        throw(ArgumentError("PlanWorkspace is task-local and cannot be used from another Task"))
+    end
+    workspace.busy &&
+        throw(ArgumentError("PlanWorkspace cannot be used reentrantly"))
+    workspace.busy = true
+    return workspace
+end
+
+_leave_workspace!(workspace::PlanWorkspace) = (workspace.busy = false; workspace)
+
+"""Callable task-local workspace wrapper for one otherwise immutable map."""
+struct WorkspaceMap{F<:EffectiveMap}
+    effective::F
+    workspace::PlanWorkspace
+end
+
+workspace_map(effective::EffectiveMap) =
+    WorkspaceMap(effective, PlanWorkspace(effective.plan))
+
+(map::WorkspaceMap)(x::AbstractTensorMap) =
+    execute(map.effective.plan, x, map.effective.statics; workspace=map.workspace)
+
 """
 Structural cache identity. `shape` carries the exact label graph and exact
 TensorKit spaces, not merely a hash, so symmetric h2 nodes with different

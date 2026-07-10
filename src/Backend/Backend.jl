@@ -46,7 +46,8 @@ export left_orth, right_orth, left_null, qr_compact, svd_compact, svd_trunc,
 # contraction primitives
 export @tensor, ncon, contract_pair, pair_cost, space_signature,
     sector_cost_supported, sector_cost_nontrivial, sector_block_peak,
-    tensor_scalar, contract_pair!
+    tensor_scalar, contract_pair!, allocate_contract_pair,
+    contract_pair_compatible
 # GRAFT-defined
 export FermionSector, AbelianSector, TruncationScheme, truncspec, split_svd,
     absorb_on_leg, orth_factor_leg, trivialspace, ones_tensor
@@ -102,6 +103,34 @@ function contract_pair(A::AbstractTensorMap, pA::Tuple, conjA::Bool,
 end
 
 """
+    allocate_contract_pair(A, pA, conjA, B, pB, conjB, pAB) -> TensorMap
+
+Allocate a TensorKit destination with the exact type and space required by a
+planned binary contraction. Planning owns reuse policy; this L0 helper keeps
+the TensorOperations allocation API below the contraction executor.
+"""
+function allocate_contract_pair(A::AbstractTensorMap, pA::Tuple, conjA::Bool,
+                                B::AbstractTensorMap, pB::Tuple, conjB::Bool,
+                                pAB::Tuple)
+    T = TensorOperations.promote_contract(scalartype(A), scalartype(B))
+    return TensorOperations.tensoralloc_contract(T, A, pA, conjA, B, pB, conjB,
+                                                  pAB, Val(false))
+end
+
+"""Whether `C` can be the in-place destination for this planned pair."""
+function contract_pair_compatible(C::AbstractTensorMap,
+                                  A::AbstractTensorMap, pA::Tuple, conjA::Bool,
+                                  B::AbstractTensorMap, pB::Tuple, conjB::Bool,
+                                  pAB::Tuple)
+    T = TensorOperations.promote_contract(scalartype(A), scalartype(B))
+    Ctype = TensorOperations.tensorcontract_type(T, A, pA, conjA,
+                                                  B, pB, conjB, pAB)
+    Cspace = TensorOperations.tensorcontract_structure(A, pA, conjA,
+                                                        B, pB, conjB, pAB)
+    return C isa Ctype && space(C) == Cspace
+end
+
+"""
     contract_pair!(C, A, pA, conjA, B, pB, conjB, pAB, α=1, β=0) -> C
 
 Accumulate one pre-planned binary contraction directly into the caller-owned
@@ -113,9 +142,16 @@ maps, as required by TensorOperations.
 function contract_pair!(C::AbstractTensorMap,
                         A::AbstractTensorMap, pA::Tuple, conjA::Bool,
                         B::AbstractTensorMap, pB::Tuple, conjB::Bool,
-                        pAB::Tuple, α::Number=1, β::Number=0)
+                        pAB::Tuple, α::Number=1, β::Number=0;
+                        allocator=nothing)
+    if allocator === nothing
+        return TensorOperations.tensorcontract!(C, A, pA, conjA, B, pB, conjB,
+                                                 pAB, α, β)
+    end
     return TensorOperations.tensorcontract!(C, A, pA, conjA, B, pB, conjB,
-                                             pAB, α, β)
+                                             pAB, α, β,
+                                             TensorOperations.DefaultBackend(),
+                                             allocator)
 end
 
 """
