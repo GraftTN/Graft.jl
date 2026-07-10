@@ -13,9 +13,9 @@ const _GKInfo = NamedTuple{(:converged, :normres, :numiter, :numops),
                  eager=false)
 
 Full-state Krylov evolver (§5b) using KrylovKit's Lanczos/Arnoldi exponential
-and the public `apply(H, ψ)` + `fit!` compression primitives. The TTNS bond
-spaces of the input state define the fixed compression manifold for the step;
-start from the desired target bond dimensions before calling this evolver.
+and the public operator-aware `fit!(; Hs=...)` compression primitive. The
+TTNS bond spaces of the input state define the fixed compression manifold for
+the step; no exact bond-expanded `apply(H, ψ)` state is materialized.
 """
 Base.@kwdef mutable struct GlobalKrylov <: Evolver
     krylovdim::Int = 30
@@ -83,8 +83,7 @@ end
 
 function (op::_GKOperator)(x::_GKState)
     φ = copy(op.template)
-    Hx = apply(op.H, x.ψ; center=center(φ))
-    fit!(φ, Hx; nsweeps=op.fit_nsweeps, tol=op.fit_tol,
+    fit!(φ, (x.ψ,); Hs=(op.H,), nsweeps=op.fit_nsweeps, tol=op.fit_tol,
          normalize=false, verbose=op.fit_verbose)
     return _GKState(φ, op.template, op.fit_nsweeps, op.fit_tol, op.fit_verbose)
 end

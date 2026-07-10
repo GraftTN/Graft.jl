@@ -6,7 +6,7 @@ using Test
 using Random
 using LinearAlgebra
 using GRAFT
-using GRAFT.TestUtils: random_ttns
+using GRAFT.TestUtils: random_ttns, to_dense
 using GRAFT.Backend: ℂ, ⊗, ←, U1Space, norm, numout, numin
 using GRAFT.Contractions: env!
 
@@ -77,6 +77,17 @@ end
 function _p0p1_fit_maps_match(got, ref; rtol=1e-12, atol=1e-12)
     @test norm(got - ref) <= atol + rtol * max(norm(ref), 1)
     return nothing
+end
+
+"""Independent retained-ncon recursion for operator-aware fit A/B checks."""
+function _p0p1_fit_operator_ref_env!(φ, ψ, O, u, v,
+                                      envs::Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap})
+    return get!(envs, (u, v)) do
+        for w in neighbors(topology(φ), u)
+            w == v || _p0p1_fit_operator_ref_env!(φ, ψ, O, w, u, envs)
+        end
+        GRAFT.Networks._fit_operator_build_env_ncon_reference(φ, ψ, O, u, v, envs)
+    end
 end
 
 if _p0p1_enabled(:m1)
@@ -495,3 +506,149 @@ if _p0p1_enabled(:m3)
     @test F._fit_overlap(uφ, uψ) ≈ uscalar_ref rtol=1e-12 atol=1e-12
 end
 end # :m3 target
+
+if _p0p1_enabled(:m4)
+@testset "P0/P1: direct operator-aware fit contractions" begin
+    topo, S, O, ψ, φ = _p0p1_sandwich_fixture(MersenneTwister(20260719))
+    root = topo.root
+    child = only(topo.children[root])
+    F = GRAFT.Networks
+
+    # The planned rank-three cache keeps exact (source ket, operator, target
+    # bra) edge order and agrees with an independent retained ncon recursion.
+    cache = F._FitCache(topo, O)
+    for (u, v) in ((child, root), (root, child))
+        got = F._fit_env!(cache, φ, ψ, u, v)
+        refs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+        ref = _p0p1_fit_operator_ref_env!(φ, ψ, O, u, v, refs)
+        _p0p1_fit_maps_match(got, ref)
+    end
+    got_project = F._fit_local_tensor(cache, φ, ψ, root)
+    project_refs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+    for w in neighbors(topo, root)
+        _p0p1_fit_operator_ref_env!(φ, ψ, O, w, root, project_refs)
+    end
+    project_ref = F._fit_operator_project_tensor_ncon_reference(φ, ψ, O, root,
+                                                                  project_refs)
+    _p0p1_fit_maps_match(got_project, project_ref)
+    scalar_ref = F._fit_operator_scalar_ncon_reference(φ, ψ, O, root, project_refs)
+    direct_scalar = F._fit_operator_overlap(φ, O, ψ)
+    @test direct_scalar ≈ scalar_ref rtol=1e-12 atol=1e-12
+    @test direct_scalar ≈ inner(φ, apply(O, ψ; center=center(φ))) rtol=1e-12 atol=1e-12
+
+    # Target gauge changes leave the direct sandwich invariant, while a
+    # same-shape update drops only value environments and retains its plans.
+    φg, ψg = copy(φ), copy(ψ)
+    move_center!(φg, child)
+    move_center!(ψg, child)
+    @test F._fit_operator_overlap(φg, O, ψg) ≈ direct_scalar rtol=1e-12 atol=1e-12
+    cache_target = copy(φ)
+    cache_check = F._FitCache(topo, O)
+    F._fit_env!(cache_check, cache_target, ψ, root, child)
+    plan_count = length(cache_check.plans)
+    cap_count = length(cache_check.rootcaps)
+    cap = only(values(cache_check.rootcaps))
+    update_tensor!(cache_target, root, 1.01 * cache_target.tensors[root])
+    F._invalidate_fit_node!(cache_check, root)
+    @test !haskey(cache_check.envs, (root, child))
+    @test length(cache_check.plans) == plan_count
+    @test length(cache_check.rootcaps) == cap_count
+    @test only(values(cache_check.rootcaps)) === cap
+    rebuilt = F._fit_env!(cache_check, cache_target, ψ, root, child)
+    rebuilt_refs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+    rebuilt_ref = _p0p1_fit_operator_ref_env!(cache_target, ψ, O, root, child,
+                                               rebuilt_refs)
+    _p0p1_fit_maps_match(rebuilt, rebuilt_ref)
+
+    # A rank-four direct residual term preserves non-Hermitian left/right
+    # operator order instead of replacing H†H with H².
+    Hnh = OpSum()
+    Hnh += Term(0.31 + 0.17im, SiteOp(nodeid(topo, root), :X, S.X))
+    Onh = ttno_from_opsum(Hnh, topo,
+                           Dict(nodeid(topo, i) => S.P for i in 1:nnodes(topo));
+                           hermitian=false)
+    direct_double = F._fit_double_overlap(ψ, O, φ, Onh)
+    legacy_double = inner(apply(O, ψ), apply(Onh, φ))
+    @test direct_double ≈ legacy_double rtol=1e-12 atol=1e-12
+
+    # The public Hs= form has the same result and default exact residual as
+    # materialize-then-fit on this tiny tree, without retaining that target.
+    direct_fit, legacy_fit = copy(φ), copy(φ)
+    legacy_target = apply(O, ψ; center=center(legacy_fit))
+    _, legacy_errors = fit!(legacy_fit, legacy_target; nsweeps=1, tol=0.0)
+    _, direct_errors = fit!(direct_fit, (ψ,); Hs=(O,), nsweeps=1, tol=0.0)
+    @test direct_errors ≈ legacy_errors rtol=1e-10 atol=1e-10
+    @test norm(to_dense(direct_fit) - to_dense(legacy_fit)) <= 1e-10
+    @test check_arrows(direct_fit) && center(direct_fit) == center(φ)
+
+    # A two-source non-Hermitian target exercises every double-layer pair in
+    # the default error metric, including i != j operator order.
+    src2 = copy(φ)
+    coeffs = ComplexF64[0.6 - 0.1im, -0.2 + 0.4im]
+    direct_multi, legacy_multi = copy(φ), copy(φ)
+    legacy_sources = (apply(O, ψ; center=center(legacy_multi)),
+                      apply(Onh, src2; center=center(legacy_multi)))
+    _, legacy_multi_errors = fit!(legacy_multi, legacy_sources; coeffs, nsweeps=1, tol=0.0)
+    _, direct_multi_errors = fit!(direct_multi, (ψ, src2); Hs=(O, Onh), coeffs,
+                                  nsweeps=1, tol=0.0)
+    @test direct_multi_errors ≈ legacy_multi_errors rtol=1e-10 atol=1e-10
+    @test norm(to_dense(direct_multi) - to_dense(legacy_multi)) <= 1e-10
+
+    # `nothing` remains a first-class optional action: mixed identity/operator
+    # sources agree with the historical materialize-then-fit formulation.
+    direct_optional, legacy_optional = copy(φ), copy(φ)
+    legacy_optional_sources = (ψ, apply(O, src2; center=center(legacy_optional)))
+    _, legacy_optional_errors = fit!(legacy_optional, legacy_optional_sources;
+                                     coeffs, nsweeps=1, tol=0.0)
+    _, direct_optional_errors = fit!(direct_optional, (ψ, src2);
+                                     Hs=(nothing, O), coeffs, nsweeps=1, tol=0.0)
+    # Both formulas evaluate the exact residual; independent direct
+    # double-layer accumulation can leave a roundoff-scale positive remainder
+    # where materializing the same tiny target cancels to zero.
+    @test direct_optional_errors ≈ legacy_optional_errors rtol=1e-10 atol=2e-8
+    @test norm(to_dense(direct_optional) - to_dense(legacy_optional)) <= 1e-10
+
+    # A small abelian sector fixture checks the operator-aware labels/caps
+    # without using a dense reference.
+    utopo, _, uO, uψ, uφ = _p0p1_sandwich_fixture(MersenneTwister(20260720);
+                                                   u1=true)
+    uroot = utopo.root
+    uchild = only(utopo.children[uroot])
+    ucache = F._FitCache(utopo, uO)
+    uenv = F._fit_env!(ucache, uφ, uψ, uchild, uroot)
+    urefs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+    uenv_ref = _p0p1_fit_operator_ref_env!(uφ, uψ, uO, uchild, uroot, urefs)
+    _p0p1_fit_maps_match(uenv, uenv_ref)
+    uproject = F._fit_local_tensor(ucache, uφ, uψ, uroot)
+    upro_refs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+    for w in neighbors(utopo, uroot)
+        _p0p1_fit_operator_ref_env!(uφ, uψ, uO, w, uroot, upro_refs)
+    end
+    uproject_ref = F._fit_operator_project_tensor_ncon_reference(uφ, uψ, uO,
+                                                                   uroot, upro_refs)
+    _p0p1_fit_maps_match(uproject, uproject_ref)
+    uscalar_ref = F._fit_operator_scalar_ncon_reference(uφ, uψ, uO, uroot,
+                                                         upro_refs)
+    @test F._fit_operator_overlap(uφ, uO, uψ) ≈ uscalar_ref rtol=1e-12 atol=1e-12
+    @test F._fit_operator_overlap(uφ, uO, uψ) ≈
+          inner(uφ, apply(uO, uψ; center=center(uφ))) rtol=1e-12 atol=1e-12
+
+    # GlobalKrylov and linsolve! both use the same _GKOperator matvec.  Check
+    # it directly against the retained legacy materialize-then-fit route, then
+    # execute one deliberately tiny shifted solve smoke path.
+    E = GRAFT.Evolution
+    gktemplate = copy(φ)
+    gkop = E._GKOperator(O, gktemplate, 1, 0.0, false)
+    gkx = E._GKState(copy(ψ), gktemplate, 1, 0.0, false)
+    gk_direct = gkop(gkx).ψ
+    gk_legacy = copy(gktemplate)
+    fit!(gk_legacy, apply(O, ψ; center=center(gk_legacy)); nsweeps=1, tol=0.0)
+    @test norm(to_dense(gk_direct) - to_dense(gk_legacy)) <= 1e-10
+    solve_state = copy(φ)
+    _, solve_info = linsolve!(solve_state, O, copy(ψ); a0=1.0, a1=0.1,
+                               krylovdim=2, maxiter=1, tol=1e-6,
+                               fit_nsweeps=1, fit_tol=0.0)
+    @test check_arrows(solve_state)
+    @test solve_info.numops >= 1
+end
+end # :m4 target

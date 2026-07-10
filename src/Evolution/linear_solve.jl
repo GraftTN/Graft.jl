@@ -1,6 +1,6 @@
 # Variational full-state linear solves on the TTNS manifold. This reuses the
-# GlobalKrylov vector wrapper and compressed `apply(H, ψ)` operator so all
-# linear-combination and matvec compression policies stay in one place.
+# GlobalKrylov vector wrapper and direct operator-aware fit compression so all
+# linear-combination and matvec policies stay in one place.
 
 const _LinInfo = NamedTuple{(:converged, :normres, :numiter, :numops),
                             Tuple{Int,Float64,Int,Int}}
@@ -10,9 +10,9 @@ const _LinInfo = NamedTuple{(:converged, :normres, :numiter, :numops),
               tol=1e-10, fit_nsweeps=4, fit_tol=1e-10) -> (ψ, info)
 
 Solve `(a0 * I + a1 * H)ψ = rhs` on the fixed TTNS manifold carried by `ψ`.
-The matrix-vector product is `apply(H, x)` compressed back with public `fit!`;
-KrylovKit GMRES handles the shifted system. The state `ψ` is both the initial
-guess and the destination.
+The matrix-vector product contracts `H` directly into the public
+operator-aware `fit!` path; KrylovKit GMRES handles the shifted system. The
+state `ψ` is both the initial guess and the destination.
 """
 function linsolve!(ψ::TTNS, H::TTNO, rhs::TTNS;
                    a0::Number=one(eltype(ψ)), a1::Number=one(eltype(ψ)),
