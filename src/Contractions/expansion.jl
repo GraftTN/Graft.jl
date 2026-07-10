@@ -158,6 +158,25 @@ function _physless_root_growth_targets(ψ::TTNS, trunc::TruncationScheme,
 end
 
 """
+    _physless_root_two_site_targets(ψ, trunc) -> Vector{Tuple{Int,Int}}
+
+Joint root-edge targets for two-site DMRG.  Unlike 3S, two-site DMRG has no
+per-sweep `max_add`: its SVD may retain every Schmidt direction allowed by
+`trunc`.  At a physical-leg-free binary root, open both child legs to that
+ordinary two-site cap before the first root-edge update.  The common target is
+also bounded by both child-side codomain dimensions, so an unbounded
+`TruncationScheme()` never requests an artificial infinite virtual space.
+"""
+function _physless_root_two_site_targets(ψ::TTNS, trunc::TruncationScheme)
+    t = ψ.topo
+    root = t.root
+    children = t.children[root]
+    (!hasphys(ψ, root) && length(children) == 2) || return Tuple{Int,Int}[]
+    target = min(trunc.maxdim, minimum(dim(codomain(ψ.tensors[n])) for n in children))
+    return [(n, target) for n in children]
+end
+
+"""
     _null_enrich_split(A; maxdim) -> (U, R)
 
 State-preserving completion of the column space of `A`: `A == U * R` while

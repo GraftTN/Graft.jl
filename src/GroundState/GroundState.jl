@@ -67,6 +67,13 @@ bond's two-site block, truncated split through `TruncationScheme` (§9.5).
 Grows bond dimensions up to `trunc.maxdim`. With `verbose=true`, emits setup
 and per-sweep `@info` records with topology, solver, truncation, energy,
 convergence, center, and bond statistics.
+
+For a physical-leg-free binary root, the two sibling root-edge splits would
+otherwise each be rank-limited by the other's current dimension.  Before every
+sweep, `dmrg2!` therefore jointly adds zero-weight orthogonal complements to
+those two legs, bounded by the ordinary two-site truncation cap.  This preserves
+the TTNS vector exactly; the following variational two-site updates determine
+which of the newly available directions acquire weight.
 """
 function dmrg2!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(),
                 nsweeps::Int=10, tol::Float64=1e-10, krylovdim::Int=20,
@@ -80,6 +87,8 @@ function dmrg2!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(),
                                      updates_per_sweep=2 * length(bonds),
                                      trunc)
     for sweep in 1:nsweeps
+        root_targets = Contractions._physless_root_two_site_targets(ψ, trunc)
+        Contractions._bootstrap_physless_root!(ψ, cache, root_targets)
         E = NaN
         for (n, center_on) in Iterators.flatten(
                 (((n, :m) for n in bonds), ((n, :n) for n in Iterators.reverse(bonds))))

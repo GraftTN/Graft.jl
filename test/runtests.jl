@@ -522,6 +522,31 @@ end
     @test Es[end] ≈ E0 atol = 1e-10
 end
 
+@testset "2S bootstrap at a physless binary root" begin
+    # A two-site root-edge split is rank-limited by the opposite root edge.
+    # dmrg2! must jointly open both zero-weight complements before its sweep;
+    # otherwise a D=2 start can never access the D=4 exact ground state.
+    topo = binary_topology(2; prefix=:root2s)
+    sites = [nodeid(topo, n) for n in leaves(topo)]
+    phys = Dict(site => spin_ops().P for site in sites)
+    H = heisenberg_chain(sites)
+    O = ttno_from_opsum(H, topo, phys; hermitian=true)
+    trunc = TruncationScheme(maxdim=4)
+    root_children = topo.children[topo.root]
+    ψ = random_ttns(Xoshiro(20260710), ComplexF64, topo, phys, ℂ^2)
+    E0, _ = exact_groundstate(dense_hamiltonian(H, ψ))
+
+    # The default unbounded truncation must still choose the finite two-site
+    # rank cap supplied by the two child tensors, not typemax(Int).
+    @test GRAFT.Contractions._physless_root_two_site_targets(ψ, TruncationScheme()) ==
+          [(root_children[1], 4), (root_children[2], 4)]
+
+    _, Es = dmrg2!(ψ, O; trunc, nsweeps=4, verbose=TEST_VERBOSE)
+    @test [dim(domain(ψ.tensors[n])[1]) for n in root_children] == [4, 4]
+    @test Es[end] ≈ E0 atol = 1e-10
+    @test check_arrows(ψ)
+end
+
 @testset "bosons (trivial sector)" begin
     S = spin_ops()
     B = boson_ops(2)
