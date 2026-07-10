@@ -1,43 +1,46 @@
 """
-    ContractionSpec(labels, conjs, nopen, out_partition, dynamic_slot;
+    ContractionSpec(labels, conjs, nopen, out_partition, dynamic_slot=nothing;
                     preferred_slots)
 
-Value-level description of one effective-Hamiltonian network. Labels retain
-the ncon convention (`>0` contracted, `<0` output) so the retained reference
-path is mechanically identical to the legacy implementation. `preferred_slots`
-is semantic input from `effective.jl`: it encodes the Phase-1 env-first fold
-without leaking TTN knowledge into the generic planner.
+Value-level description of one contraction network. Labels retain the ncon
+convention (`>0` contracted, `<0` output) so retained reference paths are
+mechanically identical to legacy implementations. `dynamic_slot` is slot 1
+for Krylov maps and `nothing` for a complete value-level operand tuple.
+`preferred_slots` is semantic input from the caller: it encodes an env-first
+fold without leaking TTN knowledge into the generic planner.
 """
 struct ContractionSpec
     labels::Vector{Vector{Int}}
     conjs::Vector{Bool}
     nopen::Int
     out_partition::Tuple{Int,Int}
-    dynamic_slot::Int
+    dynamic_slot::Union{Nothing,Int}
     preferred_slots::Vector{Int}
 end
 
 function ContractionSpec(labels::Vector{<:AbstractVector{<:Integer}},
                          conjs::AbstractVector{Bool}, nopen::Integer,
                          out_partition::Tuple{<:Integer,<:Integer},
-                         dynamic_slot::Integer;
+                         dynamic_slot::Union{Nothing,Integer}=nothing;
                          preferred_slots::AbstractVector{<:Integer}=Int[])
     copied_labels = [Int[label...] for label in labels]
     copied_conjs = Bool[conjs...]
     np = Int(nopen)
     out = (Int(out_partition[1]), Int(out_partition[2]))
-    dyn = Int(dynamic_slot)
+    dyn = dynamic_slot === nothing ? nothing : Int(dynamic_slot)
     order = Int[preferred_slots...]
     length(copied_labels) == length(copied_conjs) ||
         throw(ArgumentError("ContractionSpec: labels/conjs length mismatch"))
-    1 <= dyn <= length(copied_labels) ||
+    dyn === nothing || 1 <= dyn <= length(copied_labels) ||
         throw(ArgumentError("ContractionSpec: invalid dynamic slot $dyn"))
-    dyn == 1 || throw(ArgumentError("ContractionSpec: only dynamic slot 1 is supported"))
+    dyn === nothing || dyn == 1 ||
+        throw(ArgumentError("ContractionSpec: only dynamic slot 1 is supported"))
     sum(out) == np ||
         throw(ArgumentError("ContractionSpec: output partition $out does not contain $np open legs"))
-    isempty(order) && (order = [i for i in eachindex(copied_labels) if i != dyn])
-    sort(order) == [i for i in eachindex(copied_labels) if i != dyn] ||
-        throw(ArgumentError("ContractionSpec: preferred slots must contain every static slot once"))
+    input_slots = [i for i in eachindex(copied_labels) if i != dyn]
+    isempty(order) && (order = input_slots)
+    sort(order) == input_slots ||
+        throw(ArgumentError("ContractionSpec: preferred slots must contain every non-dynamic slot once"))
     return ContractionSpec(copied_labels, copied_conjs, np, out, dyn, order)
 end
 
@@ -94,6 +97,7 @@ struct ContractionPlan
     sector_live_peak_bytes::Float64
     sector_known_temporary_peak_bytes::Float64
     sector_known_permutation_peak_bytes::Float64
+    scalar_output::Bool
 end
 
 function ContractionPlan(nslots::Integer, output_slot::Integer,
@@ -110,7 +114,8 @@ function ContractionPlan(nslots::Integer, output_slot::Integer,
                          sector_operand_bytes::Real=NaN,
                          sector_live_peak_bytes::Real=NaN,
                          sector_known_temporary_peak_bytes::Real=NaN,
-                         sector_known_permutation_peak_bytes::Real=NaN)
+                         sector_known_permutation_peak_bytes::Real=NaN,
+                         scalar_output::Bool=false)
     return ContractionPlan(Int(nslots), Int(output_slot), steps, strategy,
                            Float64(flops), Float64(peak_elements),
                            Float64(sector_flops),
@@ -123,7 +128,8 @@ function ContractionPlan(nslots::Integer, output_slot::Integer,
                            Float64(sector_operand_bytes),
                            Float64(sector_live_peak_bytes),
                            Float64(sector_known_temporary_peak_bytes),
-                           Float64(sector_known_permutation_peak_bytes))
+                           Float64(sector_known_permutation_peak_bytes),
+                           scalar_output)
 end
 
 # Preserve the pre-live-model positional constructor for downstream users that
@@ -137,6 +143,35 @@ function ContractionPlan(nslots::Integer, output_slot::Integer,
     return ContractionPlan(nslots, output_slot, steps;
                            strategy, flops, peak_elements, sector_flops,
                            sector_peak_elements, sector_peak_block_elements)
+end
+
+# Preserve the full positional layout introduced by milestone 1. Scalar-output
+# metadata was added later for complete-tuple execution and safely defaults to
+# false for manually reconstructed pre-M2 plans.
+function ContractionPlan(nslots::Integer, output_slot::Integer,
+                         steps::Vector{PairStep}, strategy::Symbol,
+                         flops::Real, peak_elements::Real,
+                         sector_flops::Real, sector_peak_elements::Real,
+                         sector_peak_block_elements::Real,
+                         scalar_bytes::Integer, operand_bytes::Real,
+                         live_peak_bytes::Real,
+                         known_temporary_peak_bytes::Real,
+                         known_permutation_peak_bytes::Real,
+                         sector_operand_bytes::Real,
+                         sector_live_peak_bytes::Real,
+                         sector_known_temporary_peak_bytes::Real,
+                         sector_known_permutation_peak_bytes::Real)
+    return ContractionPlan(Int(nslots), Int(output_slot), steps, strategy,
+                           Float64(flops), Float64(peak_elements),
+                           Float64(sector_flops), Float64(sector_peak_elements),
+                           Float64(sector_peak_block_elements), Int(scalar_bytes),
+                           Float64(operand_bytes), Float64(live_peak_bytes),
+                           Float64(known_temporary_peak_bytes),
+                           Float64(known_permutation_peak_bytes),
+                           Float64(sector_operand_bytes),
+                           Float64(sector_live_peak_bytes),
+                           Float64(sector_known_temporary_peak_bytes),
+                           Float64(sector_known_permutation_peak_bytes), false)
 end
 
 """
@@ -207,4 +242,5 @@ plan_metrics(plan::ContractionPlan) =
      sector_live_peak_bytes=plan.sector_live_peak_bytes,
      sector_known_temporary_peak_bytes=plan.sector_known_temporary_peak_bytes,
      sector_known_permutation_peak_bytes=plan.sector_known_permutation_peak_bytes,
+     scalar_output=plan.scalar_output,
      strategy=plan.strategy)

@@ -45,7 +45,8 @@ export left_orth, right_orth, left_null, qr_compact, svd_compact, svd_trunc,
     svd_vals, truncrank, trunctol, truncerror, notrunc
 # contraction primitives
 export @tensor, ncon, contract_pair, pair_cost, space_signature,
-    sector_cost_supported, sector_cost_nontrivial, sector_block_peak
+    sector_cost_supported, sector_cost_nontrivial, sector_block_peak,
+    tensor_scalar
 # GRAFT-defined
 export FermionSector, AbelianSector, TruncationScheme, truncspec, split_svd,
     absorb_on_leg, orth_factor_leg, trivialspace, ones_tensor
@@ -99,6 +100,16 @@ function contract_pair(A::AbstractTensorMap, pA::Tuple, conjA::Bool,
                        pAB::Tuple)
     return TensorOperations.tensorcontract(A, pA, conjA, B, pB, conjB, pAB)
 end
+
+"""
+    tensor_scalar(t::AbstractTensorMap) -> Number
+
+L0 wrapper for TensorOperations' scalar conversion. Planned scalar networks
+must use this only after their final rank-zero TensorMap is produced, matching
+`ncon`'s public return convention without teaching upper layers TensorKit's
+scalar API.
+"""
+tensor_scalar(t::AbstractTensorMap) = TensorOperations.tensorscalar(t)
 
 """
     space_signature(x) -> UInt

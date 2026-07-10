@@ -1,6 +1,9 @@
 function _heuristic_tree(spec::ContractionSpec)
-    tree = spec.dynamic_slot
-    for slot in spec.preferred_slots
+    slots = spec.preferred_slots
+    isempty(slots) && throw(ArgumentError("contraction spec has no input slots"))
+    tree = spec.dynamic_slot === nothing ? first(slots) : spec.dynamic_slot
+    first_slot = spec.dynamic_slot === nothing ? 2 : 1
+    for slot in Iterators.drop(slots, first_slot - 1)
         tree = Any[tree, slot]
     end
     return tree
@@ -519,7 +522,8 @@ function _compile_plan(tree, spec::ContractionSpec, dims::Vector{Vector{Int}}, p
                            sector_operand_bytes=live.sector_operand_bytes,
                            sector_live_peak_bytes=live.sector_live_peak_bytes,
                            sector_known_temporary_peak_bytes=live.sector_known_temporary_peak_bytes,
-                           sector_known_permutation_peak_bytes=live.sector_known_permutation_peak_bytes)
+                           sector_known_permutation_peak_bytes=live.sector_known_permutation_peak_bytes,
+                           scalar_output=spec.nopen == 0)
 end
 
 function _canonical_memory_cap(memory_cap_bytes::Union{Nothing,Real})

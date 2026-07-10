@@ -67,8 +67,8 @@ function _h1_spec(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int)
         ka, ko = fresh(), fresh()
         xidx[end] = ka
         widx[end] = ko
-        cap = ones_tensor(scalartype(x),
-                          domain(x)[1] ⊗ domain(W)[numin(W)] ⊗ dual(domain(x)[1]))
+        cap = _root_cap!(cache, scalartype(x),
+                         domain(x)[1] ⊗ domain(W)[numin(W)] ⊗ dual(domain(x)[1]))
         push!(labels, [ka, ko, -Nx]); push!(conjs, false)
         statics = (statics..., cap)
         protos = (protos..., cap)
@@ -306,8 +306,8 @@ function _h2_spec(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int, m::Int)
         # TensorKit exposes its flat leg spaces through `getindex`, not `space`.
         # This is exactly the final leg of the Θ prototype used by the former
         # data-valued implementation.
-        cap = ones_tensor(scalartype(ψ.tensors[n]),
-                          dual(xspace[Nx]) ⊗ domain(Wm)[numin(Wm)] ⊗ xspace[Nx])
+        cap = _root_cap!(cache, scalartype(ψ.tensors[n]),
+                         dual(xspace[Nx]) ⊗ domain(Wm)[numin(Wm)] ⊗ xspace[Nx])
         push!(labels, [ka, ko, -Nx]); push!(conjs, false)
         statics = (statics..., cap)
         protos = (protos..., cap)
