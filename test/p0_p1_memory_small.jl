@@ -859,3 +859,142 @@ if _p0p1_enabled(:m6)
     @test _P0P1Planning.workspace_stats(uwrapped.workspace).owner_bound
 end
 end # :m6 target
+
+_p0p1_env_block_bytes(E) =
+    sum(length(block_) * sizeof(eltype(block_)) for (_, block_) in GRAFT.Backend.blocks(E))
+
+if _p0p1_enabled(:m7)
+@testset "P0/P1: bounded environment-cache memory" begin
+    topo, S, O, ket, bra = _p0p1_sandwich_fixture(MersenneTwister(20260728))
+    root = topo.root
+    child = only(topo.children[root])
+    below_key, above_key = (child, root), (root, child)
+
+    # The default is still a full value cache, with payload based on actual
+    # TensorKit blocks rather than dense leg products.
+    full = EnvCache(topo)
+    below = env!(full, ket, O, bra, child, root)
+    above = env!(full, ket, O, bra, root, child)
+    full_stats = env_cache_stats(full)
+    full_bytes = sum(_p0p1_env_block_bytes(E) for E in values(full.envs))
+    @test full_stats.payload_bytes == full_bytes
+    @test full_stats.largest_entry_bytes ==
+          maximum(_p0p1_env_block_bytes(E) for E in values(full.envs))
+    @test full_stats.entry_count == 2
+    @test full_stats.plan_count >= 1
+    @test full_stats.hits == 0 && full_stats.misses == 2 && full_stats.rebuilds == 2
+    @test full_stats.high_water_bytes == full_bytes
+    @test full_stats.evictions == 0 && full_stats.max_env_bytes === nothing
+    @test full_stats.eviction == :full
+    @test env!(full, ket, O, bra, child, root) === below
+    @test env_cache_stats(full).hits == 1
+    _p0p1_fit_maps_match(below,
+                          GRAFT.Contractions._build_env_ncon_reference(
+                              ket, O, bra, child, root, full.envs))
+    _p0p1_fit_maps_match(above,
+                          GRAFT.Contractions._build_env_ncon_reference(
+                              ket, O, bra, root, child, full.envs))
+
+    # One-entry capacity makes the LRU victim deterministic: the older edge
+    # falls out after the newer directed environment is returned to its caller.
+    cap = full_stats.largest_entry_bytes
+    bounded = EnvCache(topo; max_env_bytes=cap)
+    bounded_below = env!(bounded, ket, O, bra, child, root)
+    bounded_above = env!(bounded, ket, O, bra, root, child)
+    _p0p1_fit_maps_match(bounded_below, below)
+    _p0p1_fit_maps_match(bounded_above, above)
+    bounded_stats = env_cache_stats(bounded)
+    @test bounded_stats.payload_bytes <= cap
+    @test bounded_stats.entry_count == 1 && bounded_stats.evictions == 1
+    @test !haskey(bounded.envs, below_key) && haskey(bounded.envs, above_key)
+    rebuilt_below = env!(bounded, ket, O, bra, child, root)
+    _p0p1_fit_maps_match(rebuilt_below, below)
+    @test haskey(bounded.envs, below_key) && !haskey(bounded.envs, above_key)
+    @test env_cache_stats(bounded).rebuilds == 3
+    @test env_cache_stats(bounded).misses == 3
+
+    # A direct read refreshes recency: after inserting one more payload, the
+    # untouched opposite edge is the deterministic LRU victim, not the key
+    # just accessed again.
+    lru = EnvCache(topo; max_env_bytes=full_stats.payload_bytes)
+    env!(lru, ket, O, bra, child, root)
+    env!(lru, ket, O, bra, root, child)
+    env!(lru, ket, O, bra, child, root)
+    synthetic_key = (99, 100)
+    GRAFT.Contractions._with_env_transaction(lru) do
+        GRAFT.Contractions._store_env!(lru, synthetic_key, copy(below))
+    end
+    @test haskey(lru.envs, below_key) && !haskey(lru.envs, above_key)
+    @test haskey(lru.envs, synthetic_key)
+
+    # Value invalidation releases environments but leaves shape-only plans and
+    # root caps reusable across same-shape tensor changes and explicit edges.
+    plans_before = collect(keys(bounded.plans))
+    plan_count_before = length(bounded.plans)
+    rootcap_count_before = length(bounded.rootcaps)
+    @test rootcap_count_before >= 1
+    update_tensor!(ket, child, 1.01 * ket.tensors[child]; gauge=false,
+                   caches=(bounded,))
+    @test isempty(bounded.envs)
+    @test length(bounded.plans) == plan_count_before
+    @test Set(keys(bounded.plans)) == Set(plans_before)
+    @test length(bounded.rootcaps) == rootcap_count_before
+    rebuilds_before = env_cache_stats(bounded).rebuilds
+    updated_below = env!(bounded, ket, O, bra, child, root)
+    updated_ref = GRAFT.Contractions._build_env_ncon_reference(
+        ket, O, bra, child, root, bounded.envs,
+    )
+    _p0p1_fit_maps_match(updated_below, updated_ref)
+    @test env_cache_stats(bounded).rebuilds == rebuilds_before + 1
+    GRAFT.Contractions.invalidate_edge!(bounded, child, root)
+    @test isempty(bounded.envs)
+    @test length(bounded.plans) == plan_count_before
+    @test length(bounded.rootcaps) == rootcap_count_before
+
+    # A cap is enforced only after a recursive outer transaction. The root
+    # needs its other leaf environment while it builds, so early eviction would
+    # fail this cold branching contraction.
+    stopo = star_topology(2, 1)
+    sphys = Dict(nodeid(stopo, i) => S.P for i in 1:nnodes(stopo))
+    sH = OpSum()
+    for i in 1:nnodes(stopo)
+        sH += Term(0.19 + 0.04im * i, SiteOp(nodeid(stopo, i), :Z, S.Z))
+    end
+    sO = ttno_from_opsum(sH, stopo, sphys; hermitian=false)
+    sket = random_ttns(MersenneTwister(20260729), ComplexF64, stopo, sphys, ℂ^2)
+    sbra = random_ttns(MersenneTwister(20260730), ComplexF64, stopo, sphys, ℂ^2)
+    sroot = stopo.root
+    sleaf = first(stopo.children[sroot])
+    sfull = EnvCache(stopo)
+    sref = env!(sfull, sket, sO, sbra, sroot, sleaf)
+    scap = env_cache_stats(sfull).largest_entry_bytes
+    sbounded = EnvCache(stopo; max_env_bytes=scap)
+    sgot = env!(sbounded, sket, sO, sbra, sroot, sleaf)
+    _p0p1_fit_maps_match(sgot, sref)
+    @test env_cache_stats(sbounded).payload_bytes <= scap
+    @test env_cache_stats(sbounded).evictions >= 1
+    direct_bounded = EnvCache(stopo; max_env_bytes=scap)
+    direct_got = GRAFT.Contractions.build_env(direct_bounded, sket, sO, sbra,
+                                               sroot, sleaf)
+    _p0p1_fit_maps_match(direct_got, sref)
+    @test env_cache_stats(direct_bounded).payload_bytes <= scap
+    full_expect = expect(sket, sO; cache=EnvCache(stopo))
+    bounded_expect = expect(sket, sO; cache=EnvCache(stopo; max_env_bytes=scap))
+    @test bounded_expect ≈ full_expect rtol=1e-12 atol=1e-12
+
+    # Sector payload stats follow stored U(1) blocks, not a dense surrogate.
+    utopo, _, uO, uket, ubra = _p0p1_sandwich_fixture(MersenneTwister(20260731);
+                                                       u1=true)
+    uroot = utopo.root
+    uchild = only(utopo.children[uroot])
+    ucache = EnvCache(utopo)
+    uenv = env!(ucache, uket, uO, ubra, uchild, uroot)
+    ubytes = _p0p1_env_block_bytes(uenv)
+    ustats = env_cache_stats(ucache)
+    @test ustats.payload_bytes == ubytes == ustats.largest_entry_bytes
+    ubounded = EnvCache(utopo; max_env_bytes=ubytes)
+    ubounded_env = env!(ubounded, uket, uO, ubra, uchild, uroot)
+    _p0p1_fit_maps_match(ubounded_env, uenv)
+    @test env_cache_stats(ubounded).payload_bytes <= ubytes
+end
+end # :m7 target

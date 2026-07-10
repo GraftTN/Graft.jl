@@ -39,6 +39,7 @@ import ..Networks: invalidate_node!, invalidate_edge!
 
 export EnvCache, env!, build_env, invalidate_node!, invalidate_edge!,
     EffectiveMap, ContractionPlan, ContractionSpec, PlanKey, plan_cache_stats,
+    env_cache_stats,
     PlanWorkspace, workspace_map, workspace_stats, inner, expect, eff_h1,
     eff_h0, eff_h2, two_site_tensor, two_site_space, split_two_site!, expand!
 

@@ -10,10 +10,12 @@ function inner(φ::TTNS, ψ::TTNS)
     φ.topo == ψ.topo || throw(ArgumentError("inner: mismatched topologies"))
     c = EnvCache(ψ.topo)
     r = ψ.topo.root
-    for w in neighbors(ψ.topo, r)
-        env!(c, ψ, nothing, φ, w, r)
+    return _with_env_transaction(c) do
+        for w in neighbors(ψ.topo, r)
+            env!(c, ψ, nothing, φ, w, r)
+        end
+        build_env(c, ψ, nothing, φ, r, 0)
     end
-    return build_env(c, ψ, nothing, φ, r, 0)
 end
 
 """
@@ -25,10 +27,12 @@ cache maintained by a sweep kernel is maximally reused.
 """
 function expect(ψ::TTNS, H::TTNO; cache::EnvCache=EnvCache(ψ.topo))
     n = ψ.center
-    for w in neighbors(ψ.topo, n)
-        env!(cache, ψ, H, w, n)
+    return _with_env_transaction(cache) do
+        for w in neighbors(ψ.topo, n)
+            env!(cache, ψ, H, w, n)
+        end
+        build_env(cache, ψ, H, ψ, n, 0)
     end
-    return build_env(cache, ψ, H, ψ, n, 0)
 end
 
 function _local_expect_spec(ψ::TTNS, op::AbstractTensorMap, n::Int)

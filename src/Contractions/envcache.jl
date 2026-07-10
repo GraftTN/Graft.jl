@@ -4,13 +4,15 @@
 # towards next_node_id" semantics).
 
 """
-    EnvCache(topo::TreeTopology)
+    EnvCache(topo::TreeTopology; max_env_bytes=nothing, eviction=:lru)
 
 Cache of sandwich environments keyed by directed edge `(u, v)`, plus compiled
 shape-only effective-Hamiltonian plans. Both classes are deliberately
 rebuildable: checkpoints drop the whole cache, while gauge invalidation drops
 only value-dependent environments and retains plans whose space signatures
-still match (§3).
+still match (§3). The default `max_env_bytes=nothing` preserves the historical
+full-cache behavior. A finite cap enables deterministic LRU eviction of only
+value environments; shape-only plans and root caps are never eviction victims.
 """
 mutable struct EnvCache
     topo::TreeTopology
@@ -19,26 +21,125 @@ mutable struct EnvCache
     rootcaps::Dict{Tuple,AbstractTensorMap}
     plan_hits::Int
     plan_misses::Int
+    max_env_bytes::Union{Nothing,Int}
+    eviction::Symbol
+    env_touches::Dict{Tuple{Int,Int},Int}
+    env_clock::Int
+    env_hits::Int
+    env_misses::Int
+    env_rebuilds::Int
+    env_evictions::Int
+    env_high_water_bytes::Int
+    transaction_depth::Int
 end
-EnvCache(topo::TreeTopology) =
-    EnvCache(topo, Dict{Tuple{Int,Int},AbstractTensorMap}(),
-             Dict{PlanKey,ContractionPlan}(), Dict{Tuple,AbstractTensorMap}(),
-             0, 0)
-EnvCache(topo::TreeTopology, envs::Dict{Tuple{Int,Int},AbstractTensorMap}) =
-    EnvCache(topo, envs, Dict{PlanKey,ContractionPlan}(),
-             Dict{Tuple,AbstractTensorMap}(), 0, 0)
+
+function _env_cache_cap(max_env_bytes)
+    max_env_bytes === nothing && return nothing
+    max_env_bytes isa Integer ||
+        throw(ArgumentError("max_env_bytes must be an integer number of bytes or nothing"))
+    max_env_bytes >= 0 ||
+        throw(ArgumentError("max_env_bytes must be nonnegative"))
+    return Int(max_env_bytes)
+end
+
+function _env_cache_policy(eviction::Symbol)
+    eviction === :lru ||
+        throw(ArgumentError("EnvCache eviction must be :lru"))
+    return eviction
+end
+
+"""Stored TensorKit block payload bytes for one cached environment."""
+function _env_payload_bytes(E::AbstractTensorMap)
+    bytes = 0
+    for (_, block_) in blocks(E)
+        T = eltype(block_)
+        bytes += isbitstype(T) ? sizeof(T) * length(block_) : Base.summarysize(block_)
+    end
+    return bytes
+end
+
+function _reconcile_env_metadata!(c::EnvCache)
+    filter!(p -> haskey(c.envs, p.first), c.env_touches)
+    return c
+end
+
+function _env_payload_summary!(c::EnvCache)
+    _reconcile_env_metadata!(c)
+    total = 0
+    largest = 0
+    for E in values(c.envs)
+        bytes = _env_payload_bytes(E)
+        total += bytes
+        largest = max(largest, bytes)
+    end
+    c.env_high_water_bytes = max(c.env_high_water_bytes, total)
+    return total, largest
+end
+
+function _touch_env!(c::EnvCache, key::Tuple{Int,Int})
+    c.env_clock += 1
+    c.env_touches[key] = c.env_clock
+    return nothing
+end
+
+function _seed_env_metadata!(c::EnvCache)
+    empty!(c.env_touches)
+    c.env_clock = 0
+    for key in sort!(collect(keys(c.envs)))
+        _touch_env!(c, key)
+    end
+    _env_payload_summary!(c)
+    return c
+end
+
+function EnvCache(topo::TreeTopology; max_env_bytes=nothing, eviction::Symbol=:lru)
+    return EnvCache(topo, Dict{Tuple{Int,Int},AbstractTensorMap}(),
+                    Dict{PlanKey,ContractionPlan}(), Dict{Tuple,AbstractTensorMap}(),
+                    0, 0; max_env_bytes, eviction)
+end
+
+function EnvCache(topo::TreeTopology, envs::Dict{Tuple{Int,Int},AbstractTensorMap};
+                  max_env_bytes=nothing, eviction::Symbol=:lru)
+    return EnvCache(topo, envs, Dict{PlanKey,ContractionPlan}(),
+                    Dict{Tuple,AbstractTensorMap}(), 0, 0;
+                    max_env_bytes, eviction)
+end
+
 # Source-compatible constructor for callers that built an EnvCache with the
 # pre-root-cap field layout.
 EnvCache(topo::TreeTopology, envs::Dict{Tuple{Int,Int},AbstractTensorMap},
          plans::Dict{PlanKey,ContractionPlan}, plan_hits::Integer,
-         plan_misses::Integer) =
+         plan_misses::Integer; kwargs...) =
     EnvCache(topo, envs, plans, Dict{Tuple,AbstractTensorMap}(),
-             Int(plan_hits), Int(plan_misses))
+             Int(plan_hits), Int(plan_misses); kwargs...)
+
+function EnvCache(topo::TreeTopology, envs::Dict{Tuple{Int,Int},AbstractTensorMap},
+                  plans::Dict{PlanKey,ContractionPlan},
+                  rootcaps::Dict{Tuple,AbstractTensorMap},
+                  plan_hits::Integer, plan_misses::Integer;
+                  max_env_bytes=nothing, eviction::Symbol=:lru)
+    cap = _env_cache_cap(max_env_bytes)
+    policy = _env_cache_policy(eviction)
+    c = EnvCache(topo, envs, plans, rootcaps, Int(plan_hits), Int(plan_misses),
+                 cap, policy, Dict{Tuple{Int,Int},Int}(), 0,
+                 0, 0, 0, 0, 0, 0)
+    _seed_env_metadata!(c)
+    cap === nothing || _enforce_env_cap!(c)
+    return c
+end
 
 Base.haskey(c::EnvCache, key::Tuple{Int,Int}) = haskey(c.envs, key)
-Base.getindex(c::EnvCache, key::Tuple{Int,Int}) = c.envs[key]
+function Base.getindex(c::EnvCache, key::Tuple{Int,Int})
+    E = c.envs[key]
+    _touch_env!(c, key)
+    return E
+end
 Base.empty!(c::EnvCache) = (empty!(c.envs); empty!(c.plans); empty!(c.rootcaps);
-                            c.plan_hits = 0; c.plan_misses = 0; c)
+                            empty!(c.env_touches); c.env_clock = 0;
+                            c.plan_hits = 0; c.plan_misses = 0;
+                            c.env_hits = 0; c.env_misses = 0;
+                            c.env_rebuilds = 0; c.env_evictions = 0;
+                            c.env_high_water_bytes = 0; c.transaction_depth = 0; c)
 
 """
 Observable EffectiveMap plan-cache state for tests and solver diagnostics.
@@ -49,6 +150,70 @@ shape-only dictionary until the cache-wide accounting policy is added.
 """
 plan_cache_stats(c::EnvCache) =
     (hits=c.plan_hits, misses=c.plan_misses, size=length(c.plans))
+
+"""
+    env_cache_stats(cache)
+
+Observable value-environment payload and policy state. `payload_bytes` counts
+actual stored TensorKit block payloads in `envs`; root caps and shape-only
+plans are reported separately and are intentionally outside value eviction.
+"""
+function env_cache_stats(c::EnvCache)
+    payload_bytes, largest_entry_bytes = _env_payload_summary!(c)
+    return (; payload_bytes, largest_entry_bytes, entry_count=length(c.envs),
+            plan_count=length(c.plans), hits=c.env_hits, misses=c.env_misses,
+            rebuilds=c.env_rebuilds, high_water_bytes=c.env_high_water_bytes,
+            evictions=c.env_evictions, max_env_bytes=c.max_env_bytes,
+            eviction=c.max_env_bytes === nothing ? :full : c.eviction)
+end
+
+function _lru_victim(c::EnvCache)
+    keys_ = sort!(collect(keys(c.envs)))
+    isempty(keys_) && return nothing
+    victim = first(keys_)
+    for key in Iterators.drop(keys_, 1)
+        candidate_rank = (get(c.env_touches, key, 0), key)
+        victim_rank = (get(c.env_touches, victim, 0), victim)
+        candidate_rank < victim_rank && (victim = key)
+    end
+    return victim
+end
+
+function _enforce_env_cap!(c::EnvCache)
+    cap = c.max_env_bytes
+    cap === nothing && return c
+    c.eviction === :lru || throw(ArgumentError("unsupported EnvCache eviction policy"))
+    payload_bytes, _ = _env_payload_summary!(c)
+    while payload_bytes > cap && !isempty(c.envs)
+        victim = _lru_victim(c)
+        victim === nothing && break
+        delete!(c.envs, victim)
+        delete!(c.env_touches, victim)
+        c.env_evictions += 1
+        payload_bytes, _ = _env_payload_summary!(c)
+    end
+    return c
+end
+
+function _with_env_transaction(f::Function, c::EnvCache)
+    c.transaction_depth += 1
+    try
+        return f()
+    finally
+        c.transaction_depth -= 1
+        c.transaction_depth >= 0 ||
+            throw(ArgumentError("EnvCache transaction depth underflow"))
+        c.transaction_depth == 0 && _enforce_env_cap!(c)
+    end
+end
+
+function _store_env!(c::EnvCache, key::Tuple{Int,Int}, E::AbstractTensorMap)
+    c.envs[key] = E
+    _touch_env!(c, key)
+    c.env_rebuilds += 1
+    _env_payload_summary!(c)
+    return E
+end
 
 """Return a shape-owned, immutable-in-use root cap for a planned network."""
 function _root_cap!(c::EnvCache, T::DataType, capspace)
@@ -96,6 +261,7 @@ by `Networks.update_tensor!` (§9.2) — the explicit invalidation event of §3.
 """
 function invalidate_node!(c::EnvCache, n::Int)
     filter!(p -> !_on_side(c.topo, n, p.first[1], p.first[2]), c.envs)
+    _reconcile_env_metadata!(c)
     return c
 end
 
@@ -108,6 +274,7 @@ tensors changed, so every environment whose side touches `n` or `m` dies.
 function invalidate_edge!(c::EnvCache, n::Int, m::Int)
     filter!(p -> !(_on_side(c.topo, n, p.first[1], p.first[2]) ||
                    _on_side(c.topo, m, p.first[1], p.first[2])), c.envs)
+    _reconcile_env_metadata!(c)
     return c
 end
 
@@ -272,7 +439,7 @@ function _build_env_spec(c::EnvCache, ket::TTNS, O::Union{TTNO,Nothing},
             W === nothing || (widx[_opleg(t, hp, u, w)] = -2)
             bidx[la] = W === nothing ? -2 : -3
         else
-            E = c.envs[(w, u)]
+            E = _cached_env!(c, (w, u))
             eidx = zeros(Int, numind(E))
             eidx[1] = fresh(); aidx[la] = eidx[1]
             if W !== nothing
@@ -323,14 +490,27 @@ end
 """
     build_env(cache, ket, O, bra, u, v) -> AbstractTensorMap or Number
 
-Cached planned execution of a one-node sandwich. For `v == 0`, the final
-rank-zero TensorMap is scalarized to exactly match legacy `ncon` behavior.
+Ensure every prerequisite environment and then run planned execution of a
+one-node sandwich. The whole operation is one eviction transaction, so callers
+may safely use this exported low-level entry point with a bounded cache. For
+`v == 0`, the final rank-zero TensorMap is scalarized to exactly match legacy
+`ncon` behavior.
 """
-function build_env(c::EnvCache, ket::TTNS, O::Union{TTNO,Nothing}, bra::TTNS,
-                   u::Int, v::Int)
+function _build_env_value(c::EnvCache, ket::TTNS, O::Union{TTNO,Nothing}, bra::TTNS,
+                          u::Int, v::Int)
     spec, operands = _build_env_spec(c, ket, O, bra, u, v)
     kind = O === nothing ? :env_ket_bra : :env_ket_op_bra
     return _planned_execute!(c, kind, spec, operands, scalartype(ket.tensors[u]))
+end
+
+function build_env(c::EnvCache, ket::TTNS, O::Union{TTNO,Nothing}, bra::TTNS,
+                   u::Int, v::Int)
+    return _with_env_transaction(c) do
+        for w in neighbors(c.topo, u)
+            w == v || _env_impl!(c, ket, O, bra, w, u)
+        end
+        _build_env_value(c, ket, O, bra, u, v)
+    end
 end
 
 """Compatibility overload that plans the supplied value environments once."""
@@ -345,13 +525,30 @@ end
 Memoized recursive environment for the directed edge `(u, v)`; builds (and
 caches) all environments of the `u`-side subtree that are missing.
 """
+function _cached_env!(c::EnvCache, key::Tuple{Int,Int})
+    E = c.envs[key]
+    _touch_env!(c, key)
+    return E
+end
+
+function _env_impl!(c::EnvCache, ket::TTNS, O::Union{TTNO,Nothing}, bra::TTNS,
+                    u::Int, v::Int)
+    key = (u, v)
+    if haskey(c.envs, key)
+        c.env_hits += 1
+        return _cached_env!(c, key)
+    end
+    c.env_misses += 1
+    for w in neighbors(c.topo, u)
+        w == v && continue
+        _env_impl!(c, ket, O, bra, w, u)
+    end
+    return _store_env!(c, key, _build_env_value(c, ket, O, bra, u, v))
+end
+
 function env!(c::EnvCache, ket::TTNS, O::Union{TTNO,Nothing}, bra::TTNS, u::Int, v::Int)
-    return get!(c.envs, (u, v)) do
-        for w in neighbors(c.topo, u)
-            w == v && continue
-            env!(c, ket, O, bra, w, u)
-        end
-        build_env(c, ket, O, bra, u, v)
+    return _with_env_transaction(c) do
+        _env_impl!(c, ket, O, bra, u, v)
     end
 end
 env!(c::EnvCache, ket::TTNS, O::Union{TTNO,Nothing}, u::Int, v::Int) =
