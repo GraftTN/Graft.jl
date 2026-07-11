@@ -721,7 +721,8 @@ end
     rhs = random_ttns(RNG, ComplexF64, topo, phys, ℂ^4)
     Hd = dense_hamiltonian(H, rhs)
     v = to_dense(rhs)
-    A = Matrix{ComplexF64}(I, length(v), length(v)) + 0.05 * Hd
+    Iden = Matrix{ComplexF64}(I, length(v), length(v))
+    A = Iden + 0.05 * Hd
 
     ψ = copy(rhs)
     _, info = linsolve!(ψ, O, rhs; a0=1.0, a1=0.05,
@@ -736,7 +737,13 @@ end
     step!(ev, ψτ, O, -0.05)
     @test ev.last_info !== nothing
     @test ev.last_info.converged == 1
-    @test norm(to_dense(ψτ) - (A \ v)) < 1e-7
+    @test norm(to_dense(ψτ) - ((Iden + 0.025 * Hd) \ ((Iden - 0.025 * Hd) * v))) < 1e-7
+
+    ψbe = copy(rhs)
+    evbe = ImplicitLogTime(scheme=LogBackwardEuler(), krylovdim=8, maxiter=4,
+                           tol=1e-10, fit_nsweeps=6, fit_tol=1e-11)
+    step!(evbe, ψbe, O, -0.05)
+    @test norm(to_dense(ψbe) - (A \ v)) < 1e-7
     @test_throws ArgumentError step!(ev, copy(rhs), O, -0.05im)
 end
 
@@ -968,5 +975,6 @@ end
 
 include("contraction_planning.jl")
 include("p0_p1_memory_small.jl")
+include("implicit_log_time.jl")
 
 end
