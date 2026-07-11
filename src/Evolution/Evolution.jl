@@ -31,7 +31,8 @@ using ..Contractions
 export Evolver, step!, evolve!, CorrelatorSeries, correlator, correlator_series,
     supports_complex_step,
     TDVP1, TDVP2, TDVP1_CBE, GlobalKrylov, GSE_TDVP, LSE_TDVP, TEBD, BUG,
-    FixedBUG, ImplicitLogTime, linsolve!
+    FixedBUG, ImplicitLogScheme, LogBackwardEuler, LogTrapezoid,
+    LogGaussLegendre, ImplicitLogTime, logarithmic_time_grid, linsolve!
 
 abstract type Evolver end
 
