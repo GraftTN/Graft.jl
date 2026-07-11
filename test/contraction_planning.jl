@@ -1,5 +1,5 @@
-const _CP = GRAFT.Contractions
-const _Planning = GRAFT.Contractions.Planning
+const _CP = Graft.Contractions
+const _Planning = Graft.Contractions.Planning
 
 """
 Return every *ordered* binary tree for a very small label graph, including
@@ -92,9 +92,9 @@ function _assert_h1_family_matches_ncon!(cache, ψ, O, n, rng;
 
     x0 = ψ.tensors[n]
     x1 = randn(rng, ComplexF64,
-               GRAFT.Backend.codomain(x0) ← domain(x0))
+               Graft.Backend.codomain(x0) ← domain(x0))
     x2 = randn(rng, ComplexF64,
-               GRAFT.Backend.codomain(x0) ← domain(x0))
+               Graft.Backend.codomain(x0) ← domain(x0))
     inputs = (x0, x1, x2)
 
     for x in inputs
@@ -207,7 +207,7 @@ end
     pA = ((1, 2), (3,))
     pB = ((1,), (2,))
     pAB = ((1, 2, 3), ())
-    profile = GRAFT.Backend.pair_cost(A0, pA, false, B0, pB, false, pAB)
+    profile = Graft.Backend.pair_cost(A0, pA, false, B0, pB, false, pAB)
     @test A0[3] == dual(domain(A0)[1])
     @test profile.supported
     @test profile.block_count == 2
@@ -222,7 +222,7 @@ end
     # peak-block metric never underreports the live root output.
     Ar = (P ⊗ P) ← P
     Br = (P ⊗ V) ← V
-    root_profile = GRAFT.Backend.pair_cost(
+    root_profile = Graft.Backend.pair_cost(
         Ar, ((1, 2), (3,)), false,
         Br, ((1,), (2, 3)), false,
         ((1, 3), (2, 4)),
@@ -330,8 +330,8 @@ end
     # spending an exact-DP miss on a single dense charge-0 block.
     V0 = U1Space(0 => 1)
     W0 = V0 ← V0
-    @test GRAFT.Backend.sector_cost_supported(W0)
-    @test !GRAFT.Backend.sector_cost_nontrivial(W0)
+    @test Graft.Backend.sector_cost_supported(W0)
+    @test !Graft.Backend.sector_cost_nontrivial(W0)
     spec0 = _Planning.ContractionSpec(
         Vector{Int}[[-1, 1], [1, 2], [2, -2]],
         Bool[false, false, false], 2, (1, 1), 1;
@@ -466,7 +466,7 @@ end
     # This is `_bond_forward!` without calling the private TDVP helper: evolve
     # the two-site center, invalidate the affected environments, and split
     # back with the center at the root. The local dimension is only 18 here.
-    Θnext, _ = GRAFT.Evolution.exponentiate(h2, -0.06, Θ;
+    Θnext, _ = Graft.Evolution.exponentiate(h2, -0.06, Θ;
                                               ishermitian=true,
                                               krylovdim=12,
                                               tol=1e-12)
@@ -486,11 +486,11 @@ end
     x = checked.inputs[1]
     reference_h1 = z -> _CP._ncon_effective_reference(checked.spec, z,
                                                         checked.statics)
-    y_planned, _ = GRAFT.Evolution.exponentiate(checked.planned, 0.06, x;
+    y_planned, _ = Graft.Evolution.exponentiate(checked.planned, 0.06, x;
                                                   ishermitian=true,
                                                   krylovdim=12,
                                                   tol=1e-12)
-    y_reference, _ = GRAFT.Evolution.exponentiate(reference_h1, 0.06, x;
+    y_reference, _ = Graft.Evolution.exponentiate(reference_h1, 0.06, x;
                                                     ishermitian=true,
                                                     krylovdim=12,
                                                     tol=1e-12)
@@ -513,7 +513,7 @@ end
     # A root still has one *unit* parent leg. `one(P)` is a rank-zero
     # ProductSpace, whereas `oneunit(P)` is the required one-leg ℂ¹ space.
     Aroot = randn(rng, ComplexF64, Vold ⊗ P ← oneunit(P))
-    tensors = Vector{GRAFT.Backend.AbstractTensorMap}(undef, nnodes(topo))
+    tensors = Vector{Graft.Backend.AbstractTensorMap}(undef, nnodes(topo))
     tensors[child] = Achild
     tensors[root] = Aroot
     ψ = TTNS(topo, tensors, child)
@@ -524,7 +524,7 @@ end
 
     # The private helper is deliberately used here because this is the exact
     # TDVP seam whose returned C is passed to eff_h0 immediately afterward.
-    C = GRAFT.Evolution._split_link_up(TDVP1(), ψ, O, child, root, -0.1)
+    C = Graft.Evolution._split_link_up(TDVP1(), ψ, O, child, root, -0.1)
     _CP.invalidate_node!(cache, child)
     spec0, statics0, protos0 = _CP._h0_spec(cache, ψ, O, child, root)
 
@@ -573,7 +573,7 @@ end
     # encode a composable arrow layout.  There is no sector split to optimize,
     # so Phase 3 must retain the dense-equivalent metadata path rather than
     # invoking TensorKit structural composition just to rediscover Phase 2.
-    @test !GRAFT.Backend.sector_cost_nontrivial(x)
+    @test !Graft.Backend.sector_cost_nontrivial(x)
     @test envfirst.sector_peak_elements == envfirst.peak_elements
     @test envfirst.sector_flops == 2 * envfirst.flops
     @test envfirst.peak_elements < gate

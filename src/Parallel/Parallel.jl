@@ -10,7 +10,7 @@ Roll-out order (per-milestone plan §12):
 4. same-depth node-level parallel updates — convergence risk, only after 3
    proves communication isn't the bottleneck (unscheduled).
 
-MPI lands as a package extension (`GRAFTMPIExt`, §10.6) — the core stays free
+MPI lands as a package extension (`GraftMPIExt`, §10.6) — the core stays free
 of heavy deps. Data-structure obligations that are already honored: EnvCache
 and checkpoints are subtree-dispatchable, no global implicit state (§9.9).
 """

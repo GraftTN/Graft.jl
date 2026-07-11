@@ -107,7 +107,7 @@ end
 
 # TODO(§7): TRIQS interop — (a) pure-Julia HDF5 reader for TRIQS archive
 # layouts (BlockGf/Gf/U-matrix, production default), (b) PythonCall bridge as a
-# package extension `GRAFTTriqsExt`; both converge on one intermediate
+# package extension `GraftTriqsExt`; both converge on one intermediate
 # representation before mapping to TensorKit sectors.
 
 end # module Checkpoints

@@ -1,7 +1,7 @@
 using Test
-using GRAFT
-using GRAFT.TestUtils
-using GRAFT.Backend
+using Graft
+using Graft.TestUtils
+using Graft.Backend
 using LinearAlgebra: I, dot, norm
 
 @testset "B5 fZ2 hopping Green smoke" begin

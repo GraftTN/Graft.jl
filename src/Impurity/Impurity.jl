@@ -1,5 +1,5 @@
 """
-L6 — GRAFT.Impurity: embedded impurity-solver module (architecture §6).
+L6 — Graft.Impurity: embedded impurity-solver module (architecture §6).
 Forwarded B4 implements boson Hamiltonian real-pole bath fitting plus star/chain
 branch mounting. Finite-T solver glue remains a later milestone; the pole-fit
 surface already returns thermofield real-pole star data.
@@ -427,7 +427,7 @@ end
 # ---------------------------------------------------------------------------
 
 # TODO(future impurity-solver integration): the single self-consistency-facing
-# entry point (§6.6). GRAFT does NOT implement the DMFT/EDMFT loop itself.
+# entry point (§6.6). Graft does NOT implement the DMFT/EDMFT loop itself.
 # Contract: `ψ0` warm starts are first-class (topology hash validated — refuse
 # silently rebuilt geometry); basis rotations `U` are returned with the results,
 # loop side stays oblivious.

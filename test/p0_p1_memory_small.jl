@@ -5,18 +5,18 @@
 using Test
 using Random
 using LinearAlgebra
-using GRAFT
-using GRAFT.TestUtils: random_ttns, to_dense
-using GRAFT.Backend: ℂ, ⊗, ←, U1Space, norm, numout, numin
-using GRAFT.Contractions: env!
+using Graft
+using Graft.TestUtils: random_ttns, to_dense
+using Graft.Backend: ℂ, ⊗, ←, U1Space, norm, numout, numin
+using Graft.Contractions: env!
 
-const _P0P1Planning = GRAFT.Contractions.Planning
+const _P0P1Planning = Graft.Contractions.Planning
 const _P0P1_TARGET = lowercase(get(ENV, "GRAFT_P0P1_TARGET", "all"))
 _P0P1_TARGET in ("all", "m1", "m2", "m3", "m4", "m5", "m6", "m7") ||
     throw(ArgumentError("unknown GRAFT_P0P1_TARGET=$_P0P1_TARGET"))
 _p0p1_enabled(group::Symbol) = _P0P1_TARGET in ("all", String(group))
 
-@info "GRAFT P0/P1 targeted BLAS configuration" config=LinearAlgebra.BLAS.get_config() threads=LinearAlgebra.BLAS.get_num_threads()
+@info "Graft P0/P1 targeted BLAS configuration" config=LinearAlgebra.BLAS.get_config() threads=LinearAlgebra.BLAS.get_num_threads()
 
 function _p0p1_permuted_two_map(rng)
     # Both operands need a non-identity expert-mode layout before their
@@ -52,8 +52,8 @@ function _p0p1_env_matches_ncon!(cache, ket, O, bra, u, v)
     for w in neighbors(topology(ket), u)
         w == v || env!(cache, ket, O, bra, w, u)
     end
-    got = GRAFT.Contractions.build_env(cache, ket, O, bra, u, v)
-    ref = GRAFT.Contractions._build_env_ncon_reference(ket, O, bra, u, v,
+    got = Graft.Contractions.build_env(cache, ket, O, bra, u, v)
+    ref = Graft.Contractions._build_env_ncon_reference(ket, O, bra, u, v,
                                                         cache.envs)
     if got isa Number
         @test got ≈ ref rtol=1e-12 atol=1e-12
@@ -65,12 +65,12 @@ end
 
 """Independent retained-ncon recursion for planned fit A/B checks."""
 function _p0p1_fit_ref_env!(φ, ψ, u, v,
-                             envs::Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap})
+                             envs::Dict{Tuple{Int,Int},Graft.Backend.AbstractTensorMap})
     return get!(envs, (u, v)) do
         for w in neighbors(topology(φ), u)
             w == v || _p0p1_fit_ref_env!(φ, ψ, w, u, envs)
         end
-        GRAFT.Networks._fit_build_env_ncon_reference(φ, ψ, u, v, envs)
+        Graft.Networks._fit_build_env_ncon_reference(φ, ψ, u, v, envs)
     end
 end
 
@@ -81,12 +81,12 @@ end
 
 """Independent retained-ncon recursion for operator-aware fit A/B checks."""
 function _p0p1_fit_operator_ref_env!(φ, ψ, O, u, v,
-                                      envs::Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap})
+                                      envs::Dict{Tuple{Int,Int},Graft.Backend.AbstractTensorMap})
     return get!(envs, (u, v)) do
         for w in neighbors(topology(φ), u)
             w == v || _p0p1_fit_operator_ref_env!(φ, ψ, O, w, u, envs)
         end
-        GRAFT.Networks._fit_operator_build_env_ncon_reference(φ, ψ, O, u, v, envs)
+        Graft.Networks._fit_operator_build_env_ncon_reference(φ, ψ, O, u, v, envs)
     end
 end
 
@@ -209,7 +209,7 @@ end
                      memory_cap_bytes=uncapped.plan.live_peak_bytes)
     @test capped.plan.live_peak_bytes <= uncapped.plan.live_peak_bytes
     @test capped.plan.scalar_bytes == sizeof(ComplexF64)
-    spec, statics, _ = GRAFT.Contractions._h1_spec(cache, ψ, O, topo.root)
+    spec, statics, _ = Graft.Contractions._h1_spec(cache, ψ, O, topo.root)
     reference = _P0P1Planning.ncon_reference(spec, ψ.tensors[topo.root], statics)
     @test norm(capped(ψ.tensors[topo.root]) - reference) <=
           1e-12 * max(norm(reference), 1)
@@ -296,12 +296,12 @@ if _p0p1_enabled(:m2)
     # exact operand count is part of the generic executor contract.
     env!(cH, ket, O, bra, child, root)
     scalar_spec, scalar_operands =
-        GRAFT.Contractions._build_env_spec(cH, ket, O, bra, root, 0)
+        Graft.Contractions._build_env_spec(cH, ket, O, bra, root, 0)
     scalar_plan = _P0P1Planning.plan_contraction(
         scalar_spec, scalar_operands;
-        scalar_type=GRAFT.Backend.scalartype(ket.tensors[root]),
+        scalar_type=Graft.Backend.scalartype(ket.tensors[root]),
     )
-    scalar_ref = GRAFT.Contractions._build_env_ncon_reference(ket, O, bra,
+    scalar_ref = Graft.Contractions._build_env_ncon_reference(ket, O, bra,
                                                                root, 0, cH.envs)
     @test scalar_plan.scalar_output
     @test _P0P1Planning.execute(scalar_plan, scalar_operands) ≈ scalar_ref
@@ -349,7 +349,7 @@ if _p0p1_enabled(:m2)
     for w in neighbors(topo, root)
         env!(cinner, ket, nothing, bra, w, root)
     end
-    inner_ref = GRAFT.Contractions._build_env_ncon_reference(ket, nothing, bra,
+    inner_ref = Graft.Contractions._build_env_ncon_reference(ket, nothing, bra,
                                                               root, 0, cinner.envs)
     @test inner(bra, ket) ≈ inner_ref rtol=1e-12 atol=1e-12
 
@@ -358,7 +358,7 @@ if _p0p1_enabled(:m2)
     move_center!(ψ, root; cache=cexpect)
     e_root = expect(ψ, O; cache=cexpect)
     local_root = expect(ψ, S.Z, nodeid(topo, root); cache=cexpect)
-    local_ref = GRAFT.Contractions._local_expect_ncon_reference(ψ, S.Z, root)
+    local_ref = Graft.Contractions._local_expect_ncon_reference(ψ, S.Z, root)
     @test local_root ≈ local_ref rtol=1e-12 atol=1e-12
     move_center!(ψ, child; cache=cexpect)
     e_child = expect(ψ, O; cache=cexpect)
@@ -407,14 +407,14 @@ if _p0p1_enabled(:m3)
     topo, _, _, ψ, φ = _p0p1_sandwich_fixture(MersenneTwister(20260717))
     root = topo.root
     child = only(topo.children[root])
-    F = GRAFT.Networks
+    F = Graft.Networks
 
     # Both directions of the ket-bra fit environment use a fresh retained
     # ncon recursion, so this does not compare a planned value with itself.
     cache = F._FitCache(topo)
     for (u, v) in ((child, root), (root, child))
         got = F._fit_env!(cache, φ, ψ, u, v)
-        refenvs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+        refenvs = Dict{Tuple{Int,Int},Graft.Backend.AbstractTensorMap}()
         ref = _p0p1_fit_ref_env!(φ, ψ, u, v, refenvs)
         _p0p1_fit_maps_match(got, ref)
     end
@@ -422,7 +422,7 @@ if _p0p1_enabled(:m3)
     # Local projection and the scalar overlap are complete-operand plans;
     # their named direct paths remain private A/B references.
     got_project = F._fit_local_tensor(cache, φ, ψ, root)
-    refenvs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+    refenvs = Dict{Tuple{Int,Int},Graft.Backend.AbstractTensorMap}()
     for w in neighbors(topo, root)
         _p0p1_fit_ref_env!(φ, ψ, w, root, refenvs)
     end
@@ -451,7 +451,7 @@ if _p0p1_enabled(:m3)
     @test length(cache.rootcaps) == cap_count
     @test only(values(cache.rootcaps)) === cap
     rebuilt = F._fit_env!(cache, φ, ψ, root, child)
-    rebuilt_refs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+    rebuilt_refs = Dict{Tuple{Int,Int},Graft.Backend.AbstractTensorMap}()
     rebuilt_ref = _p0p1_fit_ref_env!(φ, ψ, root, child, rebuilt_refs)
     _p0p1_fit_maps_match(rebuilt, rebuilt_ref)
     @test length(cache.plans) == plan_count
@@ -466,7 +466,7 @@ if _p0p1_enabled(:m3)
                                   target, sources, coeffs, root)
     refsum = nothing
     for (src, α) in zip(sources, coeffs)
-        srcenvs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+        srcenvs = Dict{Tuple{Int,Int},Graft.Backend.AbstractTensorMap}()
         for w in neighbors(topo, root)
             _p0p1_fit_ref_env!(target, src, w, root, srcenvs)
         end
@@ -492,11 +492,11 @@ if _p0p1_enabled(:m3)
     uchild = only(utopo.children[uroot])
     ucache = F._FitCache(utopo)
     uenv = F._fit_env!(ucache, uφ, uψ, uchild, uroot)
-    urefs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+    urefs = Dict{Tuple{Int,Int},Graft.Backend.AbstractTensorMap}()
     uenv_ref = _p0p1_fit_ref_env!(uφ, uψ, uchild, uroot, urefs)
     _p0p1_fit_maps_match(uenv, uenv_ref)
     uproject = F._fit_local_tensor(ucache, uφ, uψ, uroot)
-    upro_refs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+    upro_refs = Dict{Tuple{Int,Int},Graft.Backend.AbstractTensorMap}()
     for w in neighbors(utopo, uroot)
         _p0p1_fit_ref_env!(uφ, uψ, w, uroot, upro_refs)
     end
@@ -512,19 +512,19 @@ if _p0p1_enabled(:m4)
     topo, S, O, ψ, φ = _p0p1_sandwich_fixture(MersenneTwister(20260719))
     root = topo.root
     child = only(topo.children[root])
-    F = GRAFT.Networks
+    F = Graft.Networks
 
     # The planned rank-three cache keeps exact (source ket, operator, target
     # bra) edge order and agrees with an independent retained ncon recursion.
     cache = F._FitCache(topo, O)
     for (u, v) in ((child, root), (root, child))
         got = F._fit_env!(cache, φ, ψ, u, v)
-        refs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+        refs = Dict{Tuple{Int,Int},Graft.Backend.AbstractTensorMap}()
         ref = _p0p1_fit_operator_ref_env!(φ, ψ, O, u, v, refs)
         _p0p1_fit_maps_match(got, ref)
     end
     got_project = F._fit_local_tensor(cache, φ, ψ, root)
-    project_refs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+    project_refs = Dict{Tuple{Int,Int},Graft.Backend.AbstractTensorMap}()
     for w in neighbors(topo, root)
         _p0p1_fit_operator_ref_env!(φ, ψ, O, w, root, project_refs)
     end
@@ -555,7 +555,7 @@ if _p0p1_enabled(:m4)
     @test length(cache_check.rootcaps) == cap_count
     @test only(values(cache_check.rootcaps)) === cap
     rebuilt = F._fit_env!(cache_check, cache_target, ψ, root, child)
-    rebuilt_refs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+    rebuilt_refs = Dict{Tuple{Int,Int},Graft.Backend.AbstractTensorMap}()
     rebuilt_ref = _p0p1_fit_operator_ref_env!(cache_target, ψ, O, root, child,
                                                rebuilt_refs)
     _p0p1_fit_maps_match(rebuilt, rebuilt_ref)
@@ -616,11 +616,11 @@ if _p0p1_enabled(:m4)
     uchild = only(utopo.children[uroot])
     ucache = F._FitCache(utopo, uO)
     uenv = F._fit_env!(ucache, uφ, uψ, uchild, uroot)
-    urefs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+    urefs = Dict{Tuple{Int,Int},Graft.Backend.AbstractTensorMap}()
     uenv_ref = _p0p1_fit_operator_ref_env!(uφ, uψ, uO, uchild, uroot, urefs)
     _p0p1_fit_maps_match(uenv, uenv_ref)
     uproject = F._fit_local_tensor(ucache, uφ, uψ, uroot)
-    upro_refs = Dict{Tuple{Int,Int},GRAFT.Backend.AbstractTensorMap}()
+    upro_refs = Dict{Tuple{Int,Int},Graft.Backend.AbstractTensorMap}()
     for w in neighbors(utopo, uroot)
         _p0p1_fit_operator_ref_env!(uφ, uψ, uO, w, uroot, upro_refs)
     end
@@ -636,7 +636,7 @@ if _p0p1_enabled(:m4)
     # GlobalKrylov and linsolve! both use the same _GKOperator matvec.  Check
     # it directly against the retained legacy materialize-then-fit route, then
     # execute one deliberately tiny shifted solve smoke path.
-    E = GRAFT.Evolution
+    E = Graft.Evolution
     gktemplate = copy(φ)
     gkop = E._GKOperator(O, gktemplate, 1, 0.0, false)
     gkx = E._GKState(copy(ψ), gktemplate, 1, 0.0, false)
@@ -658,7 +658,7 @@ if _p0p1_enabled(:m5)
     topo, S, O, ψ, _ = _p0p1_sandwich_fixture(MersenneTwister(20260721))
     root = topo.root
     child = only(topo.children[root])
-    F = GRAFT.Networks
+    F = Graft.Networks
     T = promote_type(eltype(O), eltype(ψ))
 
     # A node plan preserves the historical operand/open-leg layout while using
@@ -711,7 +711,7 @@ if _p0p1_enabled(:m5)
     sgot = F._apply_node_tensor(splans, sO, sψ, sroot, sfusions)
     sref = F._apply_node_tensor_ncon_reference(sO, sψ, sroot, sfusions[sroot])
     _p0p1_fit_maps_match(sgot, sref)
-    stensors = Vector{GRAFT.Backend.AbstractTensorMap}(undef, nnodes(stopo))
+    stensors = Vector{Graft.Backend.AbstractTensorMap}(undef, nnodes(stopo))
     for n in preorder(stopo)
         stensors[n] = F._apply_node_tensor(splans, sO, sψ, n, sfusions)
         delete!(sfusions, n)
@@ -861,7 +861,7 @@ end
 end # :m6 target
 
 _p0p1_env_block_bytes(E) =
-    sum(length(block_) * sizeof(eltype(block_)) for (_, block_) in GRAFT.Backend.blocks(E))
+    sum(length(block_) * sizeof(eltype(block_)) for (_, block_) in Graft.Backend.blocks(E))
 
 if _p0p1_enabled(:m7)
 @testset "P0/P1: bounded environment-cache memory" begin
@@ -889,10 +889,10 @@ if _p0p1_enabled(:m7)
     @test env!(full, ket, O, bra, child, root) === below
     @test env_cache_stats(full).hits == 1
     _p0p1_fit_maps_match(below,
-                          GRAFT.Contractions._build_env_ncon_reference(
+                          Graft.Contractions._build_env_ncon_reference(
                               ket, O, bra, child, root, full.envs))
     _p0p1_fit_maps_match(above,
-                          GRAFT.Contractions._build_env_ncon_reference(
+                          Graft.Contractions._build_env_ncon_reference(
                               ket, O, bra, root, child, full.envs))
 
     # One-entry capacity makes the LRU victim deterministic: the older edge
@@ -921,8 +921,8 @@ if _p0p1_enabled(:m7)
     env!(lru, ket, O, bra, root, child)
     env!(lru, ket, O, bra, child, root)
     synthetic_key = (99, 100)
-    GRAFT.Contractions._with_env_transaction(lru) do
-        GRAFT.Contractions._store_env!(lru, synthetic_key, copy(below))
+    Graft.Contractions._with_env_transaction(lru) do
+        Graft.Contractions._store_env!(lru, synthetic_key, copy(below))
     end
     @test haskey(lru.envs, below_key) && !haskey(lru.envs, above_key)
     @test haskey(lru.envs, synthetic_key)
@@ -941,12 +941,12 @@ if _p0p1_enabled(:m7)
     @test length(bounded.rootcaps) == rootcap_count_before
     rebuilds_before = env_cache_stats(bounded).rebuilds
     updated_below = env!(bounded, ket, O, bra, child, root)
-    updated_ref = GRAFT.Contractions._build_env_ncon_reference(
+    updated_ref = Graft.Contractions._build_env_ncon_reference(
         ket, O, bra, child, root, bounded.envs,
     )
     _p0p1_fit_maps_match(updated_below, updated_ref)
     @test env_cache_stats(bounded).rebuilds == rebuilds_before + 1
-    GRAFT.Contractions.invalidate_edge!(bounded, child, root)
+    Graft.Contractions.invalidate_edge!(bounded, child, root)
     @test isempty(bounded.envs)
     @test length(bounded.plans) == plan_count_before
     @test length(bounded.rootcaps) == rootcap_count_before
@@ -974,7 +974,7 @@ if _p0p1_enabled(:m7)
     @test env_cache_stats(sbounded).payload_bytes <= scap
     @test env_cache_stats(sbounded).evictions >= 1
     direct_bounded = EnvCache(stopo; max_env_bytes=scap)
-    direct_got = GRAFT.Contractions.build_env(direct_bounded, sket, sO, sbra,
+    direct_got = Graft.Contractions.build_env(direct_bounded, sket, sO, sbra,
                                                sroot, sleaf)
     _p0p1_fit_maps_match(direct_got, sref)
     @test env_cache_stats(direct_bounded).payload_bytes <= scap

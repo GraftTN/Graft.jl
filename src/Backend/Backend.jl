@@ -48,7 +48,7 @@ export @tensor, ncon, contract_pair, pair_cost, space_signature,
     sector_cost_supported, sector_cost_nontrivial, sector_block_peak,
     tensor_scalar, contract_pair!, allocate_contract_pair,
     contract_pair_compatible
-# GRAFT-defined
+# Graft-defined
 export FermionSector, AbelianSector, TruncationScheme, truncspec, split_svd,
     absorb_on_leg, orth_factor_leg, trivialspace, ones_tensor
 
@@ -333,7 +333,7 @@ end
 """
     TruncationScheme(; maxdim, atol, rtol, discarded_weight)
 
-The only sanctioned way to truncate anywhere in GRAFT (global constraint §9.5):
+The only sanctioned way to truncate anywhere in Graft (global constraint §9.5):
 sector-resolved singular value spectra all pass through here, so policy (incl.
 future LBO semantics on PP bonds) is defined in one place.
 

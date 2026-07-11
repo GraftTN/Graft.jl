@@ -1,14 +1,14 @@
-# GRAFT.jl test suite — every kernel is cross-validated against exact
+# Graft.jl test suite — every kernel is cross-validated against exact
 # diagonalization / exact propagation on small trees, plus gauge-invariance
 # property tests (architecture §9.11: this is a merge requirement, CI-enforced).
 using Test
-using GRAFT
-using GRAFT.TestUtils
-using GRAFT.Backend: ℂ, ⊗, ←, dim, domain, dual, space, id, numind, numout, numin,
+using Graft
+using Graft.TestUtils
+using Graft.Backend: ℂ, ⊗, ←, dim, domain, dual, space, id, numind, numout, numin,
     U1Space, U1Irrep, FermionParity, TensorMap, oneunit, sectors
 using TensorOperations
-using GRAFT.Trees: edges
-using GRAFT.Contractions: two_site_tensor, two_site_space, split_two_site!
+using Graft.Trees: edges
+using Graft.Contractions: two_site_tensor, two_site_space, split_two_site!
 using Random
 using LinearAlgebra: I, dot, norm
 
@@ -93,7 +93,7 @@ struct LocalZEvolver <: Evolver
     omega::Float64
 end
 
-function GRAFT.step!(ev::LocalZEvolver, ψ::TTNS, ::TTNO, dz::Number)
+function Graft.step!(ev::LocalZEvolver, ψ::TTNS, ::TTNO, dz::Number)
     P = physspace(ψ, nodeindex(topology(ψ), ev.site))
     U = TensorMap(ComplexF64[exp(dz * ev.omega) 0; 0 exp(-dz * ev.omega)], P ← P)
     ϕ = apply_local(ψ, U, ev.site)
@@ -107,7 +107,7 @@ struct LocalXEvolver <: Evolver
     omega::Float64
 end
 
-function GRAFT.step!(ev::LocalXEvolver, ψ::TTNS, ::TTNO, dz::Number)
+function Graft.step!(ev::LocalXEvolver, ψ::TTNS, ::TTNO, dz::Number)
     P = physspace(ψ, nodeindex(topology(ψ), ev.site))
     a = dz * ev.omega
     U = TensorMap(ComplexF64[cosh(a) sinh(a); sinh(a) cosh(a)], P ← P)
@@ -118,9 +118,9 @@ function GRAFT.step!(ev::LocalXEvolver, ψ::TTNS, ::TTNO, dz::Number)
 end
 
 struct NoOpEvolver <: Evolver end
-GRAFT.step!(::NoOpEvolver, ψ::TTNS, ::TTNO, ::Number) = ψ
+Graft.step!(::NoOpEvolver, ψ::TTNS, ::TTNO, ::Number) = ψ
 
-@testset "GRAFT.jl" begin
+@testset "Graft.jl" begin
 
 @testset "Trees: topology & paths" begin
     t = star_topology(3, 2)
@@ -434,7 +434,7 @@ end
     @test abs(inner(φ, ψ) - dot(to_dense(φ), v)) < 1e-12
     # eff_h1 closes to the expectation value at the center
     cache = EnvCache(topo)
-    h1 = GRAFT.eff_h1(cache, ψ, O, ψ.center)
+    h1 = Graft.eff_h1(cache, ψ, O, ψ.center)
     @test abs(dot(ψ.tensors[ψ.center], h1(ψ.tensors[ψ.center])) - expect(ψ, O)) < 1e-12
 end
 
@@ -507,8 +507,8 @@ end
 
     ψembed = random_ttns(Xoshiro(20260710), ComplexF64, topo, phys, ℂ^2)
     vembed = to_dense(ψembed)
-    targets = GRAFT.Contractions._physless_root_growth_targets(ψembed, trunc, 2)
-    GRAFT.Contractions._bootstrap_physless_root!(ψembed, EnvCache(topo), targets)
+    targets = Graft.Contractions._physless_root_growth_targets(ψembed, trunc, 2)
+    Graft.Contractions._bootstrap_physless_root!(ψembed, EnvCache(topo), targets)
     @test [dim(domain(ψembed.tensors[n])[1]) for n in root_children] == [4, 4]
     @test norm(to_dense(ψembed) - vembed) < 1e-12
     @test check_arrows(ψembed)
@@ -538,7 +538,7 @@ end
 
     # The default unbounded truncation must still choose the finite two-site
     # rank cap supplied by the two child tensors, not typemax(Int).
-    @test GRAFT.Contractions._physless_root_two_site_targets(ψ, TruncationScheme()) ==
+    @test Graft.Contractions._physless_root_two_site_targets(ψ, TruncationScheme()) ==
           [(root_children[1], 4), (root_children[2], 4)]
 
     _, Es = dmrg2!(ψ, O; trunc, nsweeps=4, verbose=TEST_VERBOSE)

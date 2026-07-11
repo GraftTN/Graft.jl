@@ -1,7 +1,7 @@
 using Test
-using GRAFT
-using GRAFT.TestUtils
-using GRAFT.Backend: ℂ
+using Graft
+using Graft.TestUtils
+using Graft.Backend: ℂ
 using LinearAlgebra: dot, norm
 using Random
 

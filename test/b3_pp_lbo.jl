@@ -1,7 +1,7 @@
 using Test
-using GRAFT
-using GRAFT.TestUtils
-using GRAFT.Backend
+using Graft
+using Graft.TestUtils
+using Graft.Backend
 using LinearAlgebra: Diagonal, diag, dot, norm
 
 function _b3_well_model(nmax; n0=4, g=0.1)

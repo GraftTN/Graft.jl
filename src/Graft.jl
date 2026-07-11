@@ -1,8 +1,8 @@
 """
-# GRAFT.jl
+# Graft.jl
 
 Grafting PyTreeNet's architecture onto TensorKit.jl: a general TTNS library
-with an embedded impurity-solver module (`GRAFT.Impurity`).
+with an embedded impurity-solver module (`Graft.Impurity`).
 
 Layering (architecture document §1; the conceptual L-numbers are unchanged —
 the include order below only reflects that `Contractions` operates on the
@@ -27,7 +27,7 @@ Dependency direction is monotone (§9.10): L(n) only uses L(<n); `Impurity` is
 referenced by nothing below it; upper layers never `import TensorKit` directly
 (§9.13).
 """
-module GRAFT
+module Graft
 
 include("Backend/Backend.jl")
 include("Trees/Trees.jl")
@@ -96,7 +96,7 @@ export Partition, BathParametrization, RealPoles, ThermofieldRealPoles, ComplexP
     BosonBath,
     checkpoint!, resume, with_checkpoint, threaded_foreach
 
-# TODO(§10.7): GRAFT.build_sysimage() — PackageCompiler + PrecompileTools
+# TODO(§10.7): Graft.build_sysimage() — PackageCompiler + PrecompileTools
 # workload for the checkpoint-resume cluster usage pattern.
 
-end # module GRAFT
+end # module Graft

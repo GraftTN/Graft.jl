@@ -1,5 +1,5 @@
 using Test
-using GRAFT
+using Graft
 
 @testset "Hamiltonian bath pole fitting support matrix" begin
     P = Partition([[:imp]])

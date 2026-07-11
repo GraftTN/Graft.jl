@@ -1,6 +1,6 @@
-using GRAFT
-using GRAFT.TestUtils
-using GRAFT.Backend: ComplexSpace, dim, domain
+using Graft
+using Graft.TestUtils
+using Graft.Backend: ComplexSpace, dim, domain
 using Printf
 using Random
 

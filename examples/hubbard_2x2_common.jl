@@ -1,7 +1,7 @@
 module Hubbard2x2Common
 
-using GRAFT
-using GRAFT.Backend: U1Irrep, dim, domain
+using Graft
+using Graft.Backend: U1Irrep, dim, domain
 
 export balanced_binary_leaf_topology, electron_ops, electron_orbitals,
     phonon_sites, pp_ancilla_site, open_boundary_bonds_2x2,

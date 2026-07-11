@@ -1,7 +1,7 @@
 using Test
-using GRAFT
-using GRAFT.TestUtils
-using GRAFT.Backend
+using Graft
+using Graft.TestUtils
+using Graft.Backend
 using LinearAlgebra: dot, norm
 
 function _b2_fz2_hopping()

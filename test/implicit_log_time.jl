@@ -1,8 +1,8 @@
 using Test
-using GRAFT
-using GRAFT.TestUtils
-using GRAFT.Backend: ℂ
-using GRAFT.Trees: edges
+using Graft
+using Graft.TestUtils
+using Graft.Backend: ℂ
+using Graft.Trees: edges
 using LinearAlgebra: I, Hermitian, dot, eigvals, norm
 using Random: Xoshiro
 

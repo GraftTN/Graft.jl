@@ -1,9 +1,9 @@
 include(joinpath(@__DIR__, "hubbard_2x2_common.jl"))
 
 using .Hubbard2x2Common
-using GRAFT
-using GRAFT.TestUtils
-using GRAFT.Backend: ComplexSpace
+using Graft
+using Graft.TestUtils
+using Graft.Backend: ComplexSpace
 using LinearAlgebra: dot
 using Printf
 using Random

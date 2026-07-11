@@ -1,7 +1,7 @@
-### GRAFT.jl
+### Graft.jl
 
 <p align="center">
-  <img src="https://cdn.jsdelivr.net/gh/weiyiguo9/GRAFT.jl@main/assets/graftjl-logo.png" alt="GRAFT.jl logo" width="240">
+  <img src="https://cdn.jsdelivr.net/gh/GraftTN/Graft.jl@main/assets/graftjl-logo.png" alt="Graft.jl logo" width="240">
 </p>
 
 A tree tensor network library featuring DMFT impurity solver, with the eventual goal of applying it to real material simulations.
@@ -12,15 +12,15 @@ The architecture is largely inspired by [PyTreeNet](https://github.com/Drachier/
 #### Quick example
 
 ```julia
-using GRAFT, GRAFT.TestUtils, Random
-using GRAFT.Backend: ℂ
+using Graft, Graft.TestUtils, Random
+using Graft.Backend: ℂ
 
 topo = star_topology(3, 2)                       # impurity-style star geometry
 S = spin_ops()
 phys = Dict(nodeid(topo, i) => S.P for i in 1:nnodes(topo))
 
 H = OpSum()
-for (c, p) in GRAFT.Trees.edges(topo)
+for (c, p) in Graft.Trees.edges(topo)
     H += Term(-1.0, SiteOp(nodeid(topo, c), :Z, S.Z), SiteOp(nodeid(topo, p), :Z, S.Z))
 end
 for i in 1:nnodes(topo)
