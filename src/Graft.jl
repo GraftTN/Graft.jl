@@ -85,7 +85,11 @@ export dmrg1!, dmrg2!, dmrg1_3s!, expand!,
     TDVP1, TDVP2, TDVP1_CBE, GlobalKrylov, GSE_TDVP, LSE_TDVP,
     TEBD, BUG, ImplicitLogScheme, LogBackwardEuler, LogTrapezoid,
     LogGaussLegendre, ImplicitLogTime, logarithmic_time_grid, linsolve!,
-    ThermalRep, Purified, METTS, thermalize
+    ThermalRep, Purified, METTS, thermalize,
+    PurificationProblem, purification_problem, physical_ttno,
+    PurifiedState, PurificationTrajectory, ScaledTTNS,
+    infinite_temperature_state, thermal_expect, thermal_correlator,
+    state_at
 # cross-cutting
 export checkpoint!, resume, with_checkpoint, threaded_foreach
 

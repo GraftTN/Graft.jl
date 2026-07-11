@@ -12,14 +12,16 @@ so `to_dense(ψ)' * dense_hamiltonian(H, ψ) * to_dense(ψ)` matches `expect`.
 module TestUtils
 
 using Random
-using LinearAlgebra: LinearAlgebra, eigen, Hermitian
+using LinearAlgebra: LinearAlgebra, eigen, Hermitian, eigvals, tr
 using ..Backend
 using ..Trees
 using ..Networks
 using ..Symbolic
 
 export random_ttns, product_ttns, canonicalize!, to_dense, dense_hamiltonian,
-    exact_groundstate, exact_evolve, physical_sites
+    exact_groundstate, exact_evolve, physical_sites,
+    exact_thermal_Z, exact_thermal_logZ, exact_thermal_expect,
+    exact_thermal_correlator, pad_bonds!
 
 """
     canonicalize!(ψ; center=ψ.topo.root) -> ψ
@@ -329,5 +331,152 @@ end
 """Exact propagation `exp(dz·H)·v` (dense; complex dz welcome — §5b convention)."""
 exact_evolve(Hd::AbstractMatrix, v::AbstractVector, dz::Number) =
     LinearAlgebra.exp(Matrix(dz * Hd)) * v
+
+# ---------------------------------------------------------------------------
+# Dense thermal references (P0 of finite-temperature v1, §05 plan)
+# ---------------------------------------------------------------------------
+
+"""Exact partition function `Z = tr(exp(-beta*Hd))` (dense)."""
+function exact_thermal_Z(Hd::AbstractMatrix, beta::Real)
+    beta == 0 && return ComplexF64(size(Hd, 1))
+    return tr(LinearAlgebra.exp(-Float64(beta) * Matrix{ComplexF64}(Hd)))
+end
+
+"""Exact `logZ = log(tr(exp(-beta*Hd)))` (dense, overflow-safe for large beta)."""
+function exact_thermal_logZ(Hd::AbstractMatrix, beta::Real)
+    vals = eigvals(Hermitian(Matrix{ComplexF64}(Hd)))
+    ls = sort!(-Float64(beta) .* real.(vals))
+    m = maximum(ls)
+    return m + log(sum(exp.(ls .- m)))
+end
+
+"""
+    exact_thermal_expect(Hd, Od, beta) -> Number
+
+Dense thermal expectation `tr(O * exp(-beta*Hd)) / Z`. At `beta=0` this is
+`tr(O)/dim(O)`, which pins the trace (not supertrace) convention.
+"""
+function exact_thermal_expect(Hd::AbstractMatrix, Od::AbstractMatrix, beta::Real)
+    Z = exact_thermal_Z(Hd, beta)
+    if beta == 0
+        return tr(Matrix{ComplexF64}(Od)) / Z
+    end
+    rho = LinearAlgebra.exp(-Float64(beta) * Matrix{ComplexF64}(Hd))
+    return tr(Matrix{ComplexF64}(Od) * rho) / Z
+end
+
+"""
+    exact_thermal_correlator(Hd, Ad, Bd, beta, taus) -> Vector
+
+Dense thermal correlator `C_AB(tau) = tr(exp(-(beta-tau)*Hd) * A * exp(-tau*Hd) * B) / Z`
+for each `tau` in `taus`. Uses the stable β-τ preparation formula.
+"""
+function exact_thermal_correlator(Hd::AbstractMatrix, Ad::AbstractMatrix,
+                                  Bd::AbstractMatrix, beta::Real, taus)
+    Z = exact_thermal_Z(Hd, beta)
+    Hd64 = Matrix{ComplexF64}(Hd)
+    A64 = Matrix{ComplexF64}(Ad)
+    B64 = Matrix{ComplexF64}(Bd)
+    return [tr(LinearAlgebra.exp(-(Float64(beta) - Float64(tau)) * Hd64) * A64 *
+               LinearAlgebra.exp(-Float64(tau) * Hd64) * B64) / Z for tau in taus]
+end
+
+"""
+    pad_bonds!(ψ, bond) -> ψ
+
+Enlarge every virtual bond of `ψ` to at least `dim(bond)` by zero-padding the
+bond sector. The state vector is unchanged (padded sectors are zero-filled).
+Used by fixed-manifold evolver fixtures (GlobalKrylov, ImplicitLogTime) that
+need a bond-padded start from the minimal `|I⟩` (§05 plan §2.4).
+"""
+function pad_bonds!(ψ::TTNS, bond)
+    t = ψ.topo
+    for n in 1:nnodes(t)
+        t.parent[n] == 0 && continue
+        V = domain(ψ.tensors[n])[1]
+        dim(V) >= dim(bond) && continue
+        # Replace this bond with a padded space and zero-fill
+        newV = _padded_space(V, bond)
+        _pad_one_bond!(ψ, n, newV)
+    end
+    return ψ
+end
+
+function _padded_space(V::S, bond::S) where {S<:ElementarySpace}
+    spacetype(V) === spacetype(bond) ||
+        throw(ArgumentError("pad_bonds! space type mismatch"))
+    if sectortype(V) === Trivial
+        return ℂ^max(dim(V), dim(bond))
+    end
+    dims = Dict{sectortype(V),Int}()
+    for q in sectors(V)
+        dims[q] = dim(V, q)
+    end
+    for q in sectors(bond)
+        dims[q] = max(get(dims, q, 0), dim(bond, q))
+    end
+    return S(dims...)
+end
+
+function _pad_one_bond!(ψ::TTNS, child::Int, newV)
+    t = ψ.topo
+    p = t.parent[child]
+    k = childslot(t, p, child)
+    oldA = ψ.tensors[p]
+    oldV = space(oldA, k)
+    newcod = S[space(oldA, i) for i in 1:numout(oldA)]
+    newcod[k] = newV
+    newA = zeros(eltype(ψ), reduce(⊗, newcod) ← domain(oldA))
+    _copy_block!(newA, oldA, oldV, newV, k)
+    ψ.tensors[p] = newA
+    oldC = ψ.tensors[child]
+    newC = zeros(eltype(ψ), codomain(oldC) ← newV)
+    _copy_block!(newC, oldC, oldV, newV, 0)
+    ψ.tensors[child] = newC
+    invalidate_node!(ψ, p)
+    return ψ
+end
+
+function _copy_block!(dst::AbstractTensorMap, src::AbstractTensorMap,
+                      oldV::S, newV::S, k::Int) where {S<:ElementarySpace}
+    Q = sectortype(oldV)
+    if Q === Trivial
+        od, nd = dim(oldV), dim(newV)
+        for (_, db) in blocks(dst)
+            for (_, sb) in blocks(src)
+                sz = min(size(sb, 1), size(db, 1)), min(size(sb, 2), size(db, 2))
+                db[1:sz[1], 1:sz[2]] .= sb[1:sz[1], 1:sz[2]]
+            end
+        end
+        return dst
+    end
+    for q in sectors(oldV)
+        for (qd, db) in blocks(dst)
+            for (qs, sb) in blocks(src)
+                _copy_sector_block!(db, sb, qd, qs, oldV, newV, k)
+            end
+        end
+    end
+    return dst
+end
+
+function _copy_sector_block!(db, sb, qd, qs, oldV, newV, k)
+    Q = sectortype(oldV)
+    if k == 0
+        qd == qs || return nothing
+        r = min(size(sb, 1), size(db, 1))
+        c = min(size(sb, 2), size(db, 2))
+        db[1:r, 1:c] .= sb[1:r, 1:c]
+    else
+        qd == qs || return nothing
+        r = min(size(sb, 1), size(db, 1))
+        c = min(size(sb, 2), size(db, 2))
+        db[1:r, 1:c] .= sb[1:r, 1:c]
+    end
+end
+
+function invalidate_node!(ψ::TTNS, n::Int)
+    return ψ
+end
 
 end # module TestUtils
