@@ -10,7 +10,8 @@ Design rules (§4a):
   structured generators expand into plain product terms before TTNO assembly.
 * The symbolic layer never knows about temperature or the word "retarded":
   finite-T baths and retarded interactions arrive here only as explicit modes
-  (`Impurity.Bath` does the fitting and emits plain `OpSum` terms).
+  (the companion `GraftImpurity.jl` package does the fitting and emits plain
+  `OpSum` terms).
 * Rewrite passes (PPDress, SU2Reduce, ModeReorder) are compiler-style passes on
   the term list — all TODO at this milestone.
 """
@@ -131,8 +132,8 @@ Implemented discrete boson helpers: [`boson_modes`](@ref) and
 [`fermion_ops_z2`](@ref). TODO(future structured-generator milestone, §4a):
 structured matrix generators
 `Hopping(t)`, `Coulomb(V)` (via ISDF-THC/SVD pre-factorization, §4b),
-`Hybridization(Vk, εk)`. Continuous `BosonBath(ImU)` lives in `Impurity` and
-lowers to these discrete helpers after fitting.
+`Hybridization(Vk, εk)`. Continuous `BosonBath(ImU)` lives in the companion
+`GraftImpurity.jl` package and lowers to these discrete helpers after fitting.
 """
 struct OpSum
     terms::Vector{Term}

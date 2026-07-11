@@ -11,9 +11,9 @@ Planned reuse: tangent-space projection = orthogonality-center machinery
 KrylovKit. New work: tangent-basis bookkeeping at branching nodes.
 Known limits to surface honestly: T = 0 only; single-site tangent-space
 expressivity (ship the 2-site variance Δ²⊥ as a diagnostic output).
-Division of labor with Impurity.Spectral (§6.5): TaSK sweeps the full spectrum
-cheaply; high-variance windows get complex-time Krylov refinement — both emit
-the same discrete-pole format.
+Division of labor with the companion `GraftImpurity.jl` spectral layer (§6.5):
+TaSK sweeps the full spectrum cheaply; high-variance windows get complex-time
+Krylov refinement — both emit the same discrete-pole format.
 """
 module FreqDomain
 

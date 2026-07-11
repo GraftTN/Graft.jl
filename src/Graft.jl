@@ -1,8 +1,9 @@
 """
 # Graft.jl
 
-Grafting PyTreeNet's architecture onto TensorKit.jl: a general TTNS library
-with an embedded impurity-solver module (`Graft.Impurity`).
+Grafting PyTreeNet's architecture onto TensorKit.jl: a general-purpose TTNS
+core library. Impurity-solver workflows live in the companion
+`GraftImpurity.jl` package.
 
 Layering (architecture document §1; the conceptual L-numbers are unchanged —
 the include order below only reflects that `Contractions` operates on the
@@ -18,14 +19,13 @@ the include order below only reflects that `Contractions` operates on the
     Evolution      L5b  complex-step Evolver family (TDVP1 …)
     Thermal        L5c  finite-T representations (TODO, M2)
     FreqDomain     L5d  TaSK resolvent kernel (TODO, M6)
-    Impurity       L6   impurity solver: partition, bath, measure (TODO)
     Checkpoints    ✕    JLD2 checkpoint/restart
     Parallel       ✕    threading/MPI roll-out (TODO)
     TestUtils      ✕    random states, dense/ED references
 
-Dependency direction is monotone (§9.10): L(n) only uses L(<n); `Impurity` is
-referenced by nothing below it; upper layers never `import TensorKit` directly
-(§9.13).
+Dependency direction is monotone (§9.10): L(n) only uses L(<n); companion
+packages depend on `Graft`, never the reverse; upper layers never
+`import TensorKit` directly (§9.13).
 """
 module Graft
 
@@ -43,7 +43,6 @@ include("GroundState/GroundState.jl")
 include("Evolution/Evolution.jl")
 include("Thermal/Thermal.jl")
 include("FreqDomain/FreqDomain.jl")
-include("Impurity/Impurity.jl")
 include("IO/Checkpoints.jl")
 include("Parallel/Parallel.jl")
 include("TestUtils/TestUtils.jl")
@@ -58,9 +57,6 @@ using .GroundState
 using .Evolution
 using .Thermal
 using .FreqDomain
-using .Impurity: Impurity, Partition, BathParametrization, RealPoles,
-    ThermofieldRealPoles, ComplexPoles, audit_partition, couplings,
-    matsubara_reconstruct, mount_bath, fit_bath, BosonBath
 using .Checkpoints
 using .Parallel
 
@@ -90,11 +86,8 @@ export dmrg1!, dmrg2!, dmrg1_3s!, expand!,
     TEBD, BUG, ImplicitLogScheme, LogBackwardEuler, LogTrapezoid,
     LogGaussLegendre, ImplicitLogTime, logarithmic_time_grid, linsolve!,
     ThermalRep, Purified, METTS, thermalize
-# L6 + cross-cutting
-export Partition, BathParametrization, RealPoles, ThermofieldRealPoles, ComplexPoles,
-    audit_partition, couplings, matsubara_reconstruct, mount_bath, fit_bath,
-    BosonBath,
-    checkpoint!, resume, with_checkpoint, threaded_foreach
+# cross-cutting
+export checkpoint!, resume, with_checkpoint, threaded_foreach
 
 # TODO(§10.7): Graft.build_sysimage() — PackageCompiler + PrecompileTools
 # workload for the checkpoint-resume cluster usage pattern.

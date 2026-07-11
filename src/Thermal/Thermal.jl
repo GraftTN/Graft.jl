@@ -7,8 +7,8 @@ delegated to an arbitrary `Evolution.Evolver` through its complex-step
 interface.
 
 Scope note (§5c): finite-T *baths* default to thermofield star encoding fitted
-in `Impurity.Bath` (temperature absorbed into the fit, vacuum product initial
-state) — `Purified`/`METTS` are for the Matsubara loop's G(τ), local impurity
+by the companion `GraftImpurity.jl` package (temperature absorbed into the fit,
+vacuum product initial state) — `Purified`/`METTS` are for Matsubara G(τ), local
 thermalization, and lattice problems.
 """
 module Thermal

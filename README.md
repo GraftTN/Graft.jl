@@ -4,7 +4,7 @@
   <img src="https://cdn.jsdelivr.net/gh/GraftTN/Graft.jl@main/assets/graftjl-logo.png" alt="Graft.jl logo" width="240">
 </p>
 
-A tree tensor network library featuring DMFT impurity solver, with the eventual goal of applying it to real material simulations.
+A general-purpose tree tensor network core library. DMFT/EDMFT impurity-solver workflows are provided by the companion `GraftImpurity.jl` package, which depends on Graft rather than being embedded in it.
 
 The architecture is largely inspired by [PyTreeNet](https://github.com/Drachier/PyTreeNet), and its tensor network foundation is built on [TensorKit.jl](https://github.com/QuantumKitHub/TensorKit.jl), which lets us exploit the abelian and non-abelian symmetries. It is designed to flexibly adopt new algorithms from papers for experimentation and verification — i.e., tree *graft*ing.
 
@@ -15,7 +15,7 @@ The architecture is largely inspired by [PyTreeNet](https://github.com/Drachier/
 using Graft, Graft.TestUtils, Random
 using Graft.Backend: ℂ
 
-topo = star_topology(3, 2)                       # impurity-style star geometry
+topo = star_topology(3, 2)                       # generic star geometry
 S = spin_ops()
 phys = Dict(nodeid(topo, i) => S.P for i in 1:nnodes(topo))
 
