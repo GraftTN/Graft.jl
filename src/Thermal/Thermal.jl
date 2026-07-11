@@ -141,9 +141,15 @@ requested inverse temperatures.
 """
 struct PurificationTrajectory{S<:ElementarySpace,T<:Number}
     final::PurifiedState{S,T}
-    checkpoints::Dict{Float64,PurifiedState{S,T}}
+    checkpoints::Dict{Float64,<:PurifiedState}
     tau_grid::Vector{Float64}
     metadata::NamedTuple
+    function PurificationTrajectory(final::PurifiedState{S,T},
+                                    checkpoints::Dict{Float64,<:PurifiedState},
+                                    tau_grid::Vector{Float64},
+                                    metadata::NamedTuple) where {S<:ElementarySpace,T<:Number}
+        return new{S,T}(final, checkpoints, tau_grid, metadata)
+    end
 end
 
 # Accessor for checkpoint lookup by inverse temperature.

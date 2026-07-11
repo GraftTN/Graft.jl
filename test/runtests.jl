@@ -949,5 +949,6 @@ include("contraction_planning.jl")
 include("p0_p1_memory_small.jl")
 include("implicit_log_time.jl")
 include("p0_thermal.jl")
+include("p1_p2_thermal.jl")
 
 end
