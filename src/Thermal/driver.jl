@@ -180,7 +180,7 @@ function thermal_correlator(rep::Purified, problem::PurificationProblem,
 
         if tau > 0
             ev = _fresh_evolver_thermal(evolver)
-            pgrid = _build_grid(tau, prop_grid, p_nsteps)
+            pgrid = _build_prop_grid(tau, prop_grid, p_nsteps)
             for j in 1:(length(pgrid) - 1)
                 dtau = pgrid[j + 1] - pgrid[j]
                 iszero(dtau) && continue
@@ -239,6 +239,26 @@ function _build_grid(beta::Float64, tau_grid, nsteps)
         return grid
     else
         throw(ArgumentError("unknown tau_grid: $tau_grid (expected :uniform or a Vector)"))
+    end
+end
+
+function _build_prop_grid(tau::Float64, prop_grid, nsteps)
+    if prop_grid == :uniform
+        nsteps === nothing && throw(ArgumentError(":uniform prop_grid requires nsteps"))
+        nsteps > 0 || throw(ArgumentError("nsteps must be positive"))
+        return collect(range(0.0, tau; length=nsteps + 1))
+    elseif prop_grid isa AbstractVector
+        grid = Float64.(collect(prop_grid))
+        length(grid) >= 2 || throw(ArgumentError("prop_grid must have at least 2 points"))
+        isapprox(grid[1], 0.0; atol=1e-14) ||
+            throw(ArgumentError("prop_grid must start at 0; got $(grid[1])"))
+        isapprox(grid[end], tau; atol=1e-14) ||
+            throw(ArgumentError("prop_grid must end at tau=$tau; got $(grid[end])"))
+        all(diff(grid) .> 0) ||
+            throw(ArgumentError("prop_grid must be strictly increasing"))
+        return grid
+    else
+        throw(ArgumentError("unknown prop_grid: $prop_grid (expected :uniform or a Vector)"))
     end
 end
 
