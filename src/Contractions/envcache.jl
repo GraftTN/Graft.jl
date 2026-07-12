@@ -315,7 +315,7 @@ function _component_has_dual_physical(psi::TTNS, u::Int, avoiding::Int)
     end
 end
 
-"""Codomain legs that need a pivotal twist in a Euclidean one-site result."""
+"""Open legs that need a pivotal twist in a Euclidean one-site result."""
 function _euclidean_output_legs(psi::TTNS, n::Int)
     inds = Int[]
     for (k, child) in enumerate(psi.topo.children[n])
@@ -325,6 +325,12 @@ function _euclidean_output_legs(psi::TTNS, n::Int)
     if hasphys(psi, n)
         p = physleg(psi, n)
         isdual(space(psi.tensors[n], p)) && push!(inds, p)
+    end
+    parent = psi.topo.parent[n]
+    if parent != 0
+        p = parentleg(psi, n)
+        isdual(space(psi.tensors[n], p)) &&
+            _component_has_dual_physical(psi, parent, n) && push!(inds, p)
     end
     return Tuple(inds)
 end

@@ -357,6 +357,11 @@ function eff_h2(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int, m::Int;
     end
     hasphys(ψ, m) && isdual(xspace[mpos(Km + 1)]) &&
         push!(twists, mpos(Km + 1))
+    if t.parent[m] != 0
+        pos = mpos(parentleg(ψ, m))
+        isdual(xspace[pos]) &&
+            _component_has_dual_physical(ψ, t.parent[m], m) && push!(twists, pos)
+    end
     return _effective_map!(cache, :h2, spec, protos, statics,
                            scalartype(ψ.tensors[n]);
                            optimize=optimize, memory_weight=memory_weight,

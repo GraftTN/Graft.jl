@@ -308,7 +308,11 @@ function _tdvp2_sweep!(ev::TDVP2, ψ::TTNS, H::TTNO, dz::Number; rev::Bool)
             j == B || _site_backward!(ev, ψ, H, m, dz; herm)
             _bond_forward!(ev, ψ, H, n, m, dz; herm, center_on=:n)
         else
-            move_center!(ψ, n; cache)
+            # Centering on the parent already makes `(n, m)` the active
+            # two-site block. Avoid a redundant parent-to-child gauge move:
+            # bending its link factor through a dual fermionic ancilla can
+            # insert a pivotal sign before the block is merged again.
+            move_center!(ψ, m; cache)
             _bond_forward!(ev, ψ, H, n, m, dz; herm, center_on=:m)
             j == B || _site_backward!(ev, ψ, H, m, dz; herm)
         end
