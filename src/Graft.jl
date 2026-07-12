@@ -93,7 +93,9 @@ export dmrg1!, dmrg2!, dmrg1_3s!, expand!,
 # cross-cutting
 export checkpoint!, resume, with_checkpoint, threaded_foreach
 
-# TODO(§10.7): Graft.build_sysimage() — PackageCompiler + PrecompileTools
-# workload for the checkpoint-resume cluster usage pattern.
+include("precompile.jl")
+
+# TODO(§10.7): Graft.build_sysimage() — reuse the bundled workload with
+# PackageCompiler for the checkpoint-resume cluster usage pattern.
 
 end # module Graft
