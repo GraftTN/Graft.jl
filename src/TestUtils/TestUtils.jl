@@ -433,6 +433,7 @@ function _pad_one_bond!(ψ::TTNS{S}, child::Int, newV::S) where {S<:ElementarySp
     oldC = ψ.tensors[child]
     newC = zeros(eltype(ψ), codomain(oldC) ← newV)
     _copy_block!(newC, oldC, oldV, newV, 0)
+    ψ.tensors[child] = newC
     return ψ
 end
 
