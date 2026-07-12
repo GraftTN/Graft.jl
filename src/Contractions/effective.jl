@@ -104,7 +104,8 @@ function eff_h1(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int;
                            scalartype(ψ.tensors[n]);
                            optimize=optimize, memory_weight=memory_weight,
                            sector_aware=sector_aware,
-                           memory_cap_bytes=memory_cap_bytes)
+                           memory_cap_bytes=memory_cap_bytes,
+                           output_twists=_euclidean_output_legs(ψ, n))
 end
 
 function _h0_input_space(En::AbstractTensorMap, Em::AbstractTensorMap)
@@ -137,11 +138,15 @@ function eff_h0(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int, m::Int;
                 sector_aware::Bool=true,
                 memory_cap_bytes::Union{Nothing,Real}=nothing)
     spec, statics, protos = _h0_spec(cache, ψ, H, n, m)
+    Cspace = first(protos)
+    twists = isdual(codomain(Cspace)[1]) &&
+        _component_has_dual_physical(ψ, n, m) ? (1,) : ()
     return _effective_map!(cache, :h0, spec, protos, statics,
                            scalartype(ψ.tensors[n]);
                            optimize=optimize, memory_weight=memory_weight,
                            sector_aware=sector_aware,
-                           memory_cap_bytes=memory_cap_bytes)
+                           memory_cap_bytes=memory_cap_bytes,
+                           output_twists=twists)
 end
 
 """
@@ -332,9 +337,30 @@ function eff_h2(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int, m::Int;
                 sector_aware::Bool=true,
                 memory_cap_bytes::Union{Nothing,Real}=nothing)
     spec, statics, protos = _h2_spec(cache, ψ, H, n, m)
+    t = ψ.topo
+    Kn, Km = nchildren(t, n), nchildren(t, m)
+    k = childslot(t, m, n)
+    pn = Kn + (hasphys(ψ, n) ? 1 : 0)
+    mpos(j) = pn + (j < k ? j : j - 1)
+    xspace = first(protos)
+    twists = Int[]
+    for (j, child) in enumerate(t.children[n])
+        isdual(xspace[j]) && _component_has_dual_physical(ψ, child, n) &&
+            push!(twists, j)
+    end
+    hasphys(ψ, n) && isdual(xspace[Kn + 1]) && push!(twists, Kn + 1)
+    for (j, child) in enumerate(t.children[m])
+        child == n && continue
+        pos = mpos(j)
+        isdual(xspace[pos]) && _component_has_dual_physical(ψ, child, m) &&
+            push!(twists, pos)
+    end
+    hasphys(ψ, m) && isdual(xspace[mpos(Km + 1)]) &&
+        push!(twists, mpos(Km + 1))
     return _effective_map!(cache, :h2, spec, protos, statics,
                            scalartype(ψ.tensors[n]);
                            optimize=optimize, memory_weight=memory_weight,
                            sector_aware=sector_aware,
-                           memory_cap_bytes=memory_cap_bytes)
+                           memory_cap_bytes=memory_cap_bytes,
+                           output_twists=Tuple(twists))
 end

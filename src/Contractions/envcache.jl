@@ -233,7 +233,8 @@ function _effective_map!(c::EnvCache, kind::Symbol, spec::ContractionSpec,
                          protos, statics::Tuple, T::DataType;
                          optimize::Bool=true, memory_weight::Real=1,
                          sector_aware::Bool=true,
-                         memory_cap_bytes::Union{Nothing,Real}=nothing)
+                         memory_cap_bytes::Union{Nothing,Real}=nothing,
+                         output_twists::Tuple=())
     plan, hit = Planning.get_or_plan!(c.plans, kind, spec, protos, T;
                                       optimize=optimize, memory_weight=memory_weight,
                                       sector_aware=sector_aware,
@@ -243,7 +244,7 @@ function _effective_map!(c::EnvCache, kind::Symbol, spec::ContractionSpec,
     else
         c.plan_misses += 1
     end
-    return EffectiveMap(plan, statics)
+    return EffectiveMap(plan, statics, output_twists)
 end
 
 # is node `n` on the `u`-side of the directed edge (u, v)?
@@ -292,6 +293,43 @@ _opleg(t::TreeTopology, hasphys_u::Bool, u::Int, w::Int) =
     t.parent[u] == w ? nchildren(t, u) + (hasphys_u ? 2 : 0) + 1 : childslot(t, u, w)
 
 """
+Return the bra tensor with the pivotal correction required by a Euclidean
+state-state inner product. Contracting a conjugated dual physical leg directly
+closes a categorical (supertrace) loop; its ribbon twist converts that loop to
+the positive Hilbert-space metric. A TTNO sandwich already carries the needed
+pivotal structure through its physical input/output pair, so it must not be
+twisted again.
+"""
+function _euclidean_bra_tensor(bra::TTNS, O::Union{TTNO,Nothing}, u::Int)
+    B = bra.tensors[u]
+    if O === nothing && hasphys(bra, u)
+        p = physleg(bra, u)
+        isdual(space(B, p)) && return Backend.twist(B, p)
+    end
+    return B
+end
+
+function _component_has_dual_physical(psi::TTNS, u::Int, avoiding::Int)
+    return any(subtree_nodes(psi.topo, u, avoiding)) do n
+        hasphys(psi, n) && isdual(physspace(psi, n))
+    end
+end
+
+"""Codomain legs that need a pivotal twist in a Euclidean one-site result."""
+function _euclidean_output_legs(psi::TTNS, n::Int)
+    inds = Int[]
+    for (k, child) in enumerate(psi.topo.children[n])
+        isdual(space(psi.tensors[n], k)) &&
+            _component_has_dual_physical(psi, child, n) && push!(inds, k)
+    end
+    if hasphys(psi, n)
+        p = physleg(psi, n)
+        isdual(space(psi.tensors[n], p)) && push!(inds, p)
+    end
+    return Tuple(inds)
+end
+
+"""
     _build_env_ncon_reference(ket, O, bra, u, v, envs)
 
 Contract the node sandwich at `u`, leaving the legs towards `v` open, consuming
@@ -309,7 +347,7 @@ function _build_env_ncon_reference(ket::TTNS, O::Union{TTNO,Nothing}, bra::TTNS,
     t = ket.topo
     hp = hasphys(ket, u)
     A = ket.tensors[u]
-    B = bra.tensors[u]
+    B = _euclidean_bra_tensor(bra, O, u)
     W = O === nothing ? nothing : O.tensors[u]
     O === nothing || hasphys(O, u) == hp ||
         throw(ArgumentError("TTNO/TTNS physical-leg mismatch at node $(nodeid(t, u))"))
@@ -399,7 +437,7 @@ function _build_env_spec(c::EnvCache, ket::TTNS, O::Union{TTNO,Nothing},
     t = ket.topo
     hp = hasphys(ket, u)
     A = ket.tensors[u]
-    B = bra.tensors[u]
+    B = _euclidean_bra_tensor(bra, O, u)
     W = O === nothing ? nothing : O.tensors[u]
     O === nothing || hasphys(O, u) == hp ||
         throw(ArgumentError("TTNO/TTNS physical-leg mismatch at node $(nodeid(t, u))"))

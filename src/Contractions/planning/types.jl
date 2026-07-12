@@ -178,12 +178,20 @@ end
 Callable effective Hamiltonian. `statics` owns W, cached environments and an
 optional root cap; slot 1 is supplied afresh by KrylovKit on every invocation.
 """
-struct EffectiveMap{T<:Tuple}
+struct EffectiveMap{T<:Tuple,I<:Tuple}
     plan::ContractionPlan
     statics::T
+    output_twists::I
 end
 
-(f::EffectiveMap)(x::AbstractTensorMap) = execute(f.plan, x, f.statics)
+EffectiveMap(plan::ContractionPlan, statics::T) where {T<:Tuple} =
+    EffectiveMap(plan, statics, ())
+
+function (f::EffectiveMap)(x::AbstractTensorMap)
+    y = execute(f.plan, x, f.statics)
+    isempty(f.output_twists) || Backend.twist!(y, f.output_twists)
+    return y
+end
 
 function Base.show(io::IO, f::EffectiveMap)
     print(io, "EffectiveMap(strategy=", f.plan.strategy,
@@ -303,8 +311,12 @@ end
 workspace_map(effective::EffectiveMap) =
     WorkspaceMap(effective, PlanWorkspace(effective.plan))
 
-(map::WorkspaceMap)(x::AbstractTensorMap) =
-    execute(map.effective.plan, x, map.effective.statics; workspace=map.workspace)
+function (map::WorkspaceMap)(x::AbstractTensorMap)
+    y = execute(map.effective.plan, x, map.effective.statics; workspace=map.workspace)
+    isempty(map.effective.output_twists) ||
+        Backend.twist!(y, map.effective.output_twists)
+    return y
+end
 
 """
 Structural cache identity. `shape` carries the exact label graph and exact

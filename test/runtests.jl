@@ -5,7 +5,7 @@ using Test
 using Graft
 using Graft.TestUtils
 using Graft.Backend: ℂ, ⊗, ←, dim, domain, dual, space, id, numind, numout, numin,
-    U1Space, U1Irrep, FermionParity, TensorMap, oneunit, sectors
+    U1Space, U1Irrep, FermionParity, TensorMap, blocks, oneunit, sectors
 using TensorOperations
 using Graft.Trees: edges
 using Graft.Contractions: two_site_tensor, two_site_space, split_two_site!
@@ -359,6 +359,45 @@ end
     ψeven = product_ttns(ComplexF64, topo_one, phys_one, Dict(:site1 => FermionParity(0)))
     ψodd = product_ttns(ComplexF64, topo_one, phys_one, Dict(:site1 => FermionParity(1)))
     @test inner(ψodd, ψodd) ≈ 1
+
+    # A dual physical ancilla closes a fermionic loop. The state-state
+    # contraction needs the Euclidean pivotal correction rather than the
+    # categorical supertrace (which would cancel the even/odd Bell sectors).
+    topo_bell = TreeTopology(:site, [:site => :aux])
+    bell = zeros(ComplexF64, dual(F.P) ⊗ F.P ← oneunit(typeof(F.P)))
+    for (_, b) in blocks(bell)
+        b[:, 1] .= inv(sqrt(2))
+    end
+    ψbell = TTNS(topo_bell,
+                 [bell, ComplexF64(1) * id(dual(F.P))], topo_bell.root)
+    @test inner(ψbell, ψbell) ≈ 1 atol = 1e-12
+    @test inner(move_center!(copy(ψbell), :aux),
+                move_center!(copy(ψbell), :aux)) ≈ 1 atol = 1e-12
+
+    bra_bell = apply_local(ψbell, adjoint(F.C), :site)
+    ket_bell = apply_local(ψbell, F.Cd, :site)
+    @test inner(bra_bell, ket_bell) ≈ 0.5 atol = 1e-12
+
+    phys_bell = Dict(:site => F.P, :aux => dual(F.P))
+    I_bell = ttno_from_opsum(
+        OpSum() + Term(1.0, SiteOp(:site, :I, F.I)),
+        topo_bell, phys_bell; hermitian=true)
+    @test expect(ψbell, I_bell) ≈ 1 atol = 1e-12
+    for n in 1:nnodes(topo_bell)
+        ψn = move_center!(copy(ψbell), n)
+        h1 = eff_h1(EnvCache(topo_bell), ψn, I_bell, n)
+        @test dot(ψn[n], h1(ψn[n])) ≈ expect(ψn, I_bell) atol = 1e-12
+    end
+
+    ψbell2 = move_center!(copy(ψbell), :aux)
+    Θbell = two_site_tensor(ψbell2, 2, topo_bell.root)
+    h2bell = eff_h2(EnvCache(topo_bell), ψbell2, I_bell, 2, topo_bell.root)
+    @test dot(Θbell, h2bell(Θbell)) ≈ expect(ψbell2, I_bell) atol = 1e-12
+
+    φbell = copy(ψbell)
+    fit!(φbell, ψbell; nsweeps=1, tol=0.0)
+    @test abs(inner(φbell, ψbell)) ≈ 1 atol = 1e-12
+
     Hzero = OpSum() + Term(0.0, SiteOp(:site1, :I, F.I))
     Ozero = ttno_from_opsum(Hzero, topo_one, phys_one; hermitian=true)
     G = correlator(ψeven, 0.0, :site1 => F.C, :site1 => F.Cd, [0.0, 0.2];

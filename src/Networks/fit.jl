@@ -1,4 +1,4 @@
-import ..Contractions: Planning
+import ..Contractions: Planning, _euclidean_bra_tensor, _euclidean_output_legs
 
 """
     fit!(φ, ψ; nsweeps=4, tol=1e-10, normalize=false, verbose=false) -> (φ, errors)
@@ -185,6 +185,8 @@ function _fit_local_tensor(caches::Vector{_FitCache}, φ::TTNS, sources,
     for (c, src, α) in zip(caches, sources, coeffs)
         _fit_project_tensor!(A, c, φ, src, n, α)
     end
+    twists = _euclidean_output_legs(φ, n)
+    isempty(twists) || twist!(A, twists)
     return A
 end
 
@@ -198,7 +200,7 @@ function _fit_build_env_ncon_reference(φ::TTNS, ψ::TTNS, u::Int, v::Int,
                                        envs::Dict{Tuple{Int,Int},AbstractTensorMap})
     t = φ.topo
     A = ψ.tensors[u]
-    B = φ.tensors[u]
+    B = _euclidean_bra_tensor(φ, nothing, u)
     hp = hasphys(ψ, u)
     aidx = zeros(Int, numind(A))
     bidx = zeros(Int, numind(B))
@@ -249,7 +251,7 @@ end
 function _fit_build_env_spec(c::_FitCache, φ::TTNS, ψ::TTNS, u::Int, v::Int)
     t = φ.topo
     A = ψ.tensors[u]
-    B = φ.tensors[u]
+    B = _euclidean_bra_tensor(φ, nothing, u)
     hp = hasphys(ψ, u)
     aidx = zeros(Int, numind(A))
     bidx = zeros(Int, numind(B))
@@ -353,8 +355,10 @@ function _fit_project_tensor_ncon_reference(
         cap = ones_tensor(T, dual(domain(B)[1]) ⊗ domain(A)[1])
         push!(tensors, cap); push!(indices, [-numind(B), ka]); push!(conjs, false)
     end
-    y = ncon(tensors, indices, conjs)
-    return repartition(y, numout(B), 1)
+    y = repartition(ncon(tensors, indices, conjs), numout(B), 1)
+    twists = _euclidean_output_legs(φ, n)
+    isempty(twists) || twist!(y, twists)
+    return y
 end
 
 """Lower one local fit projection into a complete-operand planned spec."""
@@ -412,7 +416,10 @@ end
 
 function _fit_project_tensor(c::_FitCache, φ::TTNS, ψ::TTNS, n::Int)
     plan, operands = _fit_project_plan(c, φ, ψ, n)
-    return Planning.execute(plan, operands)
+    y = Planning.execute(plan, operands)
+    twists = _euclidean_output_legs(φ, n)
+    isempty(twists) || twist!(y, twists)
+    return y
 end
 
 """Accumulate one source projection directly into a fresh target tensor."""
@@ -983,7 +990,7 @@ function _fit_scalar_ncon_reference(φ::TTNS, ψ::TTNS, u::Int,
                                     envs::Dict{Tuple{Int,Int},AbstractTensorMap})
     t = φ.topo
     A = ψ.tensors[u]
-    B = φ.tensors[u]
+    B = _euclidean_bra_tensor(φ, nothing, u)
     hp = hasphys(ψ, u)
     aidx = zeros(Int, numind(A))
     bidx = zeros(Int, numind(B))
@@ -1023,7 +1030,7 @@ function _fit_scalar_spec(c::_FitCache, φ::TTNS, ψ::TTNS, u::Int)
         return _fit_operator_scalar_spec(c, φ, ψ, c.operator, u)
     t = φ.topo
     A = ψ.tensors[u]
-    B = φ.tensors[u]
+    B = _euclidean_bra_tensor(φ, nothing, u)
     hp = hasphys(ψ, u)
     aidx = zeros(Int, numind(A))
     bidx = zeros(Int, numind(B))
