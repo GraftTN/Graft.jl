@@ -34,3 +34,7 @@ O = ttno_from_opsum(H, topo, phys; hermitian=true)
 ev = TDVP1_CBE(trunc=TruncationScheme(maxdim=64), d_tilde_max=16)
 evolve!(ev, ψ, O, -0.05im, 100)                  # real-time evolution, bond-adaptive
 ```
+
+#### License
+
+Graft.jl is licensed under the [Apache License 2.0](LICENSE).

@@ -1,6 +1,7 @@
 name = "Graft"
 uuid = "917c9ffe-6c79-4950-b61c-1fe8fbfdf188"
 authors = ["weiyiguo9"]
+license = "Apache-2.0"
 version = "0.1.0"
 
 [deps]
