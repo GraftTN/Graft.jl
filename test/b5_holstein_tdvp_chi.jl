@@ -5,6 +5,8 @@ using Graft.Backend: ℂ
 using LinearAlgebra: dot, norm
 using Random
 
+isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
+
 function _b5_holstein_trimer()
     S = spin_ops()
     B = boson_ops(1)
@@ -36,7 +38,7 @@ function _b5_holstein_trimer()
     return S, topo, phys, H
 end
 
-@testset "B5 Holstein TDVP chi milestone" begin
+@graft_testset "B5 Holstein TDVP chi milestone" begin
     S, topo, phys, H = _b5_holstein_trimer()
     O = ttno_from_opsum(H, topo, phys; hermitian=true)
     ψ = random_ttns(Xoshiro(20260709), ComplexF64, topo, phys, ℂ^4)

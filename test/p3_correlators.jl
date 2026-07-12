@@ -5,10 +5,12 @@ using Graft.Backend
 using LinearAlgebra: norm, tr, I
 using Random
 
+isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
+
 const RNG = Xoshiro(20260712)
 const QUIET = (verbose=false,)
 
-@testset "P3 thermal correlators" begin
+@graft_testset "P3 thermal correlators" begin
     @testset "neutral C_ZZ(tau) vs dense trace" begin
         S = spin_ops()
         topo = mps_topology(1)

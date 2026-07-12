@@ -198,6 +198,7 @@ function _canonicalize_apply!(ψ::TTNS, target::Int)
         Q, C = left_orth(ψ.tensors[n])
         ψ.tensors[n] = Q
         p = t.parent[n]
+        C = _pivotal_link(C)
         ψ.tensors[p] = absorb_on_leg(ψ.tensors[p], C, childslot(t, p, n))
     end
     ψ.center = t.root

@@ -4,6 +4,8 @@ using Graft.TestUtils
 using Graft.Backend
 using LinearAlgebra: Diagonal, diag, dot, norm
 
+isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
+
 function _b3_well_model(nmax; n0=4, g=0.1)
     B = boson_ops(nmax)
     vals = [(n - n0)^2 for n in 0:nmax]
@@ -18,7 +20,7 @@ function _b3_well_model(nmax; n0=4, g=0.1)
     return B, topo, phys, H, Hd, E, v
 end
 
-@testset "B3 PP LBO semantics" begin
+@graft_testset "B3 PP LBO semantics" begin
     nmax = 8
     B, topo, phys, H, Hd, E, v = _b3_well_model(nmax)
     Hp, topop, physp = ppdress(H, topo, phys; nmax, boson_sites=[:site1])

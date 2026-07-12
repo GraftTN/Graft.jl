@@ -1,5 +1,18 @@
 import ..Contractions: Planning, _euclidean_bra_tensor, _euclidean_output_legs
 
+# A fit projection leaves the center's physical ket leg genuinely open; unlike
+# an effective-Hamiltonian result, it does not close that leg through a local
+# bra/operator sandwich.  Pivotal corrections therefore apply only to open
+# virtual components.  On a nontrivial tree the local dual physical correction
+# is already carried by the gauge-preserving center move; a one-node tree has
+# no link on which to carry it and retains the physical output twist.
+function _fit_output_legs(φ::TTNS, n::Int)
+    twists = _euclidean_output_legs(φ, n)
+    (hasphys(φ, n) && !isempty(neighbors(φ.topo, n))) || return twists
+    p = physleg(φ, n)
+    return Tuple(i for i in twists if i != p)
+end
+
 """
     fit!(φ, ψ; nsweeps=4, tol=1e-10, normalize=false, verbose=false) -> (φ, errors)
     fit!(φ, sources; Hs=nothing, coeffs=nothing, kwargs...) -> (φ, errors)
@@ -185,7 +198,7 @@ function _fit_local_tensor(caches::Vector{_FitCache}, φ::TTNS, sources,
     for (c, src, α) in zip(caches, sources, coeffs)
         _fit_project_tensor!(A, c, φ, src, n, α)
     end
-    twists = _euclidean_output_legs(φ, n)
+    twists = _fit_output_legs(φ, n)
     isempty(twists) || twist!(A, twists)
     return A
 end
@@ -356,7 +369,7 @@ function _fit_project_tensor_ncon_reference(
         push!(tensors, cap); push!(indices, [-numind(B), ka]); push!(conjs, false)
     end
     y = repartition(ncon(tensors, indices, conjs), numout(B), 1)
-    twists = _euclidean_output_legs(φ, n)
+    twists = _fit_output_legs(φ, n)
     isempty(twists) || twist!(y, twists)
     return y
 end
@@ -417,7 +430,7 @@ end
 function _fit_project_tensor(c::_FitCache, φ::TTNS, ψ::TTNS, n::Int)
     plan, operands = _fit_project_plan(c, φ, ψ, n)
     y = Planning.execute(plan, operands)
-    twists = _euclidean_output_legs(φ, n)
+    twists = _fit_output_legs(φ, n)
     isempty(twists) || twist!(y, twists)
     return y
 end

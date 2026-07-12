@@ -2,6 +2,7 @@
 # diagonalization / exact propagation on small trees, plus gauge-invariance
 # property tests (architecture §9.11: this is a merge requirement, CI-enforced).
 using Test
+include("test_harness.jl")
 using Graft
 using Graft.TestUtils
 using Graft.Backend: ℂ, ⊗, ←, dim, domain, dual, space, id, numind, numout, numin,
@@ -120,9 +121,10 @@ end
 struct NoOpEvolver <: Evolver end
 Graft.step!(::NoOpEvolver, ψ::TTNS, ::TTNO, ::Number) = ψ
 
+try
 @testset "Graft.jl" begin
 
-@testset "Trees: topology & paths" begin
+@graft_testset "Trees: topology & paths" begin
     t = star_topology(3, 2)
     @test nnodes(t) == 7
     @test isleaf(t, nodeindex(t, :b1_2))
@@ -141,7 +143,7 @@ Graft.step!(::NoOpEvolver, ψ::TTNS, ::TTNO, ::Number) = ψ
     @test binary_topology(2) != t2
 end
 
-@testset "Parallel helpers" begin
+@graft_testset "Parallel helpers" begin
     out = zeros(Int, 8)
     threaded_foreach(1:8; threaded=false) do i
         out[i] = i^2
@@ -156,7 +158,7 @@ end
     @test_throws ArgumentError threaded_foreach(identity, [1]; minbatch=0)
 end
 
-@testset "canonical form & gauge invariance" begin
+@graft_testset "canonical form & gauge invariance" begin
     for topo in (mps_topology(6), star_topology(3, 2), binary_topology(2))
         phys = allspin(topo)
         ψ = random_ttns(RNG, ComplexF64, topo, phys, ℂ^3)
@@ -171,7 +173,7 @@ end
     end
 end
 
-@testset "graded spaces (U(1)) gauge moves" begin
+@graft_testset "graded spaces (U(1)) gauge moves" begin
     topo = star_topology(2, 2)
     P = U1Space(0 => 1, 1 => 1)
     V = U1Space(-1 => 1, 0 => 2, 1 => 1)
@@ -184,7 +186,7 @@ end
     @test abs(inner(φ, ψ) - dot(to_dense(φ), v)) < 1e-12
 end
 
-@testset "TTNO builder vs dense" begin
+@graft_testset "TTNO builder vs dense" begin
     S = spin_ops()
     for topo in (mps_topology(5), star_topology(3, 2), binary_topology(2))
         phys = allspin(topo)
@@ -214,7 +216,7 @@ end
     @test norm(to_dense(O) - dense_hamiltonian(H, ψ)) < 1e-12
 end
 
-@testset "TTNO apply" begin
+@graft_testset "TTNO apply" begin
     topo = mps_topology(2)
     S = spin_ops()
     phys = Dict(:site1 => S.P, :site2 => S.P)
@@ -242,7 +244,7 @@ end
     @test norm(to_dense(ϕb) - dense_hamiltonian(Hb, topo, phys_b) * to_dense(ψb)) < 1e-10
 end
 
-@testset "variational fit" begin
+@graft_testset "variational fit" begin
     topo = mps_topology(2)
     S = spin_ops()
     phys = Dict(:site1 => S.P, :site2 => S.P)
@@ -282,7 +284,7 @@ end
     @test norm(to_dense(φop) - refop) < 1e-8
 end
 
-@testset "charged TTNO builder vs dense" begin
+@graft_testset "charged TTNO builder vs dense" begin
     U = spin_ops_u1()
     @test charge(SiteOp(:s, :Sp, U.Sp)) == U1Irrep(1)
     @test charge(SiteOp(:s, :Z, U.Z)) == U1Irrep(0)
@@ -398,6 +400,19 @@ end
     fit!(φbell, ψbell; nsweeps=1, tol=0.0)
     @test abs(inner(φbell, ψbell)) ≈ 1 atol = 1e-12
 
+    # With no virtual edge, no gauge link can carry the dual-physical pivotal
+    # correction, so the fit output itself must retain that twist.
+    topo_dual_one = mps_topology(1)
+    Adual_odd = zeros(ComplexF64, dual(F.P) ← F.Q)
+    for (_, b) in blocks(Adual_odd)
+        b[1, 1] = 1
+    end
+    ψdual_odd = TTNS(topo_dual_one, [Adual_odd], topo_dual_one.root)
+    φdual_odd = copy(ψdual_odd)
+    fit!(φdual_odd, ψdual_odd; nsweeps=1, tol=0.0)
+    @test inner(φdual_odd, ψdual_odd) ≈ 1 atol = 1e-12
+    @test norm(to_dense(φdual_odd) - to_dense(ψdual_odd)) < 1e-12
+
     Hzero = OpSum() + Term(0.0, SiteOp(:site1, :I, F.I))
     Ozero = ttno_from_opsum(Hzero, topo_one, phys_one; hermitian=true)
     G = correlator(ψeven, 0.0, :site1 => F.C, :site1 => F.Cd, [0.0, 0.2];
@@ -416,7 +431,7 @@ end
     end
 end
 
-@testset "projected purification rewrite" begin
+@graft_testset "projected purification rewrite" begin
     B = boson_ops(2)
     PP = boson_ops_pp(2)
     @test charge(SiteOp(:p, :Bpd, PP.Bpd)) == U1Irrep(1)
@@ -457,7 +472,7 @@ end
     @test check_arrows(Omp)
 end
 
-@testset "expectation values & overlaps" begin
+@graft_testset "expectation values & overlaps" begin
     topo = star_topology(3, 2)
     phys = allspin(topo)
     S = spin_ops()
@@ -477,7 +492,7 @@ end
     @test abs(dot(ψ.tensors[ψ.center], h1(ψ.tensors[ψ.center])) - expect(ψ, O)) < 1e-12
 end
 
-@testset "two-site merge/split roundtrip" begin
+@graft_testset "two-site merge/split roundtrip" begin
     topo = star_topology(3, 2)
     phys = allspin(topo)
     ψ = random_ttns(RNG, ComplexF64, topo, phys, ℂ^3)
@@ -490,7 +505,7 @@ end
     @test check_arrows(ψ)
 end
 
-@testset "DMRG vs ED" begin
+@graft_testset "DMRG vs ED" begin
     topo = star_topology(3, 1)
     phys = allspin(topo)
     H = tfi(topo; g=0.9)
@@ -532,7 +547,7 @@ end
     @test maximum(bonddims(ψ3)) > 1
 end
 
-@testset "3S bootstrap at a physless binary root" begin
+@graft_testset "3S bootstrap at a physless binary root" begin
     # With only two root-child edges, one-edge H|ψ⟩ predictors are each rank
     # limited by the other edge.  The paired zero-weight completion must open
     # both root subspaces while leaving the represented state exactly unchanged.
@@ -561,7 +576,7 @@ end
     @test Es[end] ≈ E0 atol = 1e-10
 end
 
-@testset "2S bootstrap at a physless binary root" begin
+@graft_testset "2S bootstrap at a physless binary root" begin
     # A two-site root-edge split is rank-limited by the opposite root edge.
     # dmrg2! must jointly open both zero-weight complements before its sweep;
     # otherwise a D=2 start can never access the D=4 exact ground state.
@@ -586,7 +601,7 @@ end
     @test check_arrows(ψ)
 end
 
-@testset "bosons (trivial sector)" begin
+@graft_testset "bosons (trivial sector)" begin
     S = spin_ops()
     B = boson_ops(2)
     @test norm(convert(Array, B.X) - (convert(Array, B.B) + convert(Array, B.Bd))) < 1e-14
@@ -672,7 +687,7 @@ end
     @test real(v0h' * dense_hamiltonian(Nb, ψh) * v0h) > 1e-4
 end
 
-@testset "TDVP vs exact propagation" begin
+@graft_testset "TDVP vs exact propagation" begin
     @test TDVP1().verbose
     @test TDVP2().verbose
     @test TDVP1_CBE().verbose
@@ -732,7 +747,7 @@ end
     @test norm(to_dense(ψa) - to_dense(ψb)) < 1e-14
 end
 
-@testset "GlobalKrylov vs exact propagation" begin
+@graft_testset "GlobalKrylov vs exact propagation" begin
     topo = mps_topology(2)
     phys = allspin(topo)
     H = tfi(topo; g=0.4)
@@ -752,7 +767,7 @@ end
     @test_throws ArgumentError step!(GlobalKrylov(), ψr, O, dz)
 end
 
-@testset "linear solve and implicit log time" begin
+@graft_testset "linear solve and implicit log time" begin
     topo = mps_topology(2)
     phys = allspin(topo)
     H = tfi(topo; g=0.4)
@@ -786,7 +801,7 @@ end
     @test_throws ArgumentError step!(ev, copy(rhs), O, -0.05im)
 end
 
-@testset "subspace expansion TDVP vs exact propagation" begin
+@graft_testset "subspace expansion TDVP vs exact propagation" begin
     topo = mps_topology(2)
     phys = allspin(topo)
     H = tfi(topo; g=0.4)
@@ -814,7 +829,7 @@ end
     @test_throws ArgumentError step!(GSE_TDVP(), ψr, O, dz)
 end
 
-@testset "imaginary time (complex-step contract §5b)" begin
+@graft_testset "imaginary time (complex-step contract §5b)" begin
     topo = mps_topology(6)
     phys = allspin(topo)
     H = tfi(topo; g=1.1)
@@ -833,7 +848,7 @@ end
     @test !isempty(methods(linsolve!))
 end
 
-@testset "local insertions and zero-temperature correlators" begin
+@graft_testset "local insertions and zero-temperature correlators" begin
     S = spin_ops()
     topo = mps_topology(2)
     phys = allspin(topo)
@@ -896,7 +911,7 @@ if lowercase(get(ENV, "GRAFT_LONG_B3", "false")) in ("1", "true", "yes")
     include("b3_pp_lbo.jl")
 end
 
-@testset "checkpoint / resume" begin
+@graft_testset "checkpoint / resume" begin
     topo = mps_topology(4)
     phys = allspin(topo)
     ψ = random_ttns(RNG, ComplexF64, topo, phys, ℂ^3)
@@ -953,4 +968,7 @@ include("p1_p2_thermal.jl")
 include("p3_charged_sector.jl")
 include("p3_correlators.jl")
 
+end
+finally
+    _graft_report_test_total()
 end

@@ -170,7 +170,7 @@ function _exercise_effective_maps!(ψ, O)
     return nothing
 end
 
-@testset "compiled contraction plans: A/B effective maps" begin
+@graft_testset "compiled contraction plans: A/B effective maps" begin
     for topo in (mps_topology(4), star_topology(2, 1), binary_topology(2),
                  fork_topology(2, 1))
         phys = allspin(topo)
@@ -196,7 +196,7 @@ end
     _exercise_effective_maps!(ψ, O)
 end
 
-@testset "compiled contraction plans: sector-aware structural planning" begin
+@graft_testset "compiled contraction plans: sector-aware structural planning" begin
     # Pure HomSpace metadata: this must not allocate TensorMap payloads.  It
     # pins TensorKit's flat-domain-leg convention and the exact two-sector
     # GEMM accounting used by the Phase-3 planner.
@@ -360,7 +360,7 @@ end
     @test key_dense != key_sector
 end
 
-@testset "compiled contraction plans: cache, graph identity, and gauge" begin
+@graft_testset "compiled contraction plans: cache, graph identity, and gauge" begin
     # Two-site arms give each root-child virtual leg a physical support of four,
     # so `ℂ^2 → ℂ^3` is a genuine shape change. A one-site arm would cap both
     # random states at dimension two and make this cache-key assertion vacuous.
@@ -437,7 +437,7 @@ end
     @test e0 ≈ e1 rtol=1e-12 atol=1e-12
 end
 
-@testset "compiled contraction plans: mixed-boson post-TDVP2 root h1" begin
+@graft_testset "compiled contraction plans: mixed-boson post-TDVP2 root h1" begin
     # This is the previously failing physical shape: boson leaves have d = 3,
     # while the spin root has d = 2. The all-spin A/B set above has d = 2 on
     # every physical leg and cannot expose an index permutation masked by equal
@@ -497,7 +497,7 @@ end
     @test norm(y_planned - y_reference) <= 1e-10 * max(norm(y_reference), 1)
 end
 
-@testset "compiled contraction plans: non-square TDVP h0 link" begin
+@graft_testset "compiled contraction plans: non-square TDVP h0 link" begin
     # Build the actual TDVP1 child→parent QR seam with an intentionally wide
     # old bond. `left_orth` reduces P (dim 2) ← V_old (dim 4) to a compact
     # link C :: V_new ← V_old, so h0 must accept a genuinely non-square
@@ -541,7 +541,7 @@ end
     _assert_planned_matches_ncon(spec0, statics0, h0, Cprobe)
 end
 
-@testset "compiled contraction plans: fork-spine memory objective" begin
+@graft_testset "compiled contraction plans: fork-spine memory objective" begin
     # Shape-only replica of plan §0.3 at s0_1. No TensorMap data is allocated:
     # this lets the test pin the baseline headline even on memory-constrained
     # CI runners. The first physical x×W pair has 445,644,800 Float64 elements

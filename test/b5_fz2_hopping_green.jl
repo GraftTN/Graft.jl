@@ -4,7 +4,9 @@ using Graft.TestUtils
 using Graft.Backend
 using LinearAlgebra: I, dot, norm
 
-@testset "B5 fZ2 hopping Green smoke" begin
+isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
+
+@graft_testset "B5 fZ2 hopping Green smoke" begin
     F = fermion_ops_z2()
     topo = mps_topology(2)
     phys = Dict(nodeid(topo, i) => F.P for i in 1:nnodes(topo))

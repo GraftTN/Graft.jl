@@ -10,6 +10,8 @@ using Graft.TestUtils: random_ttns, to_dense
 using Graft.Backend: ℂ, ⊗, ←, U1Space, norm, numout, numin
 using Graft.Contractions: env!
 
+isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
+
 const _P0P1Planning = Graft.Contractions.Planning
 const _P0P1_TARGET = lowercase(get(ENV, "GRAFT_P0P1_TARGET", "all"))
 _P0P1_TARGET in ("all", "m1", "m2", "m3", "m4", "m5", "m6", "m7") ||
@@ -91,7 +93,7 @@ function _p0p1_fit_operator_ref_env!(φ, ψ, O, u, v,
 end
 
 if _p0p1_enabled(:m1)
-@testset "P0/P1: live contraction memory model" begin
+@graft_testset "P0/P1: live contraction memory model" begin
     rng = MersenneTwister(20260710)
     spec, A, B = _p0p1_permuted_two_map(rng)
     plan = _P0P1Planning.plan_contraction(spec, (A, B);
@@ -162,7 +164,7 @@ if _p0p1_enabled(:m1)
     )
 end
 
-@testset "P0/P1: sector-stored live memory" begin
+@graft_testset "P0/P1: sector-stored live memory" begin
     # This three-map U(1) chain is small enough for a direct A/B comparison,
     # while its block payload differs from the dense product.  It verifies
     # that the live-byte fields use stored sector payload rather than merely
@@ -192,7 +194,7 @@ end
     @test norm(result - reference) <= 1e-12 * max(norm(reference), 1)
 end
 
-@testset "P0/P1: public effective-map hard cap" begin
+@graft_testset "P0/P1: public effective-map hard cap" begin
     topo = mps_topology(2)
     S = spin_ops()
     phys = Dict(nodeid(topo, i) => S.P for i in 1:nnodes(topo))
@@ -215,7 +217,7 @@ end
           1e-12 * max(norm(reference), 1)
 end
 
-@testset "P0/P1: bounded hard-cap fallback" begin
+@graft_testset "P0/P1: bounded hard-cap fallback" begin
     # Eleven tensors exceeds the exact-DP limit while remaining shape-only.
     # The intentionally reversed semantic order outer-products its two chain
     # ends; a cap below that env-first live peak must select an actual bounded
@@ -259,7 +261,7 @@ end
 end # :m1 target
 
 if _p0p1_enabled(:m2)
-@testset "P0/P1: planned environments and scalar contractions" begin
+@graft_testset "P0/P1: planned environments and scalar contractions" begin
     topo, S, O, ket, bra = _p0p1_sandwich_fixture(MersenneTwister(20260713))
     root = topo.root
     child = only(topo.children[root])
@@ -403,7 +405,7 @@ end
 end # :m2 target
 
 if _p0p1_enabled(:m3)
-@testset "P0/P1: planned variational fit contractions" begin
+@graft_testset "P0/P1: planned variational fit contractions" begin
     topo, _, _, ψ, φ = _p0p1_sandwich_fixture(MersenneTwister(20260717))
     root = topo.root
     child = only(topo.children[root])
@@ -508,7 +510,7 @@ end
 end # :m3 target
 
 if _p0p1_enabled(:m4)
-@testset "P0/P1: direct operator-aware fit contractions" begin
+@graft_testset "P0/P1: direct operator-aware fit contractions" begin
     topo, S, O, ψ, φ = _p0p1_sandwich_fixture(MersenneTwister(20260719))
     root = topo.root
     child = only(topo.children[root])
@@ -654,7 +656,7 @@ end
 end # :m4 target
 
 if _p0p1_enabled(:m5)
-@testset "P0/P1: planned exact TTNO application" begin
+@graft_testset "P0/P1: planned exact TTNO application" begin
     topo, S, O, ψ, _ = _p0p1_sandwich_fixture(MersenneTwister(20260721))
     root = topo.root
     child = only(topo.children[root])
@@ -752,7 +754,7 @@ end
 end # :m5 target
 
 if _p0p1_enabled(:m6)
-@testset "P0/P1: planned contraction workspaces" begin
+@graft_testset "P0/P1: planned contraction workspaces" begin
     rng = MersenneTwister(20260725)
     V = ℂ^2 ← ℂ^2
     # The env-first fold has three internal outputs. Its first and third
@@ -864,7 +866,7 @@ _p0p1_env_block_bytes(E) =
     sum(length(block_) * sizeof(eltype(block_)) for (_, block_) in Graft.Backend.blocks(E))
 
 if _p0p1_enabled(:m7)
-@testset "P0/P1: bounded environment-cache memory" begin
+@graft_testset "P0/P1: bounded environment-cache memory" begin
     topo, S, O, ket, bra = _p0p1_sandwich_fixture(MersenneTwister(20260728))
     root = topo.root
     child = only(topo.children[root])

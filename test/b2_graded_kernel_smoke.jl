@@ -4,6 +4,8 @@ using Graft.TestUtils
 using Graft.Backend
 using LinearAlgebra: dot, norm
 
+isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
+
 function _b2_fz2_hopping()
     F = fermion_ops_z2()
     topo = mps_topology(2)
@@ -14,7 +16,7 @@ function _b2_fz2_hopping()
     return F, topo, phys, H, ttno_from_opsum(H, topo, phys; hermitian=true)
 end
 
-@testset "B2 graded kernel smoke" begin
+@graft_testset "B2 graded kernel smoke" begin
     F, topo, phys, H, O = _b2_fz2_hopping()
     E0, _ = exact_groundstate(dense_hamiltonian(H, topo, phys))
 

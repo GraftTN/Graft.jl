@@ -5,9 +5,11 @@ using Graft.Backend
 using LinearAlgebra: norm, tr
 using Random
 
+isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
+
 const RNG = Xoshiro(20260712)
 
-@testset "P0 thermal conventions" begin
+@graft_testset "P0 thermal conventions" begin
     @testset "single-site trivial beta=0 trace" begin
         S = spin_ops()
         topo = mps_topology(1)

@@ -237,6 +237,7 @@ function _evolve_link_and_move!(ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO,
         k0 = eff_h0(cache, ψ, H, u, v)              # env(u→v) rebuilt from the new isometry
         C, _ = exponentiate(workspace_map(k0), -dz, C;
                             ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
+        C = Networks._pivotal_link(C)
         ψ.tensors[v] = absorb_on_leg(ψ.tensors[v], C, childslot(t, v, u))
     else
         # the edge is (v, u) with v the child; the link tensor in that edge's
@@ -246,6 +247,7 @@ function _evolve_link_and_move!(ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO,
         k0 = eff_h0(cache, ψ, H, v, u)              # env(v→u) untouched, env(u→v) rebuilt
         C, _ = exponentiate(workspace_map(k0), -dz, C;
                             ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
+        C = Networks._pivotal_link(C)
         ψ.tensors[v] = ψ.tensors[v] * C
     end
     ψ.center = v

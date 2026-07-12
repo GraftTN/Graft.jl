@@ -94,6 +94,15 @@ function normalize!(ψ::TTNS)
     return ψ
 end
 
+# A QR link factor whose codomain and domain have opposite dual orientation
+# carries the ribbon pivotal twist when absorbed into the neighbouring tensor.
+# Keep this correction at the network seam: Backend QR/absorption primitives
+# remain context-free, while every tree algorithm shares one link convention.
+function _pivotal_link(C::AbstractTensorMap)
+    needs_twist = isdual(codomain(C)[1]) != isdual(domain(C)[1])
+    return needs_twist ? twist(C, 1) : C
+end
+
 # ---------------------------------------------------------------------------
 # gauge moves
 # ---------------------------------------------------------------------------
@@ -125,13 +134,15 @@ function _move_center_edge!(ψ::TTNS, m::Int, cache)
         Q, C = left_orth(A)                      # Q :: cod ← V_new, C :: V_new ← V_e
         ψ.tensors[n] = Q
         k = childslot(t, m, n)
+        C = _pivotal_link(C)
         ψ.tensors[m] = absorb_on_leg(ψ.tensors[m], C, k)
     else
         # down-move into child slot k
         k = childslot(t, n, m)
         Q, C = orth_factor_leg(A, k)             # Q isometric away from slot k; C :: Y ← dual(V_e)
         ψ.tensors[n] = Q
-        ψ.tensors[m] = ψ.tensors[m] * transpose(C)   # transpose(C) :: V_e ← dual(Y)
+        Ct = _pivotal_link(transpose(C))
+        ψ.tensors[m] = ψ.tensors[m] * Ct              # Ct :: V_e ← dual(Y)
     end
     ψ.center = m
     cache === nothing || invalidate_edge!(cache, n, m)

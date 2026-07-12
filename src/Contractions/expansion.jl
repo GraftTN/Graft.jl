@@ -42,6 +42,7 @@ function expand!(ψ::TTNS, H::TTNO, edge; scheme::Symbol=:exact,
                                 enr_rtol, enr_atol)
     dim(domain(U)) == olddim && return ψ
     ψ.tensors[n] = U
+    R = Networks._pivotal_link(R)
     ψ.tensors[m] = absorb_on_leg(ψ.tensors[m], R, childslot(t, m, n))
     ψ.center = m
     invalidate_edge!(c, n, m)
@@ -221,6 +222,7 @@ function _bootstrap_physless_root!(ψ::TTNS, cache::EnvCache,
         U, R = _null_enrich_split(ψ.tensors[n]; maxdim=target)
         R === nothing && continue
         ψ.tensors[n] = U
+        R = Networks._pivotal_link(R)
         ψ.tensors[root] = absorb_on_leg(ψ.tensors[root], R, childslot(t, root, n))
         ψ.center = root
         invalidate_edge!(cache, n, root)

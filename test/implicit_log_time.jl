@@ -6,6 +6,8 @@ using Graft.Trees: edges
 using LinearAlgebra: I, Hermitian, dot, eigvals, norm
 using Random: Xoshiro
 
+isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
+
 function _ilt_tfi(topo; J=1.0, g=0.41)
     S = spin_ops()
     H = OpSum()
@@ -30,7 +32,7 @@ function _ilt_run(ev, ψ0, O, grid)
     return ψ
 end
 
-@testset "implicit logarithmic grids and paper schemes" begin
+@graft_testset "implicit logarithmic grids and paper schemes" begin
     @test logarithmic_time_grid(0.01, 0.08; nsteps_per_panel=2) ==
           [0.0, 0.005, 0.01, 0.015, 0.02, 0.03, 0.04, 0.06, 0.08]
     @test_throws ArgumentError logarithmic_time_grid(0.0, 1.0)
