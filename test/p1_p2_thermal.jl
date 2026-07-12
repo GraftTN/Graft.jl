@@ -1,7 +1,7 @@
 using Test
-using GRAFT
-using GRAFT.TestUtils
-using GRAFT.Backend
+using Graft
+using Graft.TestUtils
+using Graft.Backend
 using LinearAlgebra: norm, tr
 using Random
 
@@ -14,7 +14,7 @@ const QUIET = (verbose=false,)
         topo = binary_topology(2)
         phys = Dict(nodeid(topo, i) => S.P for i in 1:nnodes(topo))
         H = OpSum()
-        for (c, p) in GRAFT.Trees.edges(topo)
+        for (c, p) in Graft.Trees.edges(topo)
             H += Term(-1.0, SiteOp(nodeid(topo, c), :Z, S.Z),
                        SiteOp(nodeid(topo, p), :Z, S.Z))
         end
@@ -32,7 +32,7 @@ const QUIET = (verbose=false,)
         topo = star_topology(3, 1; center=:imp)
         phys = Dict(nodeid(topo, i) => S.P for i in 1:nnodes(topo))
         H = OpSum()
-        for (c, p) in GRAFT.Trees.edges(topo)
+        for (c, p) in Graft.Trees.edges(topo)
             H += Term(-1.0, SiteOp(nodeid(topo, c), :Z, S.Z),
                        SiteOp(nodeid(topo, p), :Z, S.Z))
         end
@@ -89,7 +89,7 @@ const QUIET = (verbose=false,)
         topo = mps_topology(2)
         phys = Dict(nodeid(topo, i) => S.P for i in 1:2)
         H = OpSum()
-        for (c, p) in GRAFT.Trees.edges(topo)
+        for (c, p) in Graft.Trees.edges(topo)
             H += Term(-1.0, SiteOp(nodeid(topo, c), :Z, S.Z),
                        SiteOp(nodeid(topo, p), :Z, S.Z))
         end
@@ -120,7 +120,7 @@ const QUIET = (verbose=false,)
         topo = mps_topology(2)
         phys = Dict(nodeid(topo, i) => S.P for i in 1:2)
         H = OpSum()
-        for (c, p) in GRAFT.Trees.edges(topo)
+        for (c, p) in Graft.Trees.edges(topo)
             H += Term(-1.0, SiteOp(nodeid(topo, c), :Z, S.Z),
                        SiteOp(nodeid(topo, p), :Z, S.Z))
         end

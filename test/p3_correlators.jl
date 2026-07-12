@@ -1,7 +1,7 @@
 using Test
-using GRAFT
-using GRAFT.TestUtils
-using GRAFT.Backend
+using Graft
+using Graft.TestUtils
+using Graft.Backend
 using LinearAlgebra: norm, tr, I
 using Random
 
@@ -32,7 +32,7 @@ const QUIET = (verbose=false,)
         topo = mps_topology(2)
         phys = Dict(nodeid(topo, i) => S.P for i in 1:2)
         H = OpSum()
-        for (c, p) in GRAFT.Trees.edges(topo)
+        for (c, p) in Graft.Trees.edges(topo)
             H += Term(-1.0, SiteOp(nodeid(topo, c), :Z, S.Z),
                        SiteOp(nodeid(topo, p), :Z, S.Z))
         end
@@ -153,19 +153,20 @@ const QUIET = (verbose=false,)
         @test maximum(abs.(series.values .- ref)) < 1e-7
     end
 
-    @testset "fermion correlator at beta=0 via to_dense" begin
+    @testset "fermion G(tau) beta=0 overlap via inner" begin
         F = fermion_ops_z2()
         topo = mps_topology(2)
         phys = Dict(nodeid(topo, i) => F.P for i in 1:2)
-        H = OpSum() + Term(0.0, SiteOp(:site1, :I, F.I))
+        H = OpSum()
+        H += Term(-0.5, SiteOp(:site1, :N, F.N))
+        H += Term(-1.0, SiteOp(:site1, :Cd, F.Cd), SiteOp(:site2, :C, F.C))
+        H += Term(-1.0, SiteOp(:site1, :C, F.C), SiteOp(:site2, :Cd, F.Cd))
         prob = purification_problem(H, topo, phys; hermitian=true)
         state0 = infinite_temperature_state(prob)
 
         bra = apply_local(state0.psi, adjoint(F.C), :site1)
         ket = apply_local(state0.psi, F.Cd, :site1)
-        vb = to_dense(bra)
-        vk = to_dense(ket)
-        overlap = dot(vb, vk)
+        overlap = inner(bra, ket)
         @test real(overlap) ≈ 0.5 atol = 1e-12
     end
 end

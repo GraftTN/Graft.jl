@@ -408,17 +408,18 @@ function _padded_space(V::S, bond::S) where {S<:ElementarySpace}
     if sectortype(V) === Trivial
         return ℂ^max(dim(V), dim(bond))
     end
-    dims = Dict{sectortype(V),Int}()
+    Q = sectortype(V)
+    dims = Dict{Q,Int}()
     for q in sectors(V)
         dims[q] = dim(V, q)
     end
     for q in sectors(bond)
         dims[q] = max(get(dims, q, 0), dim(bond, q))
     end
-    return S(dims...)
+    return Vect[Q](dims...)
 end
 
-function _pad_one_bond!(ψ::TTNS, child::Int, newV)
+function _pad_one_bond!(ψ::TTNS{S}, child::Int, newV::S) where {S<:ElementarySpace}
     t = ψ.topo
     p = t.parent[child]
     k = childslot(t, p, child)
@@ -432,8 +433,6 @@ function _pad_one_bond!(ψ::TTNS, child::Int, newV)
     oldC = ψ.tensors[child]
     newC = zeros(eltype(ψ), codomain(oldC) ← newV)
     _copy_block!(newC, oldC, oldV, newV, 0)
-    ψ.tensors[child] = newC
-    invalidate_node!(ψ, p)
     return ψ
 end
 
@@ -473,10 +472,6 @@ function _copy_sector_block!(db, sb, qd, qs, oldV, newV, k)
         c = min(size(sb, 2), size(db, 2))
         db[1:r, 1:c] .= sb[1:r, 1:c]
     end
-end
-
-function invalidate_node!(ψ::TTNS, n::Int)
-    return ψ
 end
 
 end # module TestUtils
