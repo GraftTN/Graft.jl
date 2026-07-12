@@ -346,7 +346,7 @@ end
     frontier = _Planning._SectorDPState[]
     for i in 1:9
         state = _Planning._SectorDPState(
-            i, [-1, 1], [2, 2], V8 ← V8, false,
+            i, [-1, 1], [2, 2], Vstar ← Vstar, false,
             Float64(i), Float64(i), Float64(i), Float64(10 - i), Float64(10 - i),
         )
         _Planning._insert_sector_state!(frontier, state)
@@ -421,11 +421,12 @@ end
     # key; reusing one plan here would be a silent dimension-valid bug.
     c1, c2 = topo.children[topo.root]
     cache_h2 = EnvCache(topo)
-    move_center!(ψ, c1)
+    move_center!(ψ, c1; cache=cache_h2)
     h2a = eff_h2(cache_h2, ψ, O, c1, topo.root)
-    move_center!(ψ, c2)
+    move_center!(ψ, c2; cache=cache_h2)
     h2b = eff_h2(cache_h2, ψ, O, c2, topo.root)
-    @test length(cache_h2.plans) == 2
+    @test count(key -> key.kind === :h2, keys(cache_h2.plans)) == 2
+    @test _CP.plan_cache_stats(cache_h2).misses == 2
     @test h2a.plan.steps !== h2b.plan.steps
 
     # A closed gauge excursion preserves the local effective observable.
