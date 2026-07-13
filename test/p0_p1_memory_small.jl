@@ -579,7 +579,8 @@ if _p0p1_enabled(:m4)
     legacy_target = apply(O, ψ; center=center(legacy_fit))
     _, legacy_errors = fit!(legacy_fit, legacy_target; nsweeps=1, tol=0.0)
     _, direct_errors = fit!(direct_fit, (ψ,); Hs=(O,), nsweeps=1, tol=0.0)
-    @test direct_errors ≈ legacy_errors rtol=1e-10 atol=1e-10
+    # Independent squared-norm accumulations can differ at sqrt(eps) near zero.
+    @test direct_errors ≈ legacy_errors rtol=1e-10 atol=2e-8
     @test norm(to_dense(direct_fit) - to_dense(legacy_fit)) <= 1e-10
     @test check_arrows(direct_fit) && center(direct_fit) == center(φ)
 
@@ -593,7 +594,7 @@ if _p0p1_enabled(:m4)
     _, legacy_multi_errors = fit!(legacy_multi, legacy_sources; coeffs, nsweeps=1, tol=0.0)
     _, direct_multi_errors = fit!(direct_multi, (ψ, src2); Hs=(O, Onh), coeffs,
                                   nsweeps=1, tol=0.0)
-    @test direct_multi_errors ≈ legacy_multi_errors rtol=1e-10 atol=1e-10
+    @test direct_multi_errors ≈ legacy_multi_errors rtol=1e-10 atol=2e-8
     @test norm(to_dense(direct_multi) - to_dense(legacy_multi)) <= 1e-10
 
     # `nothing` remains a first-class optional action: mixed identity/operator

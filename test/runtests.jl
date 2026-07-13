@@ -272,7 +272,8 @@ end
     φsum = random_ttns(RNG, ComplexF64, topo, phys, ℂ^4)
     _, errsum = fit!(φsum, (target, target2); coeffs, nsweeps=4)
     refsum = coeffs[1] * to_dense(target) + coeffs[2] * to_dense(target2)
-    @test errsum[end] < 1e-8
+    # The squared-norm residual has a sqrt(eps)-scale numerical floor near zero.
+    @test errsum[end] ≤ 2sqrt(eps(Float64))
     @test norm(to_dense(φsum) - refsum) < 1e-8
 
     O2 = ttno_from_opsum(OpSum() + Term(0.3, SiteOp(:site1, :Z, S.Z)),
@@ -280,7 +281,7 @@ end
     φop = random_ttns(RNG, ComplexF64, topo, phys, ℂ^4)
     _, errop = fit!(φop, (ψ, ψ); Hs=(O, O2), coeffs, nsweeps=4)
     refop = coeffs[1] * to_dense(apply(O, ψ)) + coeffs[2] * to_dense(apply(O2, ψ))
-    @test errop[end] < 1e-8
+    @test errop[end] ≤ 2sqrt(eps(Float64))
     @test norm(to_dense(φop) - refop) < 1e-8
 end
 
@@ -639,14 +640,15 @@ end
         @test abs(1 - abs(dot(to_dense(ψe), vex))) < 1e-7
     end
 
-    ψim = random_ttns(RNG, ComplexF64, topo, phys, ℂ^4)
+    # Keep this convergence check independent of the shared suite RNG stream.
+    ψim = random_ttns(Xoshiro(20260710), ComplexF64, topo, phys, ℂ^4)
     evi = TDVP2(trunc=TruncationScheme(maxdim=12, atol=1e-10),
                 verbose=TEST_VERBOSE)
-    for _ in 1:30
+    for _ in 1:50
         step!(evi, ψim, O, -0.12)
         normalize!(ψim)
     end
-    @test real(expect(ψim, O)) ≈ E0 atol = 5e-3
+    @test real(expect(ψim, O)) ≈ E0 atol = 1e-3
 
     base = mps_topology(3)
     hol = base
