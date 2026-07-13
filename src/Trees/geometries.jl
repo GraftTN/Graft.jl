@@ -57,10 +57,13 @@ end
     fork_topology(nteeth, toothlength; prefix=:spine) -> TreeTopology
 
 Fork / comb / FTPS layout: a spine of `nteeth` nodes, each carrying one chain
-("tooth") of `toothlength` nodes. Multi-orbital impurity layout: one spine node
-per orbital, bath chain as its tooth (Hund coupling runs along the spine).
+("tooth") of `toothlength` nodes. For the FTPS impurity layout, `nteeth` is
+the number of ordered **spin-orbital flavors**: each spine node carries one
+flavor and its own bath tooth. It is not the number of spatial orbitals.
 """
 function fork_topology(nteeth::Int, toothlength::Int; prefix::Symbol=:spine)
+    nteeth >= 1 || throw(ArgumentError("fork_topology needs at least one flavor spine node"))
+    toothlength >= 0 || throw(ArgumentError("fork tooth length must be nonnegative"))
     root = Symbol(prefix, 1)
     edges = Pair{Symbol,Symbol}[]
     for s in 2:nteeth
@@ -111,15 +114,20 @@ end
     is_t3ns(t::TreeTopology; physical=Symbol[]) -> Bool
 
 T3NS constraint predicate (architecture §6.1): every tensor has at most 3 legs.
-`physical` lists the nodes carrying a physical leg (T3NS separates physical
-and branching tensors, so a degree-3 junction must be physless). Implemented
-as a predicate, not a type, so sweep engines stay geometry-blind.
+`physical` must list each physical node exactly once. T3NS separates physical
+and branching tensors: a physical tensor can have at most two virtual legs,
+while a three-virtual-leg junction must be physless. The predicate is
+dependency-neutral; impurity flavor/bath ownership is validated by
+GraftImpurity rather than importing companion-package types into Graft.
 """
 function is_t3ns(t::TreeTopology; physical::AbstractVector{Symbol}=Symbol[])
+    length(unique(physical)) == length(physical) || return false
+    all(haskey(t.index, node) for node in physical) || return false
     phys = Set(physical)
     return all(1:nnodes(t)) do i
-        nlegs = nchildren(t, i) + (isroot(t, i) ? 0 : 1) + (nodeid(t, i) in phys ? 1 : 0)
-        nlegs <= 3
+        nvirtual = nchildren(t, i) + (isroot(t, i) ? 0 : 1)
+        nvirtual <= 3 || return false
+        nodeid(t, i) in phys ? nvirtual <= 2 : true
     end
 end
 

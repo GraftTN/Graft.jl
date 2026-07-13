@@ -50,7 +50,7 @@ export @tensor, ncon, contract_pair, pair_cost, space_signature,
     contract_pair_compatible
 # Graft-defined
 export FermionSector, AbelianSector, TruncationScheme, truncspec, split_svd,
-    absorb_on_leg, orth_factor_leg, trivialspace, ones_tensor
+    split_svd_with_error, absorb_on_leg, orth_factor_leg, trivialspace, ones_tensor
 
 # ---------------------------------------------------------------------------
 # standard impurity sector types (§2)
@@ -362,13 +362,26 @@ function truncspec(ts::TruncationScheme)
 end
 
 """
-    split_svd(t, ts::TruncationScheme) -> (U, S, Vᴴ)
+    split_svd_with_error(t, ts::TruncationScheme) -> (U, S, Vᴴ, discarded_norm)
 
 Truncated SVD across the codomain|domain split of `t` (permute first to choose
-the split). `t ≈ U ∘ S ∘ Vᴴ`.
+the split). This is the single `TruncationScheme`-controlled SVD entry point
+for callers that must retain the discarded 2-norm in a numerical report.
 """
-split_svd(t::AbstractTensorMap, ts::TruncationScheme=NO_TRUNCATION) =
+split_svd_with_error(t::AbstractTensorMap, ts::TruncationScheme=NO_TRUNCATION) =
     svd_trunc(t; trunc=truncspec(ts))
+
+"""
+    split_svd(t, ts::TruncationScheme) -> (U, S, Vᴴ)
+
+Three-factor convenience form of [`split_svd_with_error`](@ref). It preserves
+the established internal contract while TensorKit 0.17's `svd_trunc` also
+returns a discarded norm.
+"""
+function split_svd(t::AbstractTensorMap, ts::TruncationScheme=NO_TRUNCATION)
+    U, S, Vᴴ, _ = split_svd_with_error(t, ts)
+    return U, S, Vᴴ
+end
 
 # ---------------------------------------------------------------------------
 # rank-generic leg utilities

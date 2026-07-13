@@ -143,6 +143,9 @@ try
     @test binary_topology(2) != t2
 end
 
+include("t3ns_geometry.jl")
+include("ttno_compression.jl")
+
 @graft_testset "Parallel helpers" begin
     out = zeros(Int, 8)
     threaded_foreach(1:8; threaded=false) do i

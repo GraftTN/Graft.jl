@@ -74,9 +74,9 @@ performance (defaults are conservative).
 ishermitian(O::TTNO) = O.ishermitian
 
 # ---------------------------------------------------------------------------
-# TODO(future TTNO-compression milestone): compress!(ttno; scheme) —
-# deparallelization + sector-resolved SVD (PyTreeNet has none of this on trees;
-# see architecture §4b).
+# `compress!` is implemented in ttno_compression.jl: exact/numerical-rank
+# deparallelization, QR canonicalisation, and sector-resolved SVD. Physical
+# approximate TTNO truncation remains a separate future opt-in surface.
 # TODO: time-dependent TTNO wrapper (PyTreeNet time_dep_ttno counterpart) for
 #       driven fields / quenches.
 # ---------------------------------------------------------------------------

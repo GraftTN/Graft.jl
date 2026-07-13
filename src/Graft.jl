@@ -71,6 +71,8 @@ export TreeTopology, nnodes, nodeid, nodeindex, isleaf, leaves, neighbors,
 # L2/L3
 export TTNS, TTNO, TTNDO, topology, center, move_center!, update_tensor!,
     normalize!, check_arrows, physspace, virtualspace, apply, fit!, apply_local,
+    compress!, TTNOCompressionSectorReport, TTNOCompressionEdgeReport,
+    TTNOCompressionReport,
     EnvCache, EffectiveMap, PlanWorkspace, workspace_map, workspace_stats,
     env_cache_stats, inner, expect, eff_h1, eff_h0, eff_h2
 # L4

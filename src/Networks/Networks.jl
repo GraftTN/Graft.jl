@@ -14,10 +14,12 @@ using ..Trees
 export TTNS, TTNO, TTNDO, topology, center, hasphys, physleg, parentleg,
     physspace, virtualspace, check_arrows, move_center!, update_tensor!,
     normalize!, apply, fit!, apply_local, ishermitian, invalidate_node!,
-    invalidate_edge!
+    invalidate_edge!, compress!, TTNOCompressionSectorReport,
+    TTNOCompressionEdgeReport, TTNOCompressionReport
 
 include("ttns.jl")
 include("ttno.jl")
+include("ttno_compression.jl")
 
 # ---------------------------------------------------------------------------
 # Generic operations implemented here: `apply(O::TTNO, ψ::TTNS)` and
