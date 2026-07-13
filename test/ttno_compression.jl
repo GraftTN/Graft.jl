@@ -2,7 +2,7 @@ using Test
 using Graft
 using Graft.TestUtils
 using Graft.Backend: U1Irrep, FermionParity, SU2Irrep, Vect, ⊗, ←, oneunit,
-    blocks, dim, dual, space
+    codomain, dim, domain, flip, isdual, numind
 using LinearAlgebra: norm
 
 isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
@@ -67,26 +67,29 @@ function _redundant_fz2_ttno()
     return ttno_from_opsum(H, topo, phys; hermitian=true)
 end
 
-function _odd_dual_operator(P, Q)
-    op = zeros(ComplexF64, P ← P ⊗ Q)
-    for (_, block_) in blocks(op)
-        fill!(block_, one(eltype(block_)))
-    end
-    return op
+function _dual_virtual_fz2_ttno()
+    O = _redundant_fz2_ttno()
+    t = topology(O)
+    child = only(t.children[t.root])
+    parent = t.parent[child]
+    slot = Graft.Trees.childslot(t, parent, child)
+    O.tensors[parent] = flip(O.tensors[parent], slot)
+    O.tensors[child] = flip(O.tensors[child], numind(O.tensors[child]))
+    @assert check_arrows(O)
+    @assert isdual(virtualspace(O, child))
+    return O
 end
 
-function _dual_fz2_ttno()
-    topo = mps_topology(2)
-    ops = fermion_ops_z2()
-    Pdual = dual(ops.P)
-    odd_dual = _odd_dual_operator(Pdual, ops.Q)
-    phys = Dict(:site1 => ops.P, :site2 => Pdual)
-    H = OpSum()
-    H += Term(-0.8, SiteOp(:site1, :cd_left, ops.Cd),
-              SiteOp(:site2, :odd_dual_left, odd_dual))
-    H += Term(0.2, SiteOp(:site1, :cd_right, ops.Cd),
-              SiteOp(:site2, :odd_dual_right, odd_dual))
-    return ttno_from_opsum(H, topo, phys; hermitian=false)
+function _requires_pivotal_link(O)
+    t = topology(O)
+    child = only(t.children[t.root])
+    unfolded = Graft.Networks._compression_unfold(O.tensors[child])
+    _, S, Vᴴ, _ = Graft.Backend.split_svd_with_error(
+        unfolded,
+        TruncationScheme(atol=1e-12),
+    )
+    link = S * Vᴴ
+    return isdual(codomain(link)[1]) != isdual(domain(link)[1])
 end
 
 @graft_testset "TTNO sector-aware compression" begin
@@ -171,7 +174,8 @@ end
     @test all(s -> s.after_svd_dimension <= s.before_dimension,
               only(report_f.edges).sectors)
 
-    Odual = _dual_fz2_ttno()
+    Odual = _dual_virtual_fz2_ttno()
+    @test _requires_pivotal_link(Odual)
     reference_dual = @test_logs (:warn, r"FermionParity Arrays") to_dense(Odual)
     report_dual = compress!(Odual; compression_atol=1e-12)
     @test check_arrows(Odual)
