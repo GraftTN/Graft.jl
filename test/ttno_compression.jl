@@ -109,12 +109,15 @@ function _fz2_action_matrix(O::TTNO, basis)
     D = length(basis)
     values = zeros(ComplexF64, D, D)
     root = topology(O).root
+    plan_cache = EnvCache(topology(O))
     for (column, (_, input_state)) in enumerate(basis)
-        output = apply(O, input_state)
+        output = apply(O, input_state; optimize=false)
         output_root = domain(output.tensors[root])[1]
         for (row, (_, output_state)) in enumerate(basis)
             domain(output_state.tensors[root])[1] == output_root || continue
-            values[row, column] = inner(output_state, output)
+            values[row, column] = inner(
+                output_state, output; plan_cache, optimize=false,
+            )
         end
     end
     return values

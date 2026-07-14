@@ -144,6 +144,7 @@ end
 include("t3ns_geometry.jl")
 include("ttno_compression.jl")
 include("graded_ttno_embedding.jl")
+include("graded_multimode_carrier.jl")
 
 @graft_testset "Parallel helpers" begin
     out = zeros(Int, 8)

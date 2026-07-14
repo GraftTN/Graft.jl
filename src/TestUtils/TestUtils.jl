@@ -16,7 +16,7 @@ using LinearAlgebra: LinearAlgebra, eigen, Hermitian, eigvals, tr
 using ..Backend
 using ..Trees
 using ..Networks
-using ..Contractions: inner
+using ..Contractions: EnvCache, inner
 using ..Symbolic
 
 export random_ttns, product_ttns, canonicalize!, to_dense,
@@ -186,23 +186,32 @@ function _basis_coord(legs::Vector{S}, unitq) where {S<:ElementarySpace}
         coord[()] = (unitq, 1)
         return groups, coord
     end
-    legqs = Vector{Vector{typeof(unitq)}}()
-    for V in legs
-        qs = typeof(unitq)[]
-        for q in sectors(V), _ in 1:dim(V, q)
-            push!(qs, q)
+    # TensorKit block-row layout: abelian fusion trees iterate first-leg-
+    # fastest, each owning one contiguous row range with degeneracy indices
+    # column-major inside it (same convention as Networks/TTNOBuild coords).
+    K = length(legs)
+    legsectors = [collect(sectors(V)) for V in legs]
+    legoffsets = map(legs) do V
+        offsets = Dict{typeof(unitq),Int}()
+        offset = 0
+        for s in sectors(V)
+            offsets[s] = offset
+            offset += dim(V, s)
         end
-        push!(legqs, qs)
+        offsets
     end
-    for I in CartesianIndices(Tuple(length(qs) for qs in legqs))
-        idx = Tuple(I)
+    for T in CartesianIndices(Tuple(length.(legsectors)))
+        secs = ntuple(j -> legsectors[j][T[j]], K)
         q = unitq
-        for k in eachindex(idx)
-            q = _fuse_one(q, legqs[k][idx[k]])
+        for s in secs
+            q = _fuse_one(q, s)
         end
         rows = get!(groups, q, Tuple[])
-        push!(rows, idx)
-        coord[idx] = (q, length(rows))
+        for D in CartesianIndices(ntuple(j -> dim(legs[j], secs[j]), K))
+            idx = ntuple(j -> legoffsets[j][secs[j]] + D[j], K)
+            push!(rows, idx)
+            coord[idx] = (q, length(rows))
+        end
     end
     return groups, coord
 end
@@ -339,10 +348,11 @@ function categorical_coordinates(ψ::TTNS)
     states = _graded_product_states(ψ, T)
     result = zeros(T, length(states))
     root = ψ.topo.root
+    plan_cache = EnvCache(ψ.topo)
     state_root = domain(ψ.tensors[root])[1]
     for (row, bra) in enumerate(states)
         domain(bra.tensors[root])[1] == state_root || continue
-        result[row] = T(inner(bra, ψ))
+        result[row] = T(inner(bra, ψ; plan_cache, optimize=false))
     end
     return result
 end
@@ -370,12 +380,15 @@ function _to_dense_graded_action(O::TTNO)
     # invalid inner product between incompatible charge spaces.
     result = zeros(T, D, D)
     root = t.root
+    plan_cache = EnvCache(t)
     for (column, input) in enumerate(states)
-        output = apply(O, input)
+        output = apply(O, input; optimize=false)
         output_root = domain(output.tensors[root])[1]
         for (row, bra) in enumerate(states)
             domain(bra.tensors[root])[1] == output_root || continue
-            result[row, column] = T(inner(bra, output))
+            result[row, column] = T(inner(
+                bra, output; plan_cache, optimize=false,
+            ))
         end
     end
     return result

@@ -2,19 +2,26 @@
 # (PyTreeNet: contractions/state_state_contraction.py + state_operator_contraction.py).
 
 """
-    inner(φ, ψ) -> ⟨φ|ψ⟩
+    inner(φ, ψ; plan_cache=nothing, optimize=true) -> ⟨φ|ψ⟩
 
 Full overlap of two TTNS on the same topology (bra `φ` is conjugated).
+When many unrelated same-shape pairs are contracted, pass an `EnvCache` as
+`plan_cache` to reuse only compiled shape plans; value environments are always
+fresh. Set `optimize=false` to use the deterministic env-first plan, which is
+appropriate for small exact-action diagnostics where planning latency dominates.
 """
-function inner(φ::TTNS, ψ::TTNS)
+function inner(φ::TTNS, ψ::TTNS;
+               plan_cache::Union{Nothing,EnvCache}=nothing,
+               optimize::Bool=true)
     φ.topo == ψ.topo || throw(ArgumentError("inner: mismatched topologies"))
-    c = EnvCache(ψ.topo)
+    c = plan_cache === nothing ? EnvCache(ψ.topo) :
+        _fresh_env_cache_with_plans(plan_cache, ψ.topo)
     r = ψ.topo.root
     return _with_env_transaction(c) do
         for w in neighbors(ψ.topo, r)
-            env!(c, ψ, nothing, φ, w, r)
+            _env_impl!(c, ψ, nothing, φ, w, r; optimize)
         end
-        build_env(c, ψ, nothing, φ, r, 0)
+        _build_env_value(c, ψ, nothing, φ, r, 0; optimize)
     end
 end
 

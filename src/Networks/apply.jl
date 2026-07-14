@@ -1,15 +1,17 @@
 import ..Contractions: Planning
 
 """
-    apply(O::TTNO, ψ::TTNS; center=center(ψ)) -> TTNS
+    apply(O::TTNO, ψ::TTNS; center=center(ψ), optimize=true) -> TTNS
 
 Exact TTNO-by-TTNS zip application. Each output virtual edge is the fused
 state/operator edge space, so the result remains a valid TTNS with one parent
 leg per node. The result is canonicalized to `center` before return, preserving
 the single-center invariant; variational recompression is the separate
 `fit!` primitive.
+Set `optimize=false` to use the deterministic env-first contraction order. This
+is useful for small exact-action diagnostics where planner latency dominates.
 """
-function apply(O::TTNO, ψ::TTNS; center=center(ψ))
+function apply(O::TTNO, ψ::TTNS; center=center(ψ), optimize::Bool=true)
     topology(O) == topology(ψ) || throw(ArgumentError("apply: TTNO and TTNS topologies differ"))
     O.hasphys == ψ.hasphys || throw(ArgumentError("apply: physical-leg layout mismatch"))
     spacetype(O) == spacetype(ψ) || throw(ArgumentError("apply: TTNO and TTNS spacetype mismatch"))
@@ -24,7 +26,7 @@ function apply(O::TTNO, ψ::TTNS; center=center(ψ))
     plans = Dict{Planning.PlanKey,Planning.ContractionPlan}()
     tensors = Vector{AbstractTensorMap{T,S}}(undef, nnodes(t))
     for n in preorder(t)
-        tensors[n] = _apply_node_tensor(plans, O, ψ, n, fusions)
+        tensors[n] = _apply_node_tensor(plans, O, ψ, n, fusions; optimize)
         delete!(fusions, n)
     end
     out = TTNS(t, tensors, t.root)
@@ -112,10 +114,12 @@ end
 """Execute one planned TTNO-by-TTNS node contraction with shape-only reuse."""
 function _apply_node_tensor(plans::Dict{Planning.PlanKey,Planning.ContractionPlan},
                             O::TTNO, ψ::TTNS, n::Int,
-                            fusions::Dict{Int,<:AbstractTensorMap})
+                            fusions::Dict{Int,<:AbstractTensorMap};
+                            optimize::Bool=true)
     spec, operands = _apply_node_spec(O, ψ, n, fusions)
     T = promote_type(eltype(O), eltype(ψ))
-    plan, _ = Planning.get_or_plan!(plans, :ttno_state_apply, spec, operands, T)
+    plan, _ = Planning.get_or_plan!(plans, :ttno_state_apply, spec, operands, T;
+                                    optimize)
     return Planning.execute(plan, operands)
 end
 

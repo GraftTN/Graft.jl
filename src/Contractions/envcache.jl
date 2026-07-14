@@ -128,6 +128,26 @@ function EnvCache(topo::TreeTopology, envs::Dict{Tuple{Int,Int},AbstractTensorMa
     return c
 end
 
+"""
+Create an empty value cache that shares only the source cache's shape plans.
+
+This is the safe reuse boundary for contractions over unrelated tensor values:
+environments and root caps remain invocation-local, while exact-shape plans can
+be amortized across repeated overlaps.
+"""
+function _fresh_env_cache_with_plans(source::EnvCache, topo::TreeTopology)
+    source.topo == topo ||
+        throw(ArgumentError("plan cache topology does not match contraction topology"))
+    return EnvCache(
+        topo,
+        Dict{Tuple{Int,Int},AbstractTensorMap}(),
+        source.plans,
+        Dict{Tuple,AbstractTensorMap}(),
+        0,
+        0,
+    )
+end
+
 Base.haskey(c::EnvCache, key::Tuple{Int,Int}) = haskey(c.envs, key)
 function Base.getindex(c::EnvCache, key::Tuple{Int,Int})
     E = c.envs[key]
@@ -224,8 +244,9 @@ end
 
 """Look up a shape-only plan without changing EffectiveMap hit/miss counters."""
 function _planned_execute!(c::EnvCache, kind::Symbol, spec::ContractionSpec,
-                           operands::Tuple, T::DataType)
-    plan, _ = Planning.get_or_plan!(c.plans, kind, spec, operands, T)
+                           operands::Tuple, T::DataType; optimize::Bool=true)
+    plan, _ = Planning.get_or_plan!(c.plans, kind, spec, operands, T;
+                                    optimize)
     return Planning.execute(plan, operands)
 end
 
@@ -541,10 +562,11 @@ may safely use this exported low-level entry point with a bounded cache. For
 `ncon` behavior.
 """
 function _build_env_value(c::EnvCache, ket::TTNS, O::Union{TTNO,Nothing}, bra::TTNS,
-                          u::Int, v::Int)
+                          u::Int, v::Int; optimize::Bool=true)
     spec, operands = _build_env_spec(c, ket, O, bra, u, v)
     kind = O === nothing ? :env_ket_bra : :env_ket_op_bra
-    return _planned_execute!(c, kind, spec, operands, scalartype(ket.tensors[u]))
+    return _planned_execute!(c, kind, spec, operands, scalartype(ket.tensors[u]);
+                             optimize)
 end
 
 function build_env(c::EnvCache, ket::TTNS, O::Union{TTNO,Nothing}, bra::TTNS,
@@ -576,7 +598,7 @@ function _cached_env!(c::EnvCache, key::Tuple{Int,Int})
 end
 
 function _env_impl!(c::EnvCache, ket::TTNS, O::Union{TTNO,Nothing}, bra::TTNS,
-                    u::Int, v::Int)
+                    u::Int, v::Int; optimize::Bool=true)
     key = (u, v)
     if haskey(c.envs, key)
         c.env_hits += 1
@@ -585,9 +607,9 @@ function _env_impl!(c::EnvCache, ket::TTNS, O::Union{TTNO,Nothing}, bra::TTNS,
     c.env_misses += 1
     for w in neighbors(c.topo, u)
         w == v && continue
-        _env_impl!(c, ket, O, bra, w, u)
+        _env_impl!(c, ket, O, bra, w, u; optimize)
     end
-    return _store_env!(c, key, _build_env_value(c, ket, O, bra, u, v))
+    return _store_env!(c, key, _build_env_value(c, ket, O, bra, u, v; optimize))
 end
 
 function env!(c::EnvCache, ket::TTNS, O::Union{TTNO,Nothing}, bra::TTNS, u::Int, v::Int)

@@ -208,7 +208,11 @@ end
 Assemble a TTNO from a sum of product terms. `phys :: Dict{Symbol,<:ElementarySpace}`
 gives the physical space of every site-carrying node (others become branching
 tensors). For graded abelian spaces, charged [`SiteOp`](@ref) factors thread
-their fused restriction charge through TTNO virtual channels. `hermitian` sets
+their fused restriction charge through TTNO virtual channels. Physical spaces
+with sector degeneracy (several fermionic modes on one site) are supported for
+number-oriented gradings such as fZ2 ⊠ U(1): the charge-leg exit braid is the
+per-sector input twist normalized by the ±1 particle-number orientation
+(CG-009); unoriented degenerate charged factors fail closed. `hermitian` sets
 the `ishermitian` trait on the result — a wrong `true` is a caller bug (§9.8).
 """
 function ttno_from_opsum(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,<:ElementarySpace};
@@ -248,21 +252,22 @@ function ttno_from_opsum(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,<:Eleme
     opmats = Dict{Tuple{Int,Symbol},AbstractTensorMap}()   # (node, opname) -> P ← P
     used = [Set{_ChannelKey}() for _ in 1:N]               # channel usage, edge keyed by child
     chsector = [Dict{_ChannelKey,Any}() for _ in 1:N]       # channel sector, edge keyed by child
-    # entry accumulator: (node, αkeys, βkey, local factor) => coefficient.
+    # entry accumulator: (node, αkeys, βkey, local factor, crossing) => coefficient.
     # Keep omitted padding distinct from an explicitly labelled `:I` factor:
     # the latter owns a real SiteOp tensor and must not merge with transport.
-    entries = Dict{Tuple{Int,Tuple,_ChannelKey,_EntryLocal},Any}()
-    # Native fZ2×U1 crossing charge attached to one sparse state-diagram
-    # entry. The input `Term.ops` vector never contributes to this metadata:
-    # it is derived solely from labelled sites, canonical node indices, and
-    # the topology's child fusion order.
-    entry_crossing = Dict{Tuple{Int,Tuple,_ChannelKey,_EntryLocal},Any}()
+    # The native fZ2×U1 crossing charge is part of the entry identity: two
+    # terms sharing every channel but crossing the local physical input with
+    # different parities write different local matrices into the same block
+    # coordinates, which is a legal additive merge. The input `Term.ops`
+    # vector never contributes to this metadata: it is derived solely from
+    # labelled sites, canonical node indices, and the topology's child order.
+    entries = Dict{Tuple{Int,Tuple,_ChannelKey,_EntryLocal,Any},Any}()
 
-    # Canonical-site-order braid attached to a state-diagram junction.  This
-    # is separate from `entry_crossing`: it changes the tree's child fusion
-    # order into the public global physical-site order, whereas a local
-    # crossing is represented natively on a physical tensor leg below.
-    entry_merge_braid = Dict{Tuple{Int,Tuple,_ChannelKey,_EntryLocal},Any}()
+    # Canonical scale attached to a state-diagram entry: the junction braid
+    # converting the tree's child fusion order into the public global
+    # physical-site order, times the charge-leg exit orientation (CG-009).
+    # Terms merged into one entry must agree on it (checked below).
+    entry_scale = Dict{Tuple{Int,Tuple,_ChannelKey,_EntryLocal,Any},Any}()
 
     restriction_charge(tm, c) =
         _fuse_charges((charge(tm.ops[x]) for x in tm.opnodes if _insub(E, x, c)),
@@ -435,39 +440,54 @@ function ttno_from_opsum(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,<:Eleme
                 register!(c, k, q)
             end
             t.parent[n] == 0 ? (@assert complete) : register!(n, βkey, βcharge)
-            key = (n, Tuple(αkeys), βkey, localentry)
+            crossing = nothing
+            scale = 1
             if graded
                 local_cross = haskey(tm.ops, n) && localq != unit_sector ?
                     factor_cross_charge(tm, n) : unit_sector
                 node_cross = junction_physical_cross_charge(αcharges, localq)
                 frame_cross = _frame_at(tm.frame, n, unit_sector)
-                crossing = _fuse_charge(_fuse_charge(local_cross, node_cross), frame_cross)
-                previous = get(entry_crossing, key, nothing)
-                if previous === nothing
-                    entry_crossing[key] = crossing
-                elseif previous != crossing
-                    throw(ArgumentError(
-                        "state-diagram entry at $(nodeid(t, n)) has inconsistent canonical graded crossings",
-                    ))
+                # CG-009: a charged local factor whose charge leg still has to
+                # meet canonically-later odd factors exits through its own
+                # physical input. The braid is the per-sector input twist
+                # normalized by the charge orientation `s(q)` — the identity
+                # on every one-mode carrier, and the required intra-site
+                # parity string on multi-mode (sector-degenerate) carriers.
+                exit_cross = unit_sector
+                if haskey(tm.ops, n) && localq != unit_sector
+                    later = _fuse_charges(
+                        (charge(tm.ops[x]) for x in tm.opnodes if x > n),
+                        unit_sector,
+                    )
+                    if _has_fermionic_crossing(later, unit_sector)
+                        exit_cross = later
+                        scale *= _exit_orientation_scalar(
+                            tm.ops[n].op, localq, nodeid(t, n),
+                        )
+                    end
                 end
-                merge_braid = canonical_junction_braid(tm, n)
-                previous_braid = get(entry_merge_braid, key, nothing)
-                if previous_braid === nothing
-                    entry_merge_braid[key] = merge_braid
-                elseif previous_braid != merge_braid
-                    throw(ArgumentError(
-                        "state-diagram entry at $(nodeid(t, n)) has inconsistent canonical child braids",
-                    ))
-                end
+                crossing = _fuse_charge(
+                    _fuse_charge(_fuse_charge(local_cross, node_cross), frame_cross),
+                    exit_cross,
+                )
+                scale *= canonical_junction_braid(tm, n)
+            end
+            key = (n, Tuple(αkeys), βkey, localentry, crossing)
+            previous_scale = get(entry_scale, key, nothing)
+            if previous_scale === nothing
+                entry_scale[key] = scale
+            elseif previous_scale != scale
+                throw(ArgumentError(
+                    "state-diagram entry at $(nodeid(t, n)) has inconsistent canonical scales",
+                ))
             end
             if complete
-                entries[key] = get(entries, key, zero(tm.coeff)) +
-                    tm.coeff * (graded ? entry_merge_braid[key] : one(tm.coeff))
+                entries[key] = get(entries, key, zero(tm.coeff)) + tm.coeff * scale
             else
                 # A non-completion merge is still a physical fusion junction;
-                # retain its canonical braid rather than postponing it to the
+                # retain its canonical scale rather than postponing it to the
                 # term's completion node.
-                entries[key] = graded ? entry_merge_braid[key] : 1
+                entries[key] = scale
             end
         end
     end
@@ -498,11 +518,12 @@ function ttno_from_opsum(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,<:Eleme
         end
     end
     # transport entries
+    transport_cross = graded ? unit_sector : nothing
     for p in 1:N
         for c in t.children[p]
             if _DONE in used[c]
                 αkeys = _ChannelKey[c2 == c ? _DONE : _PLAIN_IDLE for c2 in t.children[p]]
-                entries[(p, Tuple(αkeys), _DONE, _OMITTED_IDENTITY)] = 1
+                entries[(p, Tuple(αkeys), _DONE, _OMITTED_IDENTITY, transport_cross)] = 1
             end
         end
     end
@@ -510,7 +531,7 @@ function ttno_from_opsum(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,<:Eleme
         t.parent[n] == 0 && continue
         if _PLAIN_IDLE in used[n]
             αkeys = ntuple(_ -> _PLAIN_IDLE, nchildren(t, n))
-            entries[(n, αkeys, _PLAIN_IDLE, _OMITTED_IDENTITY)] = 1
+            entries[(n, αkeys, _PLAIN_IDLE, _OMITTED_IDENTITY, transport_cross)] = 1
         end
     end
 
@@ -560,15 +581,13 @@ function ttno_from_opsum(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,<:Eleme
             blockmap = Dict{typeof(unit_sector),Any}(q => b for (q, b) in blocks(W))
             _, codcoord = _sector_tuple_groups(cods, unit_sector)
             _, domcoord = _sector_tuple_groups(doms, unit_sector)
-            for ((m, αkeys, βkey, localentry), coeff) in entries
+            for ((m, αkeys, βkey, localentry, crossing), coeff) in entries
                 m == n || continue
-                entrykey = (m, αkeys, βkey, localentry)
                 αidx = ntuple(k -> chcoord[t.children[n][k]][αkeys[k]], K)
                 βidx = t.parent[n] == 0 ? 1 : chcoord[n][βkey]
                 if hp
                     mat = _graded_siteop_matrix(
-                        opmats, n, localentry, elt, P,
-                        get(entry_crossing, entrykey, unit_sector), unit_sector,
+                        opmats, n, localentry, elt, P, crossing, unit_sector,
                     )
                     for pout in 1:d, pin in 1:d
                         val = elt(coeff) * mat[pout, pin]
@@ -588,7 +607,7 @@ function ttno_from_opsum(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,<:Eleme
         else
             dims = (ntuple(k -> dim(vspaces[t.children[n][k]]), K)..., (hp ? (d, d) : ())..., χp)
             W = zeros(elt, dims)
-            for ((m, αkeys, βkey, localentry), coeff) in entries
+            for ((m, αkeys, βkey, localentry, _), coeff) in entries
                 m == n || continue
                 αidx = ntuple(k -> chcoord[t.children[n][k]][αkeys[k]], K)
                 βidx = t.parent[n] == 0 ? 1 : chcoord[n][βkey]
@@ -636,6 +655,61 @@ function _has_fermionic_crossing(q, unit_sector)
         "graded TTNO canonical crossings currently support only fZ2×abelian twists; got twist $θ for charge $q",
     ))
     return true
+end
+
+"All U1Irrep components of an abelian (product) sector."
+function _u1_components(q)
+    q isa U1Irrep && return (q,)
+    hasproperty(q, :sectors) || return ()
+    components = ()
+    for part in q.sectors
+        components = (components..., _u1_components(part)...)
+    end
+    return components
+end
+
+"Summed U(1) charge over every U1Irrep component, or `nothing` without one."
+function _net_u1_charge(q)
+    components = _u1_components(q)
+    isempty(components) && return nothing
+    total = sum(float(component.charge) for component in components)
+    return isinteger(total) ? Int(total) : nothing
+end
+
+"Structural physical-input twist parity of a charged SiteOp tensor: ±1 when
+every nonzero block shares one input-sector parity (every one-mode carrier
+does), `nothing` otherwise."
+function _input_twist_parity(op::AbstractTensorMap, q)
+    parity = nothing
+    for (coupled, b) in blocks(op)
+        all(iszero, b) && continue
+        θ = twist(_fuse_charge(coupled, dual(q)))
+        sign = θ == one(θ) ? 1 : θ == -one(θ) ? -1 : return nothing
+        parity === nothing || parity == sign || return nothing
+        parity = sign
+    end
+    return parity === nothing ? 1 : parity
+end
+
+# The scalar `s(q)` normalizing the charge-leg exit braid `s(q)·twist` to the
+# identity on one-mode carriers: the input twist eigenvalue a one-mode factor
+# of charge `q` would have. A net particle creation acts out of the even
+# sector (+1), a net annihilation out of the odd sector (-1). Without a U(1)
+# orientation the sector label cannot distinguish the two (fZ2 alone is
+# self-dual), so a sector-degenerate carrier fails closed instead of guessing;
+# a twist-eigenvector factor is exactly the one-mode-like case where the
+# normalized braid is the identity regardless of orientation.
+function _exit_orientation_scalar(op::AbstractTensorMap, q, site)
+    net = _net_u1_charge(q)
+    net == 1 && return 1
+    net == -1 && return -1
+    parity = _input_twist_parity(op, q)
+    parity === nothing && throw(ArgumentError(
+        "charged factor on $site braids out of a sector-degenerate physical " *
+        "space, but its charge $q carries no ±1 particle-number orientation; " *
+        "use an fZ2 ⊠ U(1) number-graded carrier (CG-009)",
+    ))
+    return parity
 end
 
 "Native fZ2×U1 braid specialization on a local physical input leg."
@@ -727,17 +801,35 @@ function _sector_tuple_groups(legs::Vector{S}, unit_sector) where {S<:Elementary
         coord[()] = (unit_sector, 1)
         return groups, coord
     end
-    legqs = [_basis_sectors(V, unit_sector) for V in legs]
-    dims = Tuple(length(qs) for qs in legqs)
-    for I in CartesianIndices(dims)
-        idx = Tuple(I)
+    # TensorKit block-row layout: abelian fusion trees (uncoupled sector
+    # tuples) iterate first-leg-fastest, and each tree owns one contiguous
+    # row range with degeneracy indices column-major inside it. A plain
+    # column-major sweep over basis positions coincides with this only while
+    # every sector is one-dimensional; with sector degeneracy it interleaves
+    # rows of different trees and silently permutes degenerate states.
+    K = length(legs)
+    legsectors = [collect(sectors(V)) for V in legs]
+    legoffsets = map(legs) do V
+        offsets = Dict{Q,Int}()
+        offset = 0
+        for s in sectors(V)
+            offsets[s] = offset
+            offset += dim(V, s)
+        end
+        offsets
+    end
+    for T in CartesianIndices(Tuple(length.(legsectors)))
+        secs = ntuple(j -> legsectors[j][T[j]], K)
         q = unit_sector
-        for j in eachindex(idx)
-            q = _fuse_charge(q, legqs[j][idx[j]])
+        for s in secs
+            q = _fuse_charge(q, s)
         end
         rows = get!(groups, q, Tuple[])
-        push!(rows, idx)
-        coord[idx] = (q, length(rows))
+        for D in CartesianIndices(ntuple(j -> dim(legs[j], secs[j]), K))
+            idx = ntuple(j -> legoffsets[j][secs[j]] + D[j], K)
+            push!(rows, idx)
+            coord[idx] = (q, length(rows))
+        end
     end
     return groups, coord
 end

@@ -43,12 +43,15 @@ function _graded_action_matrix(O, basis)
     dimension = length(basis)
     values = zeros(ComplexF64, dimension, dimension)
     root = topology(O).root
+    plan_cache = EnvCache(topology(O))
     for (column, input) in enumerate(basis)
-        output = apply(O, input)
+        output = apply(O, input; optimize=false)
         output_root = domain(output.tensors[root])[1]
         for (row, bra) in enumerate(basis)
             domain(bra.tensors[root])[1] == output_root || continue
-            values[row, column] = inner(bra, output)
+            values[row, column] = inner(
+                bra, output; plan_cache, optimize=false,
+            )
         end
     end
     return values

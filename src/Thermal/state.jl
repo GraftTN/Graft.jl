@@ -21,18 +21,35 @@ function _basis_coord_local(legs::Vector{S}) where {S<:ElementarySpace}
     isempty(legs) && return Dict{Tuple,Tuple{sectortype(S),Int}}(() => (one(sectortype(S)), 1))
     Q = sectortype(first(legs))
     unitq = one(Q)
-    flatbases = [_flat_basis_local(V) for V in legs]
+    # TensorKit block-row layout: abelian fusion trees iterate first-leg-
+    # fastest, each owning one contiguous row range with degeneracy indices
+    # column-major inside it (identical to the Networks/TTNOBuild coords;
+    # sweeping basis positions directly would interleave degenerate sectors).
+    K = length(legs)
+    legsectors = [collect(sectors(V)) for V in legs]
+    legoffsets = map(legs) do V
+        offsets = Dict{Q,Int}()
+        offset = 0
+        for s in sectors(V)
+            offsets[s] = offset
+            offset += dim(V, s)
+        end
+        offsets
+    end
     rows = Dict{Q,Int}()
     coord = Dict{Tuple,Tuple{Q,Int}}()
-    for I in CartesianIndices(Tuple(length(b) for b in flatbases))
-        idx = Tuple(I)
+    for T in CartesianIndices(Tuple(length.(legsectors)))
+        secs = ntuple(j -> legsectors[j][T[j]], K)
         q = unitq
-        for k in eachindex(idx)
-            q = _fuse_abelian_local(q, flatbases[k][idx[k]][1])
+        for s in secs
+            q = _fuse_abelian_local(q, s)
         end
-        row = get(rows, q, 0) + 1
-        rows[q] = row
-        coord[idx] = (q, row)
+        for D in CartesianIndices(ntuple(j -> dim(legs[j], secs[j]), K))
+            idx = ntuple(j -> legoffsets[j][secs[j]] + D[j], K)
+            row = get(rows, q, 0) + 1
+            rows[q] = row
+            coord[idx] = (q, row)
+        end
     end
     return coord
 end

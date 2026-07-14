@@ -396,6 +396,40 @@ end
                                                               root, 0, cinner.envs)
     @test inner(bra, ket) ≈ inner_ref rtol=1e-12 atol=1e-12
 
+    # Repeated unrelated overlaps may share shape plans, but never value
+    # environments. The low-latency diagnostic path uses only env-first plans
+    # and must not mutate the lending cache except for its plan dictionary.
+    cached_envs = copy(cinner.envs)
+    cached_rootcaps = copy(cinner.rootcaps)
+    value_counters = (cinner.env_hits, cinner.env_misses, cinner.env_rebuilds,
+                      cinner.env_evictions)
+    pooled_inner = inner(bra, ket; plan_cache=cinner, optimize=false)
+    @test pooled_inner ≈ inner_ref rtol=1e-12 atol=1e-12
+    @test keys(cinner.envs) == keys(cached_envs)
+    @test all(cinner.envs[key] === value for (key, value) in cached_envs)
+    @test keys(cinner.rootcaps) == keys(cached_rootcaps)
+    @test all(cinner.rootcaps[key] === value for (key, value) in cached_rootcaps)
+    @test (cinner.env_hits, cinner.env_misses, cinner.env_rebuilds,
+           cinner.env_evictions) == value_counters
+
+    envfirst_keys = Set(key for key in keys(cinner.plans)
+                        if key.kind === :env_ket_bra && !key.optimize)
+    @test !isempty(envfirst_keys)
+    @test all(cinner.plans[key].strategy === :env_first for key in envfirst_keys)
+    envfirst_plans = Dict(key => cinner.plans[key] for key in envfirst_keys)
+
+    scale = 1.01 + 0.02im
+    scaled_ket = copy(ket)
+    update_tensor!(scaled_ket, root, scale * scaled_ket.tensors[root]; gauge=false)
+    @test inner(bra, scaled_ket; plan_cache=cinner, optimize=false) ≈
+          scale * inner_ref rtol=1e-12 atol=1e-12
+    @test Set(key for key in keys(cinner.plans)
+              if key.kind === :env_ket_bra && !key.optimize) == envfirst_keys
+    @test all(cinner.plans[key] === plan for (key, plan) in envfirst_plans)
+    @test_throws ArgumentError inner(
+        bra, ket; plan_cache=EnvCache(mps_topology(3)), optimize=false,
+    )
+
     ψ = copy(ket)
     cexpect = EnvCache(topo)
     move_center!(ψ, root; cache=cexpect)
@@ -735,9 +769,12 @@ if _p0p1_enabled(:m5)
     F = Graft.Networks
 
     planned = apply(O, ψ; center=child)
+    envfirst = apply(O, ψ; center=child, optimize=false)
     reference = F._apply_ncon_reference(O, ψ; center=child)
     @test check_arrows(planned) && center(planned) == child
     @test norm(to_dense(planned) - to_dense(reference)) <= 1e-12
+    @test check_arrows(envfirst) && center(envfirst) == child
+    @test norm(to_dense(envfirst) - to_dense(reference)) <= 1e-12
 
     # Retain a stored-sector application and the non-root physical-leg-free
     # junction in default coverage: their fusion/arrow layouts have no generic

@@ -375,17 +375,35 @@ function _basis_coord(legs::Vector{S}, unitq) where {S<:ElementarySpace}
         coord[()] = (unitq, 1)
         return coord
     end
-    legbasis = [_flat_basis(V) for V in legs]
-    rows = Dict{typeof(unitq),Int}()
-    for I in CartesianIndices(Tuple(length(b) for b in legbasis))
-        idx = Tuple(I)
-        q = unitq
-        for k in eachindex(idx)
-            q = _fuse_sector(q, legbasis[k][idx[k]][1])
+    # TensorKit block-row layout: abelian fusion trees (uncoupled sector
+    # tuples) iterate first-leg-fastest, each owning one contiguous row range
+    # with degeneracy indices column-major inside it. Sweeping basis positions
+    # directly coincides with this only for one-dimensional sectors; with
+    # sector degeneracy it interleaves trees and permutes degenerate states.
+    K = length(legs)
+    legsectors = [collect(sectors(V)) for V in legs]
+    legoffsets = map(legs) do V
+        offsets = Dict{typeof(unitq),Int}()
+        offset = 0
+        for s in sectors(V)
+            offsets[s] = offset
+            offset += dim(V, s)
         end
-        row = get(rows, q, 0) + 1
-        rows[q] = row
-        coord[idx] = (q, row)
+        offsets
+    end
+    rows = Dict{typeof(unitq),Int}()
+    for T in CartesianIndices(Tuple(length.(legsectors)))
+        secs = ntuple(j -> legsectors[j][T[j]], K)
+        q = unitq
+        for s in secs
+            q = _fuse_sector(q, s)
+        end
+        for D in CartesianIndices(ntuple(j -> dim(legs[j], secs[j]), K))
+            idx = ntuple(j -> legoffsets[j][secs[j]] + D[j], K)
+            row = get(rows, q, 0) + 1
+            rows[q] = row
+            coord[idx] = (q, row)
+        end
     end
     return coord
 end
