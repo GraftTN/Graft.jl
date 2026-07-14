@@ -8,10 +8,11 @@ the supplied thermal generator. All propagation is delegated to an
 `Evolution.Evolver` through its complex-step interface — Thermal owns no
 propagation kernel.
 
-Scope note (§5c): finite-T *baths* default to thermofield star encoding fitted
-by the companion `GraftImpurity.jl` package (temperature absorbed into the fit,
-vacuum product initial state) — `Purified`/`METTS` are for Matsubara G(τ), local
-thermalization, and lattice problems.
+Scope note (§5c, 2026-07-14): complete finite-temperature Hamiltonians use the
+ordinary `Purified` route implemented here. The disabled companion-package
+thermofield code is a frozen EDMFT bosonic-bath layout experiment: it would
+organize purified bath modes into emission/absorption branches, not prepare the
+thermal state. Its public fit/mount calls warn and return `nothing`.
 
 ## Scope (v1)
 
