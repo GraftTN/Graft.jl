@@ -29,35 +29,37 @@ const QUIET = (verbose=false,)
                 SiteOp(nodeid(topo, 1), :N, S.N))))) ≈ 0.5 atol = 1e-12
     end
 
-    @testset "P1: star topology beta=0" begin
-        S = spin_ops()
-        topo = star_topology(3, 1; center=:imp)
-        phys = Dict(nodeid(topo, i) => S.P for i in 1:nnodes(topo))
-        H = OpSum()
-        for (c, p) in Graft.Trees.edges(topo)
-            H += Term(-1.0, SiteOp(nodeid(topo, c), :Z, S.Z),
-                       SiteOp(nodeid(topo, p), :Z, S.Z))
+    if GRAFT_EXTENDED_TESTS
+        @testset "P1: star topology beta=0" begin
+            S = spin_ops()
+            topo = star_topology(3, 1; center=:imp)
+            phys = Dict(nodeid(topo, i) => S.P for i in 1:nnodes(topo))
+            H = OpSum()
+            for (c, p) in Graft.Trees.edges(topo)
+                H += Term(-1.0, SiteOp(nodeid(topo, c), :Z, S.Z),
+                           SiteOp(nodeid(topo, p), :Z, S.Z))
+            end
+            prob = purification_problem(H, topo, phys; hermitian=true)
+            state0 = infinite_temperature_state(prob)
+            @test norm(state0.psi) ≈ 1 atol = 1e-12
+            @test state0.logZ ≈ log(2^nnodes(topo)) atol = 1e-12
         end
-        prob = purification_problem(H, topo, phys; hermitian=true)
-        state0 = infinite_temperature_state(prob)
-        @test norm(state0.psi) ≈ 1 atol = 1e-12
-        @test state0.logZ ≈ log(2^nnodes(topo)) atol = 1e-12
-    end
 
-    @testset "P1: fermion+bath pair beta=0" begin
-        F = fermion_ops_z2()
-        topo = mps_topology(2)
-        phys = Dict(nodeid(topo, i) => F.P for i in 1:2)
-        H = OpSum()
-        H += Term(-1.0, SiteOp(:site1, :Cd, F.Cd), SiteOp(:site2, :C, F.C))
-        H += Term(-1.0, SiteOp(:site1, :C, F.C), SiteOp(:site2, :Cd, F.Cd))
-        prob = purification_problem(H, topo, phys; hermitian=true)
-        state0 = infinite_temperature_state(prob)
-        @test norm(state0.psi) ≈ 1 atol = 1e-12
-        @test state0.logZ ≈ log(4) atol = 1e-12
-        @test real(thermal_expect(state0,
-            physical_ttno(prob, OpSum() + Term(1.0,
-                SiteOp(:site1, :N, F.N))))) ≈ 0.5 atol = 1e-12
+        @testset "P1: fermion+bath pair beta=0" begin
+            F = fermion_ops_z2()
+            topo = mps_topology(2)
+            phys = Dict(nodeid(topo, i) => F.P for i in 1:2)
+            H = OpSum()
+            H += Term(-1.0, SiteOp(:site1, :Cd, F.Cd), SiteOp(:site2, :C, F.C))
+            H += Term(-1.0, SiteOp(:site1, :C, F.C), SiteOp(:site2, :Cd, F.Cd))
+            prob = purification_problem(H, topo, phys; hermitian=true)
+            state0 = infinite_temperature_state(prob)
+            @test norm(state0.psi) ≈ 1 atol = 1e-12
+            @test state0.logZ ≈ log(4) atol = 1e-12
+            @test real(thermal_expect(state0,
+                physical_ttno(prob, OpSum() + Term(1.0,
+                    SiteOp(:site1, :N, F.N))))) ≈ 0.5 atol = 1e-12
+        end
     end
 
     @testset "P1: PP boson beta=0 (nmax=2)" begin
@@ -108,7 +110,8 @@ const QUIET = (verbose=false,)
         H = OpSum() + Term(0.5, SiteOp(:site1, :Z, S.Z))
         prob = purification_problem(H, topo, phys; hermitian=true)
         Hd = dense_hamiltonian(H, topo, phys)
-        for beta in (0.5, 1.0, 2.0, 4.0)
+        betas = GRAFT_EXTENDED_TESTS ? (0.5, 1.0, 2.0, 4.0) : (1.0,)
+        for beta in betas
             traj = thermalize(Purified(), prob, beta;
                 evolver=TDVP2(; QUIET...), nsteps=40)
             @test abs(traj.final.logZ - exact_thermal_logZ(Hd, beta)) < 1e-10
@@ -191,7 +194,7 @@ const QUIET = (verbose=false,)
         H = OpSum() + Term(0.5, SiteOp(:site1, :Z, S.Z))
         prob = purification_problem(H, topo, phys; hermitian=true)
         beta = 2.0
-        save_betas = [0.5, 1.0, 1.5]
+        save_betas = GRAFT_EXTENDED_TESTS ? [0.5, 1.0, 1.5] : [1.0]
         traj = thermalize(Purified(), prob, beta;
             evolver=TDVP2(; QUIET...), nsteps=40,
             save_betas=save_betas)
@@ -220,7 +223,8 @@ const QUIET = (verbose=false,)
             matter_ops=S, boson_ops=B, density=:N)
         prob = purification_problem(H, topo, phys; hermitian=true)
         Hd = dense_hamiltonian(H, topo, phys)
-        for beta in (0.5, 1.0)
+        betas = GRAFT_EXTENDED_TESTS ? (0.5, 1.0) : (1.0,)
+        for beta in betas
             traj = thermalize(Purified(), prob, beta;
                 evolver=TDVP2(trunc=TruncationScheme(maxdim=8); QUIET...),
                 nsteps=40)

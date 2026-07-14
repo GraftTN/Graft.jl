@@ -26,9 +26,11 @@ isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
         reference = to_dense(neutral)
         @test collect(sectors(domain(neutral[root])[1])) == [FermionParity(0)]
 
-        # Both directions of every center move must be a pure gauge change.
-        # The dual thermal legs make the pivotal correction observable.
-        for target in 1:nnodes(neutral.topo)
+        # The dual thermal legs make the pivotal correction observable. The
+        # default tier checks a nontrivial move to one deepest leaf.
+        gauge_targets = GRAFT_EXTENDED_TESTS ?
+            (1:nnodes(neutral.topo)) : (argmax(neutral.topo.depth),)
+        for target in gauge_targets
             centered = move_center!(copy(neutral), target)
             @test norm(to_dense(centered) - reference) < 1e-11
             move_center!(centered, root)
@@ -53,14 +55,19 @@ isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
     @test check_arrows(psi)
 
     expected = expect(psi, prob.K)
-    for n in 1:nnodes(psi.topo)
+    deepest_leaf = argmax(psi.topo.depth)
+    h1_targets = GRAFT_EXTENDED_TESTS ?
+        (1:nnodes(psi.topo)) : (root, deepest_leaf)
+    for n in h1_targets
         centered = move_center!(copy(psi), n)
         h1 = eff_h1(
             EnvCache(psi.topo), centered, prob.K, n;
             optimize=false, sector_aware=false)
         @test dot(centered[n], h1(centered[n])) ≈ expected atol = 1e-11
     end
-    for n in 1:nnodes(psi.topo)
+    h2_children = GRAFT_EXTENDED_TESTS ?
+        (1:nnodes(psi.topo)) : (deepest_leaf,)
+    for n in h2_children
         m = psi.topo.parent[n]
         m == 0 && continue
         centered = move_center!(copy(psi), n)

@@ -1,4 +1,8 @@
+using Test
 using Printf
+
+const TEST_VERBOSE = lowercase(get(ENV, "GRAFT_TEST_VERBOSE", "true")) in
+    ("1", "true", "yes", "on")
 
 function _graft_boolean_env(name::String, default::Bool)
     raw = lowercase(strip(get(ENV, name, string(default))))
@@ -82,6 +86,33 @@ macro graft_testset(name, body)
     return quote
         local graft_stage = _graft_next_test_stage()
         if graft_stage.selected
+            local graft_started = time_ns()
+            local graft_testset = Test.@testset $name $body
+            _graft_report_test_stage(graft_testset, (time_ns() - graft_started) / 1.0e9)
+        end
+    end
+end
+
+"""
+Run an opt-in top-level testset when its global round-robin shard is selected.
+
+The three-argument form accepts a `force` condition for focused invocations
+that need one related extended stage without enabling the full extended tier.
+The stage ordinal is consumed regardless of the tier/force decision.
+"""
+macro graft_extended_testset(args...)
+    force, name, body = if length(args) == 2
+        (false, args[1], args[2])
+    elseif length(args) == 3
+        (args[1], args[2], args[3])
+    else
+        throw(ArgumentError(
+            "@graft_extended_testset expects (name, body) or (force, name, body)",
+        ))
+    end
+    return quote
+        local graft_stage = _graft_next_test_stage()
+        if (GRAFT_EXTENDED_TESTS || $force) && graft_stage.selected
             local graft_started = time_ns()
             local graft_testset = Test.@testset $name $body
             _graft_report_test_stage(graft_testset, (time_ns() - graft_started) / 1.0e9)

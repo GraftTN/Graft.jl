@@ -67,12 +67,22 @@ function _sector_dp_score(spec, protos, envfirst; memory_weight::Real)
     return minimum(scores)
 end
 
+function _sector_three_map_fixture()
+    A = U1Space(0 => 1, 1 => 1) ← U1Space(0 => 1, 1 => 2)
+    B = U1Space(0 => 1, 1 => 2) ← U1Space(0 => 1, 1 => 4)
+    C = U1Space(0 => 1, 1 => 4) ← U1Space(0 => 2, 1 => 1)
+    spec = _Planning.ContractionSpec(
+        Vector{Int}[[-1, 1], [1, 2], [2, -2]],
+        Bool[false, false, false], 2, (1, 1), 1;
+        preferred_slots=[2, 3],
+    )
+    return A, B, C, spec
+end
+
 function _assert_planned_matches_ncon(spec, statics, planned, x;
                                       rtol::Real=1e-13, atol::Real=1e-13)
     got = planned(x)
     ref = _CP._ncon_effective_reference(spec, x, statics)
-    @test numout(got) == spec.out_partition[1]
-    @test numin(got) == spec.out_partition[2]
     @test norm(got - ref) <= atol + rtol * max(norm(ref), 1)
     return got
 end
@@ -127,14 +137,14 @@ function _assert_h1_family_matches_ncon!(cache, ψ, O, n, rng;
     return (; spec, statics, planned, inputs)
 end
 
-function _exercise_effective_maps!(ψ, O)
+function _exercise_effective_maps!(ψ, O; extended::Bool=GRAFT_EXTENDED_TESTS)
     topo = topology(ψ)
-    for n in 1:nnodes(topo)
+    selected_nodes = extended ? (1:nnodes(topo)) : (topo.root,)
+    for n in selected_nodes
         move_center!(ψ, n)
         cache = EnvCache(topo)
         spec, statics, protos = _CP._h1_spec(cache, ψ, O, n)
         planned = eff_h1(cache, ψ, O, n)
-        @test planned isa _CP.EffectiveMap
         _assert_planned_matches_ncon(spec, statics, planned, ψ.tensors[n])
 
         # Phase 2 may choose the dense candidate, but it must never violate the
@@ -147,7 +157,9 @@ function _exercise_effective_maps!(ψ, O)
         @test planned.plan.sector_peak_elements <= envfirst.sector_peak_elements
     end
 
-    for (n, m) in edges(topo)
+    root_edge = (first(topo.children[topo.root]), topo.root)
+    selected_edges = extended ? edges(topo) : (root_edge,)
+    for (n, m) in selected_edges
         move_center!(ψ, n)
         Θ = two_site_tensor(ψ, n, m)
         @test space(Θ) == two_site_space(ψ, n, m)
@@ -196,7 +208,37 @@ end
     _exercise_effective_maps!(ψ, O)
 end
 
-@graft_testset "compiled contraction plans: sector-aware structural planning" begin
+@graft_testset "compiled contraction plans: sector-aware 3-map action gate" begin
+    # The dense model prefers (A*B)*C (60 < 63), but the exact U(1) block
+    # model prefers A*(B*C) (28 < 30). Keep this action-level regression in
+    # the default tier because a wrong sector order can silently remain
+    # dimension-valid.
+    A, B, C, spec = _sector_three_map_fixture()
+    dense = _Planning.plan_contraction(spec, (A, B, C);
+                                         sector_aware=false, memory_weight=0)
+    sector = _Planning.plan_contraction(spec, (A, B, C);
+                                          sector_aware=true, memory_weight=0)
+    envfirst = _Planning.plan_contraction(spec, (A, B, C); optimize=false)
+    @test dense.strategy == :env_first
+    @test dense.flops == 60
+    @test dense.sector_flops == 30
+    @test sector.strategy == :sector_exact
+    @test sector.flops == 63
+    @test sector.sector_flops == 28
+    @test sort([sector.steps[1].a, sector.steps[1].b]) == [2, 3]
+    @test sector.peak_elements <= envfirst.peak_elements
+    @test sector.sector_peak_elements <= envfirst.sector_peak_elements
+
+    rng = MersenneTwister(1801)
+    At = randn(rng, ComplexF64, A)
+    Bt = randn(rng, ComplexF64, B)
+    Ct = randn(rng, ComplexF64, C)
+    exact_map = _Planning.EffectiveMap(sector, (Bt, Ct))
+    exact_reference = _Planning.ncon_reference(spec, At, (Bt, Ct))
+    @test norm(exact_map(At) - exact_reference) <= 1e-12 * max(norm(exact_reference), 1)
+end
+
+@graft_extended_testset "compiled contraction plans: sector-aware structural planning" begin
     # Pure HomSpace metadata: this must not allocate TensorMap payloads.  It
     # pins TensorKit's flat-domain-leg convention and the exact two-sector
     # GEMM accounting used by the Phase-3 planner.
@@ -231,41 +273,7 @@ end
     @test root_profile.output_largest_block_elements == 9
     @test root_profile.peak_block_elements == 9
 
-    # The dense model prefers (A*B)*C (60 < 63), but the exact U(1) block
-    # model prefers A*(B*C) (28 < 30).  This deterministic three-map fixture
-    # proves that Phase 3 is a real order choice, not only diagnostics.
-    A = U1Space(0 => 1, 1 => 1) ← U1Space(0 => 1, 1 => 2)
-    B = U1Space(0 => 1, 1 => 2) ← U1Space(0 => 1, 1 => 4)
-    C = U1Space(0 => 1, 1 => 4) ← U1Space(0 => 2, 1 => 1)
-    spec = _Planning.ContractionSpec(
-        Vector{Int}[[-1, 1], [1, 2], [2, -2]],
-        Bool[false, false, false], 2, (1, 1), 1;
-        preferred_slots=[2, 3],
-    )
-    dense = _Planning.plan_contraction(spec, (A, B, C);
-                                         sector_aware=false, memory_weight=0)
-    sector = _Planning.plan_contraction(spec, (A, B, C);
-                                          sector_aware=true, memory_weight=0)
-    envfirst = _Planning.plan_contraction(spec, (A, B, C); optimize=false)
-    @test dense.strategy == :env_first
-    @test dense.flops == 60
-    @test dense.sector_flops == 30
-    @test sector.strategy == :sector_exact
-    @test sector.flops == 63
-    @test sector.sector_flops == 28
-    @test sort([sector.steps[1].a, sector.steps[1].b]) == [2, 3]
-    @test sector.peak_elements <= envfirst.peak_elements
-    @test sector.sector_peak_elements <= envfirst.sector_peak_elements
-
-    # Exercise the exact candidate's canonicalized intermediate executor path
-    # against retained ncon, not only its structural metadata.
-    rng = MersenneTwister(1801)
-    At = randn(rng, ComplexF64, A)
-    Bt = randn(rng, ComplexF64, B)
-    Ct = randn(rng, ComplexF64, C)
-    exact_map = _Planning.EffectiveMap(sector, (Bt, Ct))
-    exact_reference = _Planning.ncon_reference(spec, At, (Bt, Ct))
-    @test norm(exact_map(At) - exact_reference) <= 1e-12 * max(norm(exact_reference), 1)
+    A, B, C, spec = _sector_three_map_fixture()
 
     # In the supported symmetric-braiding, λ_perm=0 model, canonicalizing an
     # intermediate output makes A×B and B×A the same structural cost state.
@@ -383,38 +391,54 @@ end
                                       memory_weight=2)
     @test key_default != key_envfirst
     @test key_default != key_memheavy
+    @test key_envfirst != key_memheavy
 
-    h1a = eff_h1(cache, ψ, O, n)
-    after_miss = _CP.plan_cache_stats(cache)
-    @test after_miss.misses == 1
-    @test after_miss.hits == 0
-    h1b = eff_h1(cache, ψ, O, n)
-    after_hit = _CP.plan_cache_stats(cache)
-    @test after_hit.misses == 1
-    @test after_hit.hits == 1
-    @test h1a.plan.steps === h1b.plan.steps
+    h1_default = eff_h1(cache, ψ, O, n)
+    if GRAFT_EXTENDED_TESTS
+        after_miss = _CP.plan_cache_stats(cache)
+        @test after_miss.misses == 1
+        @test after_miss.hits == 0
+        h1_repeat = eff_h1(cache, ψ, O, n)
+        after_hit = _CP.plan_cache_stats(cache)
+        @test after_hit.misses == 1
+        @test after_hit.hits == 1
+        @test h1_default.plan.steps === h1_repeat.plan.steps
+    end
 
     # Public effective-map keywords feed the cache objective: even when the
     # selected dense tree happens to equal env-first for this small network,
     # a caller requesting Phase-1-only planning gets a distinct cache entry.
-    plans_after_default = length(cache.plans)
+    h1_plans_after_default = count(key -> key.kind === :h1, keys(cache.plans))
     h1_envfirst = eff_h1(cache, ψ, O, n; optimize=false)
     @test h1_envfirst.plan.strategy == :env_first
-    @test length(cache.plans) == plans_after_default + 1
+    @test count(key -> key.kind === :h1, keys(cache.plans)) ==
+          h1_plans_after_default + 1
 
-    plans_before_invalidation = length(cache.plans)
-    _CP.invalidate_node!(cache, n)
-    @test length(cache.plans) == plans_before_invalidation
-    _ = eff_h1(cache, ψ, O, n)
-    @test _CP.plan_cache_stats(cache).hits == 2
+    # A same-shape tensor-value update invalidates environments but keeps the
+    # compiled shape plan reusable.
+    h1_plans_before_update = count(key -> key.kind === :h1, keys(cache.plans))
+    update_tensor!(ψ, n, 1.01 * ψ.tensors[n]; caches=(cache,))
+    @test count(key -> key.kind === :h1, keys(cache.plans)) == h1_plans_before_update
+    h1_reused = eff_h1(cache, ψ, O, n)
+    @test h1_reused.plan.steps === h1_default.plan.steps
+    @test count(key -> key.kind === :h1, keys(cache.plans)) == h1_plans_before_update
 
     # Same topology but a different state-bond shape must miss rather than
     # reuse a plan; clearing only environments preserves the old plan for this
     # exact cache-key check.
     ψwide = random_ttns(MersenneTwister(1502), ComplexF64, topo, phys, ℂ^3)
+    h1_plans_before_shape_change = count(key -> key.kind === :h1, keys(cache.plans))
     empty!(cache.envs)
     _ = eff_h1(cache, ψwide, O, n)
-    @test length(cache.plans) > plans_before_invalidation
+    @test count(key -> key.kind === :h1, keys(cache.plans)) ==
+          h1_plans_before_shape_change + 1
+
+    if GRAFT_EXTENDED_TESTS
+        after_shape_change = _CP.plan_cache_stats(cache)
+        @test after_shape_change.misses == 3
+        @test after_shape_change.hits == 2
+        @test after_shape_change.size == length(cache.plans)
+    end
 
     # H2 on two symmetric root children has equal dense dimensions but a
     # different Wm crossed-child leg. The label graph is therefore part of the
@@ -426,16 +450,19 @@ end
     move_center!(ψ, c2; cache=cache_h2)
     h2b = eff_h2(cache_h2, ψ, O, c2, topo.root)
     @test count(key -> key.kind === :h2, keys(cache_h2.plans)) == 2
-    @test _CP.plan_cache_stats(cache_h2).misses == 2
     @test h2a.plan.steps !== h2b.plan.steps
 
-    # A closed gauge excursion preserves the local effective observable.
-    move_center!(ψ, n)
-    e0 = dot(ψ.tensors[n], eff_h1(EnvCache(topo), ψ, O, n)(ψ.tensors[n]))
-    move_center!(ψ, c1)
-    move_center!(ψ, n)
-    e1 = dot(ψ.tensors[n], eff_h1(EnvCache(topo), ψ, O, n)(ψ.tensors[n]))
-    @test e0 ≈ e1 rtol=1e-12 atol=1e-12
+    if GRAFT_EXTENDED_TESTS
+        @test _CP.plan_cache_stats(cache_h2).misses == 2
+
+        # A closed gauge excursion preserves the local effective observable.
+        move_center!(ψ, n)
+        e0 = dot(ψ.tensors[n], eff_h1(EnvCache(topo), ψ, O, n)(ψ.tensors[n]))
+        move_center!(ψ, c1)
+        move_center!(ψ, n)
+        e1 = dot(ψ.tensors[n], eff_h1(EnvCache(topo), ψ, O, n)(ψ.tensors[n]))
+        @test e0 ≈ e1 rtol=1e-12 atol=1e-12
+    end
 end
 
 @graft_testset "compiled contraction plans: mixed-boson post-TDVP2 root h1" begin

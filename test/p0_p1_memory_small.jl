@@ -17,6 +17,7 @@ const _P0P1_TARGET = lowercase(get(ENV, "GRAFT_P0P1_TARGET", "all"))
 _P0P1_TARGET in ("all", "m1", "m2", "m3", "m4", "m5", "m6", "m7") ||
     throw(ArgumentError("unknown GRAFT_P0P1_TARGET=$_P0P1_TARGET"))
 _p0p1_enabled(group::Symbol) = _P0P1_TARGET in ("all", String(group))
+_p0p1_explicit(group::Symbol) = _P0P1_TARGET == String(group)
 
 @info "Graft P0/P1 targeted BLAS configuration" config=LinearAlgebra.BLAS.get_config() threads=LinearAlgebra.BLAS.get_num_threads()
 
@@ -93,7 +94,7 @@ function _p0p1_fit_operator_ref_env!(φ, ψ, O, u, v,
 end
 
 if _p0p1_enabled(:m1)
-@graft_testset "P0/P1: live contraction memory model" begin
+@graft_extended_testset _p0p1_explicit(:m1) "P0/P1: live contraction memory model" begin
     rng = MersenneTwister(20260710)
     spec, A, B = _p0p1_permuted_two_map(rng)
     plan = _P0P1Planning.plan_contraction(spec, (A, B);
@@ -164,7 +165,7 @@ if _p0p1_enabled(:m1)
     )
 end
 
-@graft_testset "P0/P1: sector-stored live memory" begin
+@graft_extended_testset _p0p1_explicit(:m1) "P0/P1: sector-stored live memory" begin
     # This three-map U(1) chain is small enough for a direct A/B comparison,
     # while its block payload differs from the dense product.  It verifies
     # that the live-byte fields use stored sector payload rather than merely
@@ -217,7 +218,7 @@ end
           1e-12 * max(norm(reference), 1)
 end
 
-@graft_testset "P0/P1: bounded hard-cap fallback" begin
+@graft_extended_testset _p0p1_explicit(:m1) "P0/P1: bounded hard-cap fallback" begin
     # Eleven tensors exceeds the exact-DP limit while remaining shape-only.
     # The intentionally reversed semantic order outer-products its two chain
     # ends; a cap below that env-first live peak must select an actual bounded
@@ -261,7 +262,47 @@ end
 end # :m1 target
 
 if _p0p1_enabled(:m2)
-@graft_testset "P0/P1: planned environments and scalar contractions" begin
+@graft_testset "P0/P1: default complete-tuple environment contracts" begin
+    topo, _, O, ket, bra = _p0p1_sandwich_fixture(MersenneTwister(2026071301))
+    root = topo.root
+    child = only(topo.children[root])
+
+    # Keep one exact edge layout, complete-tuple scalar closure, and immutable
+    # root-cap reuse in the default tier: failures here are correctness or
+    # retained-resource regressions rather than extended diagnostics.
+    cache = EnvCache(topo)
+    edge, _ = _p0p1_env_matches_ncon!(cache, ket, O, bra, root, child)
+    @test numout(edge) == 3 && numin(edge) == 0
+    @test length(cache.rootcaps) == 1
+    rootcap = only(values(cache.rootcaps))
+    env!(cache, ket, O, bra, child, root)
+    scalar_spec, scalar_operands =
+        Graft.Contractions._build_env_spec(cache, ket, O, bra, root, 0)
+    scalar_plan = _P0P1Planning.plan_contraction(
+        scalar_spec, scalar_operands;
+        scalar_type=Graft.Backend.scalartype(ket.tensors[root]),
+    )
+    scalar_ref = Graft.Contractions._build_env_ncon_reference(
+        ket, O, bra, root, 0, cache.envs,
+    )
+    @test scalar_plan.scalar_output
+    @test _P0P1Planning.execute(scalar_plan, scalar_operands) ≈ scalar_ref
+    @test_throws ArgumentError _P0P1Planning.execute(
+        scalar_plan, scalar_operands[1:(end - 1)],
+    )
+    scalar, _ = _p0p1_env_matches_ncon!(cache, ket, O, bra, root, 0)
+    @test scalar isa Number
+    @test only(values(cache.rootcaps)) === rootcap
+
+    effcache = EnvCache(topo)
+    move_center!(ket, root; cache=effcache)
+    h1a = eff_h1(effcache, ket, O, root)
+    h1b = eff_h1(effcache, ket, O, root)
+    @test h1a.statics[end] === h1b.statics[end]
+    @test length(effcache.rootcaps) == 1
+end
+
+@graft_extended_testset _p0p1_explicit(:m2) "P0/P1: planned environments and scalar contractions" begin
     topo, S, O, ket, bra = _p0p1_sandwich_fixture(MersenneTwister(20260713))
     root = topo.root
     child = only(topo.children[root])
@@ -405,7 +446,7 @@ end
 end # :m2 target
 
 if _p0p1_enabled(:m3)
-@graft_testset "P0/P1: planned variational fit contractions" begin
+@graft_extended_testset _p0p1_explicit(:m3) "P0/P1: planned variational fit contractions" begin
     topo, _, _, ψ, φ = _p0p1_sandwich_fixture(MersenneTwister(20260717))
     root = topo.root
     child = only(topo.children[root])
@@ -510,7 +551,38 @@ end
 end # :m3 target
 
 if _p0p1_enabled(:m4)
-@graft_testset "P0/P1: direct operator-aware fit contractions" begin
+@graft_testset "P0/P1: default direct operator-fit contracts" begin
+    topo, S, O, ψ, φ = _p0p1_sandwich_fixture(MersenneTwister(2026071901))
+    root = topo.root
+    F = Graft.Networks
+
+    # Non-Hermitian left/right order and mixed identity/operator actions feed
+    # the exact residual. Keep these unique correctness paths in the default
+    # tier even though extended mode covers additional gauges, sectors, and
+    # multi-operator permutations.
+    Hnh = OpSum()
+    Hnh += Term(0.31 + 0.17im, SiteOp(nodeid(topo, root), :X, S.X))
+    Onh = ttno_from_opsum(
+        Hnh, topo, Dict(nodeid(topo, i) => S.P for i in 1:nnodes(topo));
+        hermitian=false,
+    )
+    direct_double = F._fit_double_overlap(ψ, O, φ, Onh)
+    legacy_double = inner(apply(O, ψ), apply(Onh, φ))
+    @test direct_double ≈ legacy_double rtol=1e-12 atol=1e-12
+
+    src2 = copy(φ)
+    coeffs = ComplexF64[0.6 - 0.1im, -0.2 + 0.4im]
+    direct, legacy = copy(φ), copy(φ)
+    legacy_sources = (ψ, apply(Onh, src2; center=center(legacy)))
+    _, legacy_errors = fit!(legacy, legacy_sources; coeffs, nsweeps=1, tol=0.0)
+    _, direct_errors = fit!(direct, (ψ, src2);
+                            Hs=(nothing, Onh), coeffs, nsweeps=1, tol=0.0)
+    @test direct_errors ≈ legacy_errors rtol=1e-10 atol=2e-8
+    @test norm(to_dense(direct) - to_dense(legacy)) <= 1e-10
+    @test check_arrows(direct) && center(direct) == center(φ)
+end
+
+@graft_extended_testset _p0p1_explicit(:m4) "P0/P1: direct operator-aware fit contractions" begin
     topo, S, O, ψ, φ = _p0p1_sandwich_fixture(MersenneTwister(20260719))
     root = topo.root
     child = only(topo.children[root])
@@ -657,7 +729,47 @@ end
 end # :m4 target
 
 if _p0p1_enabled(:m5)
-@graft_testset "P0/P1: planned exact TTNO application" begin
+@graft_testset "P0/P1: default exact planned-apply contracts" begin
+    topo, S, O, ψ, _ = _p0p1_sandwich_fixture(MersenneTwister(2026072101))
+    child = only(topo.children[topo.root])
+    F = Graft.Networks
+
+    planned = apply(O, ψ; center=child)
+    reference = F._apply_ncon_reference(O, ψ; center=child)
+    @test check_arrows(planned) && center(planned) == child
+    @test norm(to_dense(planned) - to_dense(reference)) <= 1e-12
+
+    # Retain a stored-sector application and the non-root physical-leg-free
+    # junction in default coverage: their fusion/arrow layouts have no generic
+    # dense fallback that would make a silent planner regression harmless.
+    utopo, _, uO, uψ, _ = _p0p1_sandwich_fixture(MersenneTwister(2026072201);
+                                                  u1=true)
+    uchild = only(utopo.children[utopo.root])
+    uplanned = apply(uO, uψ; center=uchild)
+    ureference = F._apply_ncon_reference(uO, uψ; center=uchild)
+    @test check_arrows(uplanned) && center(uplanned) == uchild
+    @test norm(to_dense(uplanned) - to_dense(ureference)) <= 1e-12
+
+    jtopo = TreeTopology(:root, [:root => :junction, :junction => :left,
+                                  :junction => :right])
+    jphys = Dict(:root => S.P, :left => S.P, :right => S.P)
+    jH = OpSum()
+    for site in (:root, :left, :right)
+        jH += Term(0.11 + 0.02im, SiteOp(site, :Z, S.Z))
+    end
+    jO = ttno_from_opsum(jH, jtopo, jphys; hermitian=false)
+    jψ = random_ttns(MersenneTwister(2026072401), ComplexF64, jtopo, jphys, ℂ^2)
+    jfusions = F._apply_edge_fusions(promote_type(eltype(jO), eltype(jψ)), jψ, jO)
+    junction = nodeindex(jtopo, :junction)
+    jspec, _ = F._apply_node_spec(jO, jψ, junction, jfusions)
+    @test jspec.preferred_slots == [1, 3, 4, 2, 5]
+    jout = apply(jO, jψ; center=junction)
+    jreference = F._apply_ncon_reference(jO, jψ; center=junction)
+    @test check_arrows(jout) && center(jout) == junction
+    @test norm(to_dense(jout) - to_dense(jreference)) <= 1e-12
+end
+
+@graft_extended_testset _p0p1_explicit(:m5) "P0/P1: planned exact TTNO application" begin
     topo, S, O, ψ, _ = _p0p1_sandwich_fixture(MersenneTwister(20260721))
     root = topo.root
     child = only(topo.children[root])
@@ -755,7 +867,53 @@ end
 end # :m5 target
 
 if _p0p1_enabled(:m6)
-@graft_testset "P0/P1: planned contraction workspaces" begin
+@graft_testset "P0/P1: default workspace ownership contracts" begin
+    rng = MersenneTwister(2026072501)
+    V = ℂ^2 ← ℂ^2
+    spec = _P0P1Planning.ContractionSpec(
+        Vector{Int}[[-1, 1], [1, 2], [2, 3], [3, 4], [4, -2]],
+        falses(5), 2, (1, 1), 1; preferred_slots=[2, 3, 4, 5],
+    )
+    operands = ntuple(_ -> randn(rng, ComplexF64, V), 5)
+    plan = _P0P1Planning.plan_contraction(
+        spec, operands; optimize=false, scalar_type=ComplexF64,
+    )
+    workspace = _P0P1Planning.PlanWorkspace(plan)
+    got = _P0P1Planning.execute(plan, operands; workspace)
+    _p0p1_fit_maps_match(got, _P0P1Planning.ncon_reference(spec, operands))
+
+    # An in-place destination may never alias a source TensorMap.
+    step = plan.steps[1]
+    pA = (step.oindA, step.cindA)
+    pB = (step.cindB, step.oindB)
+    @test_throws ArgumentError _P0P1Planning._workspace_contract!(
+        workspace, operands[step.a], operands[step.a], pA, step.conjA,
+        operands[step.b], pB, step.conjB, step.out,
+    )
+
+    # Mutable buffers bind to the first calling task and must reject reuse by
+    # another task rather than racing on shared scratch storage.
+    topo, _, O, ket, _ = _p0p1_sandwich_fixture(MersenneTwister(2026072601))
+    root = topo.root
+    cache = EnvCache(topo)
+    move_center!(ket, root; cache)
+    h1 = eff_h1(cache, ket, O, root)
+    wrapped = _P0P1Planning.workspace_map(h1)
+    x = ket.tensors[root]
+    _p0p1_fit_maps_match(wrapped(x), h1(x))
+    @test _P0P1Planning.workspace_stats(wrapped.workspace).owner_bound
+    cross_task_error = fetch(@async begin
+        try
+            wrapped(x)
+            nothing
+        catch err
+            err
+        end
+    end)
+    @test cross_task_error isa ArgumentError
+end
+
+@graft_extended_testset _p0p1_explicit(:m6) "P0/P1: planned contraction workspaces" begin
     rng = MersenneTwister(20260725)
     V = ℂ^2 ← ℂ^2
     # The env-first fold has three internal outputs. Its first and third

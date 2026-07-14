@@ -164,15 +164,6 @@ end
         mode=:truncate,
     )
 
-    Ostar = _redundant_star_ttno()
-    reference_star = to_dense(Ostar)
-    report_star = compress!(Ostar; compression_atol=1e-12)
-    @test length(report_star.edges) == 2
-    @test Set(edge.child for edge in report_star.edges) == Set([:b1_1, :b2_1])
-    @test all(!isempty(edge.sectors) for edge in report_star.edges)
-    @test check_arrows(Ostar)
-    @test norm(to_dense(Ostar) - reference_star) < 1e-10
-
     Ophysless = _redundant_physless_ttno()
     reference_physless = to_dense(Ophysless)
     report_physless = compress!(Ophysless; compression_atol=1e-12)
@@ -192,14 +183,25 @@ end
               only(report_u1.edges).sectors)
     @test dim(virtualspace(Ou1, child_u1)) <= report_u1.total_before_dimension
 
-    Of = _redundant_fz2_ttno()
-    reference_f = to_dense(Of)
-    report_f = compress!(Of; compression_atol=1e-12)
-    @test check_arrows(Of)
-    @test norm(to_dense(Of) - reference_f) < 1e-10
-    @test all(s -> s.sector isa FermionParity, only(report_f.edges).sectors)
-    @test all(s -> s.after_svd_dimension <= s.before_dimension,
-              only(report_f.edges).sectors)
+    if GRAFT_EXTENDED_TESTS
+        Ostar = _redundant_star_ttno()
+        reference_star = to_dense(Ostar)
+        report_star = compress!(Ostar; compression_atol=1e-12)
+        @test length(report_star.edges) == 2
+        @test Set(edge.child for edge in report_star.edges) == Set([:b1_1, :b2_1])
+        @test all(!isempty(edge.sectors) for edge in report_star.edges)
+        @test check_arrows(Ostar)
+        @test norm(to_dense(Ostar) - reference_star) < 1e-10
+
+        Of = _redundant_fz2_ttno()
+        reference_f = to_dense(Of)
+        report_f = compress!(Of; compression_atol=1e-12)
+        @test check_arrows(Of)
+        @test norm(to_dense(Of) - reference_f) < 1e-10
+        @test all(s -> s.sector isa FermionParity, only(report_f.edges).sectors)
+        @test all(s -> s.after_svd_dimension <= s.before_dimension,
+                  only(report_f.edges).sectors)
+    end
 
     Odual = _dual_virtual_fz2_ttno()
     @test _requires_pivotal_link(Odual)
