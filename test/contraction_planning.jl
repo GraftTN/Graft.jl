@@ -171,8 +171,8 @@ function _exercise_effective_maps!(ψ, O)
 end
 
 @graft_testset "compiled contraction plans: A/B effective maps" begin
-    for topo in (mps_topology(4), star_topology(2, 1), binary_topology(2),
-                 fork_topology(2, 1))
+    # MPS and star coverage is delegated to their dedicated regression stages below.
+    for topo in (binary_topology(2), fork_topology(2, 1))
         phys = allspin(topo)
         O = ttno_from_opsum(tfi(topo; g=0.41), topo, phys; hermitian=true)
         ψ = random_ttns(MersenneTwister(1300 + nnodes(topo)), ComplexF64,

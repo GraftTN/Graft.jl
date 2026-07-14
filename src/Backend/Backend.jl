@@ -39,7 +39,7 @@ export ℂ, ComplexSpace, GradedSpace, ElementarySpace, ProductSpace, Vect,
 # tensors
 export AbstractTensorMap, TensorMap, DiagonalTensorMap, id, isometry, unitary,
     permute, repartition, flip, twist, twist!, catdomain, catcodomain, numind, numout, numin,
-    codomain, domain, blocks, block, norm, dot, tr, scalartype
+    codomain, domain, blocks, block, norm, dot, tr, scalartype, Rsymbol
 # factorizations (MatrixAlgebraKit style)
 export left_orth, right_orth, left_null, qr_compact, svd_compact, svd_trunc,
     svd_vals, truncrank, trunctol, truncerror, notrunc

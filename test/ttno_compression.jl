@@ -92,6 +92,35 @@ function _requires_pivotal_link(O)
     return isdual(codomain(link)[1]) != isdual(domain(link)[1])
 end
 
+function _copy_ttno(O::TTNO)
+    return TTNO(topology(O), copy.(O.tensors); ishermitian=O.ishermitian)
+end
+
+function _fz2_product_basis(topo, phys)
+    labels = [(FermionParity(left), FermionParity(right))
+              for left in 0:1 for right in 0:1]
+    return [(label, product_ttns(
+                ComplexF64, topo, phys,
+                Dict(:site1 => label[1], :site2 => label[2]),
+            )) for label in labels]
+end
+
+function _fz2_action_matrix(O::TTNO, basis)
+    D = length(basis)
+    values = zeros(ComplexF64, D, D)
+    root = topology(O).root
+    for (column, (_, input_state)) in enumerate(basis)
+        output = apply(O, input_state)
+        output_root = domain(output.tensors[root])[1]
+        for (row, (_, output_state)) in enumerate(basis)
+            domain(output_state.tensors[root])[1] == output_root || continue
+            values[row, column] = inner(output_state, output)
+        end
+    end
+    return values
+end
+
+
 @graft_testset "TTNO sector-aware compression" begin
     factor_ops = spin_ops()
     U, S, Vᴴ = Graft.Backend.split_svd(factor_ops.X, TruncationScheme())
@@ -164,24 +193,46 @@ end
     @test dim(virtualspace(Ou1, child_u1)) <= report_u1.total_before_dimension
 
     Of = _redundant_fz2_ttno()
-    reference_f = @test_logs (:warn, r"FermionParity Arrays") to_dense(Of)
+    reference_f = to_dense(Of)
     report_f = compress!(Of; compression_atol=1e-12)
     @test check_arrows(Of)
-    @test_logs (:warn, r"FermionParity Arrays") begin
-        @test norm(to_dense(Of) - reference_f) < 1e-10
-    end
+    @test norm(to_dense(Of) - reference_f) < 1e-10
     @test all(s -> s.sector isa FermionParity, only(report_f.edges).sectors)
     @test all(s -> s.after_svd_dimension <= s.before_dimension,
               only(report_f.edges).sectors)
 
     Odual = _dual_virtual_fz2_ttno()
     @test _requires_pivotal_link(Odual)
-    reference_dual = @test_logs (:warn, r"FermionParity Arrays") to_dense(Odual)
+    dual_topology = topology(Odual)
+    dual_phys = Dict(:site1 => fermion_ops_z2().P, :site2 => fermion_ops_z2().P)
+    dual_basis = _fz2_product_basis(dual_topology, dual_phys)
+    reference_dual_action = _fz2_action_matrix(Odual, dual_basis)
+
+    if GRAFT_EXTENDED_TESTS
+        dual_child = only(dual_topology.children[dual_topology.root])
+
+        # Each exact-rank stage must preserve the operator action, not merely a
+        # raw TTNO contraction. The dual edge forces the factor codomain/domain
+        # orientations to differ and therefore catches an extra pivotal twist.
+        Odual_deparallel = _copy_ttno(Odual)
+        Graft.Networks._deparallelize_edge!(Odual_deparallel, dual_child, 1e-12)
+        @test _fz2_action_matrix(Odual_deparallel, dual_basis) ≈ reference_dual_action atol=1e-12
+
+        Odual_qr = _copy_ttno(Odual)
+        Graft.Networks._deparallelize_edge!(Odual_qr, dual_child, 1e-12)
+        Graft.Networks._qr_canonicalize_edge!(Odual_qr, dual_child)
+        @test _fz2_action_matrix(Odual_qr, dual_basis) ≈ reference_dual_action atol=1e-12
+
+        Odual_svd = _copy_ttno(Odual)
+        Graft.Networks._deparallelize_edge!(Odual_svd, dual_child, 1e-12)
+        Graft.Networks._qr_canonicalize_edge!(Odual_svd, dual_child)
+        Graft.Networks._svd_compress_edge!(Odual_svd, dual_child, TruncationScheme())
+        @test _fz2_action_matrix(Odual_svd, dual_basis) ≈ reference_dual_action atol=1e-12
+    end
+
     report_dual = compress!(Odual; compression_atol=1e-12)
     @test check_arrows(Odual)
-    @test_logs (:warn, r"FermionParity Arrays") begin
-        @test norm(to_dense(Odual) - reference_dual) < 1e-10
-    end
+    @test _fz2_action_matrix(Odual, dual_basis) ≈ reference_dual_action atol=1e-12
     @test all(s -> s.sector isa FermionParity, only(report_dual.edges).sectors)
 
     topo_su2 = mps_topology(1)

@@ -16,9 +16,11 @@ using LinearAlgebra: LinearAlgebra, eigen, Hermitian, eigvals, tr
 using ..Backend
 using ..Trees
 using ..Networks
+using ..Contractions: inner
 using ..Symbolic
 
-export random_ttns, product_ttns, canonicalize!, to_dense, dense_hamiltonian,
+export random_ttns, product_ttns, canonicalize!, to_dense,
+    categorical_coordinates, dense_hamiltonian,
     exact_groundstate, exact_evolve, physical_sites,
     exact_thermal_Z, exact_thermal_logZ, exact_thermal_expect,
     exact_thermal_correlator, pad_bonds!
@@ -243,12 +245,8 @@ function to_dense(ψ::TTNS)
     return vec(convert(Array, res))
 end
 
-"""
-    to_dense(O::TTNO) -> Matrix
-
-Dense matrix of a TTNO (small trees only), same site ordering as `to_dense(ψ)`.
-"""
-function to_dense(O::TTNO)
+"""Direct ungraded TTNO contraction used by [`to_dense`](@ref)."""
+function _to_dense_direct(O::TTNO)
     t = O.topo
     sites = physical_sites(O)
     outlabel = Dict(n => -i for (i, n) in enumerate(sites))
@@ -280,6 +278,122 @@ function to_dense(O::TTNO)
     arr = convert(Array, res)
     d = Int(sqrt(length(arr)))
     return reshape(arr, d, d)
+end
+
+"""Local `(sector, degeneracy-index)` basis of an abelian physical space."""
+function _graded_local_basis(P::ElementarySpace)
+    Q = sectortype(P)
+    all(q -> dim(Vect[Q](q => 1)) == 1, sectors(P)) || throw(ArgumentError(
+        "graded categorical dense extraction supports only abelian one-dimensional sectors",
+    ))
+    return [(q, index) for q in sectors(P) for index in 1:dim(P, q)]
+end
+
+"""Physical-space dictionary in the network's internal site order."""
+function _graded_physical_spaces(network::Union{TTNS{S},TTNO{S}}) where {S<:ElementarySpace}
+    return Dict{Symbol,S}(
+        nodeid(network.topo, node) =>
+            space(network.tensors[node], physleg(network, node))
+        for node in physical_sites(network)
+    )
+end
+
+"""Exact product-sector basis shared by graded state and operator oracles."""
+function _graded_product_states(network::Union{TTNS,TTNO}, ::Type{T}) where {T<:Number}
+    t = network.topo
+    nodes = physical_sites(network)
+    phys = _graded_physical_spaces(network)
+    options = [_graded_local_basis(phys[nodeid(t, node)]) for node in nodes]
+    all(!isempty, options) || throw(ArgumentError(
+        "graded categorical dense extraction requires nonempty physical spaces",
+    ))
+    expected_dimension = prod(length, options)
+    expected_dimension > 0 || throw(ArgumentError(
+        "graded categorical dense extraction requires a physical basis",
+    ))
+    states = map(collect(Iterators.product(options...))) do choices
+        basis = Dict{Symbol,Any}(
+            nodeid(t, node) => (choices[index][1] => choices[index][2])
+            for (index, node) in enumerate(nodes)
+        )
+        return product_ttns(T, t, phys, basis)
+    end
+    length(states) == expected_dimension || throw(ArgumentError(
+        "graded product-state enumeration does not span the physical basis",
+    ))
+    return states
+end
+
+"""
+    categorical_coordinates(ψ::TTNS) -> Vector
+
+Coordinates of a small state in the exact product-sector basis used by the
+graded [`to_dense(::TTNO)`](@ref) action oracle. Unlike the raw tensor-array
+contraction in `to_dense(ψ)`, these coordinates retain fermionic braiding and
+virtual pivotal orientation. Complex-space states use the ordinary dense
+coordinates. Multi-channel/non-abelian fusion is rejected explicitly.
+"""
+function categorical_coordinates(ψ::TTNS)
+    spacetype(ψ) === ComplexSpace && return to_dense(ψ)
+    T = promote_type(eltype(ψ), ComplexF64)
+    states = _graded_product_states(ψ, T)
+    result = zeros(T, length(states))
+    root = ψ.topo.root
+    state_root = domain(ψ.tensors[root])[1]
+    for (row, bra) in enumerate(states)
+        domain(bra.tensors[root])[1] == state_root || continue
+        result[row] = T(inner(bra, ψ))
+    end
+    return result
+end
+
+"""
+    _to_dense_graded_action(O::TTNO) -> Matrix
+
+Build a small abelian graded TTNO's matrix from its exact action on the product
+sector basis.  Opening both operator physical legs in a raw `ncon` contraction
+does not retain the categorical leg ordering needed for fermionic exchange;
+the action path already does.  This is deliberately an ED/test oracle, never a
+production lowering or compression path.
+"""
+function _to_dense_graded_action(O::TTNO)
+    t = O.topo
+    T = promote_type(eltype(O), ComplexF64)
+    states = _graded_product_states(O, T)
+    D = length(states)
+
+    # `to_dense(ψ)` is a raw small-network contraction and can carry a
+    # representation-dependent graded phase after a virtual leg is flipped.
+    # Matrix elements against the same product-state basis are instead the
+    # categorical action invariant. A neutral TTNO cannot connect distinct
+    # root sectors, so those entries are exactly zero without attempting an
+    # invalid inner product between incompatible charge spaces.
+    result = zeros(T, D, D)
+    root = t.root
+    for (column, input) in enumerate(states)
+        output = apply(O, input)
+        output_root = domain(output.tensors[root])[1]
+        for (row, bra) in enumerate(states)
+            domain(bra.tensors[root])[1] == output_root || continue
+            result[row, column] = T(inner(bra, output))
+        end
+    end
+    return result
+end
+
+"""
+    to_dense(O::TTNO) -> Matrix
+
+Dense matrix of a TTNO (small trees only), in the same physical-site ordering
+as `to_dense(ψ)`. Complex-space TTNOs use the direct network contraction;
+abelian graded TTNOs use exact action matrix elements on the product-sector
+basis so fermionic braiding and virtual pivotal orientation are retained.
+Multi-channel/non-abelian fusion is rejected by the existing `product_ttns`
+basis constructor rather than approximated densely.
+"""
+function to_dense(O::TTNO)
+    spacetype(O) === ComplexSpace && return _to_dense_direct(O)
+    return _to_dense_graded_action(O)
 end
 
 """

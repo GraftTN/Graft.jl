@@ -56,8 +56,11 @@ Base.hash(a::SiteOp, h::UInt) =
 """
     Term(coeff, ops)
 
-`coeff * ⊗_i ops[i]`, identity-padded on all unlisted sites. Factors must act
-on distinct sites (products on the same site should be pre-multiplied). If any
+`coeff * ⊗_i ops[i]`, identity-padded on all unlisted sites. This is a
+site-labelled tensor product: the vector is construction storage, not a
+sequential product, so permuting factors with the same distinct
+site-to-operator assignment leaves the term unchanged. Factors must act on
+distinct sites (products on the same site should be pre-multiplied). If any
 factor is charged, the fused total charge must be trivial; TTNO root caps stay
 neutral.
 """

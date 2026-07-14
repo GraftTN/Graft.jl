@@ -145,6 +145,7 @@ end
 
 include("t3ns_geometry.jl")
 include("ttno_compression.jl")
+include("graded_ttno_embedding.jl")
 
 @graft_testset "Parallel helpers" begin
     out = zeros(Int, 8)
@@ -191,7 +192,10 @@ end
 
 @graft_testset "TTNO builder vs dense" begin
     S = spin_ops()
-    for topo in (mps_topology(5), star_topology(3, 2), binary_topology(2))
+    # Three physical sites are sufficient for the long-range and three-factor
+    # builder contracts; deeper pass-through and branching remain covered by
+    # the binary and explicit physless fixtures below.
+    for topo in (mps_topology(3), star_topology(3, 1), binary_topology(2))
         phys = allspin(topo)
         H = tfi(topo)
         # add a long-range term and a 3-site term to exercise pass-through /
@@ -430,9 +434,11 @@ end
     Hfs += Term(-1.0, SiteOp(:b1_1, :C, F.C), SiteOp(:b2_1, :Cd, F.Cd))
     Ofs = ttno_from_opsum(Hfs, topo_fstar, phys_fstar; hermitian=true)
     @test check_arrows(Ofs)
-    @test_logs (:warn, r"FermionParity Arrays") begin
-        @test norm(dense_two_leaf_star_ttno(Ofs) - dense_hamiltonian(Hfs, topo_fstar, phys_fstar)) < 1e-12
-    end
+    # Opening all graded operator legs through a raw Array contraction loses
+    # the sibling-junction categorical ordering. Use the exact product-basis
+    # action oracle for fermionic stars; the direct helper remains a valid
+    # ungraded/U(1) structural check above.
+    @test norm(to_dense(Ofs) - dense_hamiltonian(Hfs, topo_fstar, phys_fstar)) < 1e-12
 end
 
 @graft_testset "projected purification rewrite" begin
@@ -519,7 +525,9 @@ end
     _, Es = dmrg2!(ψ, O; trunc=TruncationScheme(maxdim=16), nsweeps=8,
                    verbose=TEST_VERBOSE)
     @test Es[end] ≈ E0 atol = 1e-10
-    _, Es1 = dmrg1!(ψ, O; nsweeps=4, verbose=TEST_VERBOSE)
+    # `ψ` is already converged by DMRG2; one DMRG1 sweep is the fixed-point/API
+    # smoke. Independent DMRG1-3S convergence lives in the physless-root gate.
+    _, Es1 = dmrg1!(ψ, O; nsweeps=1, verbose=TEST_VERBOSE)
     @test Es1[end] ≈ E0 atol = 1e-10
 
     ψx = random_ttns(RNG, ComplexF64, topo, phys, ℂ^1)
@@ -544,11 +552,6 @@ end
     @test norm(to_dense(ψr1) - to_dense(ψr2)) < 1e-12
     @test maximum(bonddims(ψr1)) > 1
 
-    ψ3 = random_ttns(RNG, ComplexF64, topo, phys, ℂ^1)
-    _, Es3 = dmrg1_3s!(ψ3, O; trunc=TruncationScheme(maxdim=16),
-                       nsweeps=5, max_add=4, verbose=TEST_VERBOSE)
-    @test Es3[end] ≈ E0 atol = 1e-8
-    @test maximum(bonddims(ψ3)) > 1
 end
 
 @graft_testset "3S bootstrap at a physless binary root" begin

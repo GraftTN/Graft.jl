@@ -1,5 +1,18 @@
 using Printf
 
+function _graft_boolean_env(name::String, default::Bool)
+    raw = lowercase(strip(get(ENV, name, string(default))))
+    raw in ("1", "true", "yes", "on") && return true
+    raw in ("0", "false", "no", "off") && return false
+    throw(ArgumentError(
+        "$name must be one of 1/true/yes/on or 0/false/no/off, got $(repr(raw))",
+    ))
+end
+
+# Expensive diagnostic prefixes and stress permutations are opt-in; the
+# default tier retains public action/ED/topology/interface contracts.
+const GRAFT_EXTENDED_TESTS = _graft_boolean_env("GRAFT_EXTENDED_TESTS", false)
+
 function _graft_positive_env_int(name::String, default::Int)
     raw = get(ENV, name, string(default))
     value = tryparse(Int, raw)
@@ -14,6 +27,7 @@ GRAFT_TEST_SHARD_INDEX <= GRAFT_TEST_SHARD_COUNT || throw(ArgumentError(
     "GRAFT_TEST_SHARD_INDEX ($GRAFT_TEST_SHARD_INDEX) must not exceed " *
     "GRAFT_TEST_SHARD_COUNT ($GRAFT_TEST_SHARD_COUNT)"))
 println("[shard] index=$GRAFT_TEST_SHARD_INDEX count=$GRAFT_TEST_SHARD_COUNT")
+println("[tier] extended=$GRAFT_EXTENDED_TESTS")
 
 const _GRAFT_TEST_STAGE_ORDINAL = Ref(0)
 const _GRAFT_TEST_STARTED = time_ns()

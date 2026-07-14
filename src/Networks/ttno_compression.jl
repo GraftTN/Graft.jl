@@ -106,9 +106,11 @@ function _absorb_compression_factor!(O::TTNO, child::Int, factor::AbstractTensor
     parent = t.parent[child]
     parent == 0 && throw(ArgumentError("root has no compression parent edge"))
     slot = childslot(t, parent, child)
-    # Preserve TensorKit's graded pivotal convention when a factorisation
-    # changes the dual orientation of the virtual link.
-    O.tensors[parent] = absorb_on_leg(O.tensors[parent], _pivotal_link(factor), slot)
+    # `absorb_on_leg` performs the required transpose while reconnecting the
+    # TTNO virtual edge.  Unlike a TTNS gauge move, a factorization link here
+    # is already oriented as the operator-edge reconstruction factor; applying
+    # `_pivotal_link` a second time would insert a physical fZ2 parity phase.
+    O.tensors[parent] = absorb_on_leg(O.tensors[parent], factor, slot)
     return O
 end
 

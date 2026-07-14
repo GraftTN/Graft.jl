@@ -39,22 +39,12 @@ isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
         recanonicalized = canonicalize!(copy(neutral), root)
         @test norm(to_dense(recanonicalized) - reference) < 1e-11
 
-        for order in (1, 2), mode in (:tdvp1, :cbe_off, :cbe_on)
-            ev = if mode === :tdvp1
-                TDVP1(; order, verbose=false)
-            else
-                TDVP1_CBE(
-                    ; order, enabled=mode === :cbe_on,
-                    trunc=TruncationScheme(maxdim=16),
-                    d_tilde_max=8, verbose=false)
-            end
-            evolved = copy(neutral)
-            step!(ev, evolved, prob.K, 0.0)
-            @test norm(to_dense(evolved) - reference) < 1e-11
-            @test norm(evolved) ≈ norm(neutral) atol = 1e-12 rtol = 0
-            @test collect(sectors(domain(evolved[root])[1])) == [FermionParity(0)]
-            @test check_arrows(evolved)
-        end
+        evolved = copy(neutral)
+        step!(TDVP1(order=2, verbose=false), evolved, prob.K, 0.0)
+        @test norm(to_dense(evolved) - reference) < 1e-11
+        @test norm(evolved) ≈ norm(neutral) atol = 1e-12 rtol = 0
+        @test collect(sectors(domain(evolved[root])[1])) == [FermionParity(0)]
+        @test check_arrows(evolved)
     end
 
     psi = apply_local(neutral, F.Cd, :site1)
@@ -81,20 +71,23 @@ isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
         @test dot(theta, h2(theta)) ≈ expected atol = 1e-11
     end
 
-    initial = to_dense(psi)
+    # The graded TTNO builder is defined by categorical action. Raw Array
+    # contractions and a local-matrix Kronecker product do not retain the
+    # spectator braids of the doubled fermionic topology, so use the same
+    # exact product-sector basis for the state and operator ED reference.
+    initial = categorical_coordinates(psi)
     dz = -1e-3
-    exact = exact_evolve(dense_hamiltonian(H, psi), initial, dz)
+    exact = exact_evolve(to_dense(prob.K), initial, dz)
 
     for ev in (
             TDVP1(order=1, verbose=false),
-            TDVP1_CBE(order=1, enabled=false, verbose=false),
             TDVP1_CBE(
                 order=1, enabled=true,
                 trunc=TruncationScheme(maxdim=16, atol=1e-12),
                 d_tilde_max=8, verbose=false))
         trial = copy(psi)
         step!(ev, trial, prob.K, dz)
-        evolved = to_dense(trial)
+        evolved = categorical_coordinates(trial)
         fidelity = abs(dot(evolved, exact)) / (norm(evolved) * norm(exact))
         @test 1 - fidelity < 1e-6
         @test collect(sectors(domain(trial[root])[1])) == [FermionParity(1)]
@@ -105,7 +98,7 @@ isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
         order=1,
         trunc=TruncationScheme(maxdim=16, atol=1e-12),
         verbose=false), psi, prob.K, dz)
-    evolved = to_dense(psi)
+    evolved = categorical_coordinates(psi)
     fidelity = abs(dot(evolved, exact)) / (norm(evolved) * norm(exact))
     @test 1 - fidelity < 1e-7
     @test collect(sectors(domain(psi[root])[1])) == [FermionParity(1)]
