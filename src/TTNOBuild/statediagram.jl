@@ -202,6 +202,386 @@ function _canonical_crossing_frame(t::TreeTopology, phys,
     return _crossing_frame(entries, unit)
 end
 
+# SD0 braid certificate
+# ---------------------
+# These events keep the native tree morphisms and the global word correction
+# as separate, uniquely-owned pieces of one term plan.  They are scalar/
+# abelian today, but their ownership and ordering survive a later route-aware
+# non-abelian lowering.
+abstract type _BraidedTermEvent end
+
+"One adjacent native-to-canonical wire swap, owned by the pair's tree LCA."
+struct _WireCrossingEvent{Q,S<:Number} <: _BraidedTermEvent
+    lhs::Int
+    rhs::Int
+    owner::Int
+    lhs_charge::Q
+    rhs_charge::Q
+    fused_charge::Q
+    scalar::S
+end
+
+"Native bend of a charged local factor past earlier sibling restrictions."
+struct _LocalFactorBendEvent{Q} <: _BraidedTermEvent
+    node::Int
+    crossing_charge::Q
+end
+
+"Pivotal bend where a charged local factor closes a multi-branch term."
+struct _LocalCompletionBendEvent{Q,S<:Number} <: _BraidedTermEvent
+    node::Int
+    charge::Q
+    scalar::S
+end
+
+"Native bend of fused child charge past a neutral local physical input."
+struct _PhysicalInputBendEvent{Q} <: _BraidedTermEvent
+    node::Int
+    crossing_charge::Q
+end
+
+"Canonical/native physical-input frame crossing at one physical node."
+struct _PhysicalInputFrameEvent{Q} <: _BraidedTermEvent
+    node::Int
+    crossing_charge::Q
+end
+
+"CG-009 charge-leg exit braid and its orientation normalization."
+struct _ChargeLegExitEvent{Q,S<:Number} <: _BraidedTermEvent
+    node::Int
+    crossing_charge::Q
+    orientation_scalar::S
+end
+
+"All native morphism payloads and certificate swaps consumed at one node."
+struct _LocalMorphismPlan{Q,S<:Number,
+                          B<:_LocalCompletionBendEvent{Q},
+                          E<:_ChargeLegExitEvent{Q}}
+    node::Int
+    factor_bend::_LocalFactorBendEvent{Q}
+    completion_bend::B
+    physical_bend::_PhysicalInputBendEvent{Q}
+    input_frame::_PhysicalInputFrameEvent{Q}
+    charge_exit::E
+    wire_crossings::Vector{_WireCrossingEvent{Q}}
+    word_scale::S
+end
+
+"Internal per-term SD0 certificate; factor identities are canonical node ids."
+struct _BraidedTermPlan{Q,F<:_CrossingFrame,C<:Number,L<:Number}
+    canonical_word::Vector{Int}
+    native_word::Vector{Int}
+    factor_class::Dict{Int,Int}
+    crossings::Vector{_WireCrossingEvent{Q}}
+    local_plans::Vector{_LocalMorphismPlan{Q}}
+    restriction_charge::Vector{Q}
+    frame::F
+    uses_certificate::Bool
+    certificate_scale::C
+    legacy_scale::L
+end
+
+function _term_lca(t::TreeTopology, lhs::Int, rhs::Int)
+    ancestors = Set{Int}()
+    node = lhs
+    while node != 0
+        push!(ancestors, node)
+        node = t.parent[node]
+    end
+    node = rhs
+    while !(node in ancestors)
+        node = t.parent[node]
+    end
+    return node
+end
+
+"Legacy multi-child scalar, retained only for parity-only fallback/shadowing."
+function _legacy_canonical_junction_braid(t::TreeTopology,
+                                           ops::Dict{Int,SiteOp},
+                                           opnodes::Vector{Int}, unit_sector,
+                                           coefficient, n::Int)
+    phase = one(coefficient)
+    child_wires = [
+        [x for x in opnodes if begin
+            child_node = x
+            while child_node != 0 && child_node != child
+                child_node = t.parent[child_node]
+            end
+            child_node == child
+        end]
+        for child in t.children[n]
+    ]
+    count(!isempty, child_wires) >= 2 || return phase
+    if haskey(ops, n)
+        localq = charge(ops[n])
+        if localq != unit_sector
+            local_twist = twist(localq)
+            local_twist isa Number || throw(ArgumentError(
+                "graded TTNO local junction twists require scalar abelian data; got $(typeof(local_twist))",
+            ))
+            phase *= local_twist
+        end
+    end
+    wires = reduce(vcat, child_wires; init=Int[])
+    for i in 1:(length(wires) - 1), j in (i + 1):length(wires)
+        x, y = wires[i], wires[j]
+        x > y || continue
+        qx, qy = charge(ops[x]), charge(ops[y])
+        (qx == unit_sector || qy == unit_sector) && continue
+        qxy = _fuse_charge(qx, qy)
+        r = Rsymbol(qx, qy, qxy)
+        r isa Number || throw(ArgumentError(
+            "graded TTNO canonical junction braids require scalar abelian R-symbols; got $(typeof(r))",
+        ))
+        phase *= r
+    end
+    return phase
+end
+
+function _braid_certificate_debug_enabled()
+    value = lowercase(strip(get(ENV, "GRAFT_DEBUG_BRAID_CERTIFICATE", "false")))
+    return value in ("1", "true", "yes", "on")
+end
+
+function _build_braided_term_plan(t::TreeTopology, E::_Euler, phys,
+                                  ops::Dict{Int,SiteOp}, opnodes::Vector{Int},
+                                  unit_sector, coefficient)
+    canonical_nodes, native_nodes = _physical_node_orders(t, phys)
+    canonical_rank = Dict(node => rank for (rank, node) in enumerate(canonical_nodes))
+    native_rank = Dict(node => rank for (rank, node) in enumerate(native_nodes))
+
+    factor_class = Dict{Int,Int}()
+    odd_count = 0
+    unclassifiable_odd = Int[]
+    certificate_ready = true
+    for node in opnodes
+        q = charge(ops[node])
+        net = _net_u1_charge(q)
+        odd = _has_fermionic_crossing(q, unit_sector)
+        odd_count += odd
+
+        # U(1) orientation is authoritative when present.  A parity-only odd
+        # factor is still structurally classifiable when all of its nonzero
+        # tensor blocks act from one input-twist eigensector: under the same
+        # standard-orientation convention as the CG-009 exit scalar, λ=+1 is
+        # creation and λ=-1 is annihilation.  Even factors need no orientation
+        # because they live in the neutral word class.
+        class = if net !== nothing && !iszero(net)
+            sign(net)
+        elseif odd
+            _input_twist_parity(ops[node].op, q)
+        else
+            0
+        end
+        if class === nothing
+            certificate_ready = false
+            push!(unclassifiable_odd, node)
+        else
+            factor_class[node] = class
+        end
+    end
+    if odd_count >= 4 && !isempty(unclassifiable_odd)
+        sites = join((string(nodeid(t, node)) for node in unclassifiable_odd), ", ")
+        throw(ArgumentError(
+            "graded TTNO terms with four or more fermionic-odd factors require " *
+            "every odd factor to have either a nonzero net U(1) charge or one " *
+            "structural input-twist parity; factors on $sites have neither, " *
+            "and the class-normal braid word cannot be inferred from labels",
+        ))
+    end
+
+    canonical_word = Int[]
+    native_word = Int[]
+    if certificate_ready
+        canonical_word = sort(copy(opnodes); by=node -> begin
+            class = factor_class[node]
+            (class > 0 ? 0 : class < 0 ? 1 : 2, canonical_rank[node])
+        end)
+
+        # Charged fusion trace: planar child traces, then the charged local
+        # factor.  This is the tree's actual abelian fusion order.
+        fusion_trace = Int[]
+        function trace!(node::Int)
+            for child in t.children[node]
+                trace!(child)
+            end
+            haskey(ops, node) && charge(ops[node]) != unit_sector &&
+                push!(fusion_trace, node)
+            return nothing
+        end
+        trace!(t.root)
+        positives = [node for node in fusion_trace if factor_class[node] > 0]
+        negatives = [node for node in fusion_trace if factor_class[node] < 0]
+        neutrals = sort(
+            [node for node in opnodes if iszero(factor_class[node])];
+            by=node -> native_rank[node],
+        )
+        native_word = [reverse(positives); negatives; neutrals]
+    end
+
+    Q = typeof(unit_sector)
+    restriction_charge = Vector{Q}(undef, nnodes(t))
+    for node in 1:nnodes(t)
+        restriction_charge[node] = _fuse_charges(
+            (charge(ops[x]) for x in opnodes if _insub(E, x, node)),
+            unit_sector,
+        )
+    end
+    frame = _canonical_crossing_frame(t, phys, ops, unit_sector)
+
+    # Stable adjacent swaps lower the native word to the canonical word.  The
+    # R-symbol orientation follows the current adjacent pair before it swaps.
+    crossings = _WireCrossingEvent{Q}[]
+    by_owner = [_WireCrossingEvent{Q}[] for _ in 1:nnodes(t)]
+    certificate_scale = one(coefficient)
+    if certificate_ready
+        work = copy(native_word)
+        for (target_position, target) in enumerate(canonical_word)
+            current_position = findfirst(==(target), work)
+            current_position === nothing && throw(ArgumentError(
+                "native TTNO braid word omits physical node $(nodeid(t, target))",
+            ))
+            while current_position > target_position
+                lhs = work[current_position - 1]
+                rhs = work[current_position]
+                qlhs, qrhs = charge(ops[lhs]), charge(ops[rhs])
+                fused = _fuse_charge(qlhs, qrhs)
+                scalar = Rsymbol(qlhs, qrhs, fused)
+                scalar isa Number || throw(ArgumentError(
+                    "graded TTNO braid certificates require scalar abelian R-symbols; got $(typeof(scalar))",
+                ))
+                owner = _term_lca(t, lhs, rhs)
+                event = _WireCrossingEvent(
+                    lhs, rhs, owner, qlhs, qrhs, fused, scalar,
+                )
+                push!(crossings, event)
+                push!(by_owner[owner], event)
+                certificate_scale *= scalar
+                work[current_position - 1], work[current_position] =
+                    work[current_position], work[current_position - 1]
+                current_position -= 1
+            end
+        end
+        work == canonical_word || throw(ArgumentError(
+            "native-to-canonical TTNO braid decomposition did not close",
+        ))
+        length(Set((event.lhs, event.rhs) for event in crossings)) ==
+            length(crossings) || throw(ArgumentError(
+                "TTNO braid certificate assigns one wire pair more than once",
+            ))
+        all(event.owner == _term_lca(t, event.lhs, event.rhs) for event in crossings) ||
+            throw(ArgumentError("TTNO braid certificate has a non-LCA crossing owner"))
+    end
+
+    legacy_by_node = [
+        _legacy_canonical_junction_braid(
+            t, ops, opnodes, unit_sector, coefficient, node,
+        ) for node in 1:nnodes(t)
+    ]
+    legacy_scale = prod(legacy_by_node; init=one(coefficient))
+    support_lca = foldl((lhs, rhs) -> _term_lca(t, lhs, rhs), opnodes)
+
+    local_plans = _LocalMorphismPlan{Q}[]
+    for node in 1:nnodes(t)
+        factor_cross = unit_sector
+        if haskey(ops, node)
+            child = node
+            while t.parent[child] != 0
+                parent = t.parent[child]
+                for sibling in t.children[parent]
+                    sibling == child && break
+                    factor_cross = _fuse_charge(
+                        factor_cross, restriction_charge[sibling],
+                    )
+                end
+                child = parent
+            end
+        end
+
+        localq = haskey(ops, node) ? charge(ops[node]) : unit_sector
+        completion_bend_scale = one(coefficient)
+        if certificate_ready && node == support_lca && localq != unit_sector
+            occupied_children = count(t.children[node]) do child
+                any(factor -> _insub(E, factor, child), opnodes)
+            end
+            if occupied_children >= 2
+                completion_bend_scale = twist(localq)
+                completion_bend_scale isa Number || throw(ArgumentError(
+                    "graded TTNO local completion bends require scalar " *
+                    "abelian twists; got $(typeof(completion_bend_scale))",
+                ))
+                certificate_scale *= completion_bend_scale
+            end
+        end
+        physical_cross = localq == unit_sector ? _fuse_charges(
+            (restriction_charge[child] for child in t.children[node]),
+            unit_sector,
+        ) : unit_sector
+        frame_cross = _frame_at(frame, node, unit_sector)
+
+        exit_cross = unit_sector
+        exit_scale = one(coefficient)
+        if haskey(ops, node) && localq != unit_sector
+            later = _fuse_charges(
+                (charge(ops[x]) for x in opnodes
+                 if canonical_rank[x] > canonical_rank[node]),
+                unit_sector,
+            )
+            if _has_fermionic_crossing(later, unit_sector)
+                exit_cross = later
+                exit_scale = _exit_orientation_scalar(
+                    ops[node].op, localq, nodeid(t, node),
+                )
+            end
+        end
+
+        word_scale = certificate_ready ?
+            prod((event.scalar for event in by_owner[node]);
+                 init=completion_bend_scale) : legacy_by_node[node]
+        completion_bend = _LocalCompletionBendEvent(
+            node, localq, completion_bend_scale,
+        )
+        charge_exit = _ChargeLegExitEvent(node, exit_cross, exit_scale)
+        push!(local_plans, _LocalMorphismPlan(
+            node,
+            _LocalFactorBendEvent{Q}(node, factor_cross),
+            completion_bend,
+            _PhysicalInputBendEvent{Q}(node, physical_cross),
+            _PhysicalInputFrameEvent{Q}(node, frame_cross),
+            charge_exit,
+            by_owner[node], word_scale,
+        ))
+    end
+    all(plan.node == node for (node, plan) in enumerate(local_plans)) ||
+        throw(ArgumentError("TTNO local morphism plans lost canonical node indexing"))
+
+    if certificate_ready
+        local_scale = prod((plan.word_scale for plan in local_plans);
+                           init=one(coefficient))
+        local_scale == certificate_scale || throw(ArgumentError(
+            "TTNO braid certificate local scales do not reproduce its word scale",
+        ))
+        if _braid_certificate_debug_enabled()
+            crossing_summary = [
+                (event.lhs, event.rhs, event.owner, event.scalar)
+                for event in crossings
+            ]
+            completion_bend_summary = [
+                (plan.node, plan.completion_bend.charge,
+                 plan.completion_bend.scalar) for plan in local_plans
+                if plan.completion_bend.scalar != one(coefficient)
+            ]
+            @info "TTNO braid certificate shadow comparison" canonical_word native_word certificate_scale legacy_scale crossing_summary completion_bend_summary
+        end
+    end
+
+    return _BraidedTermPlan(
+        canonical_word, native_word, factor_class, crossings, local_plans,
+        restriction_charge, frame, certificate_ready, certificate_scale,
+        legacy_scale,
+    )
+end
+
 """
     ttno_from_opsum(H::OpSum, topo, phys; elt=ComplexF64, hermitian=false) -> TTNO
 
@@ -239,13 +619,15 @@ function ttno_from_opsum(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,<:Eleme
                 throw(ArgumentError("term factor on $(so.site) uses a physical-space symmetry incompatible with `phys`"))
             ops[n] = so
         end
-        frame = graded ? _canonical_crossing_frame(t, phys, ops, unit_sector) :
-            _empty_crossing_frame(nothing)
         opnodes = sort!(collect(keys(ops)))
+        plan = graded ? _build_braided_term_plan(
+            t, E, phys, ops, opnodes, unit_sector, term.coeff,
+        ) : nothing
+        frame = graded ? plan.frame : _empty_crossing_frame(nothing)
         nodes = sort!(unique!(vcat(
             copy(opnodes), Int[entry.first for entry in frame.at],
         )))
-        (; coeff=term.coeff, ops, opnodes, frame, nodes)
+        (; coeff=term.coeff, ops, opnodes, plan, frame, nodes)
     end
     isempty(terms) && throw(ArgumentError("empty OpSum"))
 
@@ -263,33 +645,12 @@ function ttno_from_opsum(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,<:Eleme
     # labelled sites, canonical node indices, and the topology's child order.
     entries = Dict{Tuple{Int,Tuple,_ChannelKey,_EntryLocal,Any},Any}()
 
-    # Canonical scale attached to a state-diagram entry: the junction braid
-    # converting the tree's child fusion order into the public global
-    # physical-site order, times the charge-leg exit orientation (CG-009).
-    # Terms merged into one entry must agree on it (checked below).
+    # Canonical scale attached to a state-diagram entry: the uniquely-owned
+    # native-to-canonical word crossings, times the charge-leg exit
+    # orientation (CG-009). Terms merged into one entry must agree on it.
     entry_scale = Dict{Tuple{Int,Tuple,_ChannelKey,_EntryLocal,Any},Any}()
 
-    restriction_charge(tm, c) =
-        _fuse_charges((charge(tm.ops[x]) for x in tm.opnodes if _insub(E, x, c)),
-                       unit_sector)
-
-    # A charged local factor carries its virtual charge toward the root. Each
-    # earlier sibling restriction that it passes is one native braided
-    # crossing. This is a labelled-site calculation: a permutation of
-    # `Term.ops` leaves it unchanged.
-    function factor_cross_charge(tm, n::Int)
-        q = unit_sector
-        child = n
-        while t.parent[child] != 0
-            parent = t.parent[child]
-            for sibling in t.children[parent]
-                sibling == child && break
-                q = _fuse_charge(q, restriction_charge(tm, sibling))
-            end
-            child = parent
-        end
-        return q
-    end
+    restriction_charge(tm, c) = tm.plan.restriction_charge[c]
 
     # Every edge restriction has one explicit semantic kind. A framed idle is
     # not an active channel with an empty tuple: it carries a unit virtual
@@ -301,7 +662,8 @@ function ttno_from_opsum(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,<:Eleme
         isempty(opnodes) && return isempty(frame) ? _PLAIN_IDLE : _FramedIdle(frame)
         restriction = if graded
             _rkey([
-                (x, tm.ops[x].name, factor_cross_charge(tm, x)) for x in opnodes
+                (x, tm.ops[x].name,
+                 tm.plan.local_plans[x].factor_bend.crossing_charge) for x in opnodes
             ])
         else
             _rkey([(x, tm.ops[x].name) for x in opnodes])
@@ -309,70 +671,6 @@ function ttno_from_opsum(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,<:Eleme
         return _Active(restriction, frame)
     end
 
-    # A charged child restriction crosses the local physical input even on a
-    # unary spine. For a neutral local map that is exactly the fused child
-    # charge: two odd child wires cancel, while one odd through-wire produces
-    # the required spectator parity. A charged SiteOp already owns its local
-    # charge leg, so bending its physical input here would be a second,
-    # non-adjoint-covariant move; charged-factor ordering is handled by the
-    # labelled `factor_cross_charge` path instead.
-    function junction_physical_cross_charge(αcharges, localq)
-        localq == unit_sector || return unit_sector
-        return _fuse_charges(αcharges, unit_sector)
-    end
-
-    # A tree tensor fuses child restrictions in `t.children[n]` order.  At a
-    # genuine multi-child merge, convert that planar child order into the
-    # public canonical global physical-site order (the internal node order
-    # used by `physical_sites` and dense test states).  Each inversion of two
-    # charged *child* wires needs exactly one categorical braid.  Unique
-    # abelian fusion makes that braid a scalar R-symbol; richer fusion data is
-    # deliberately rejected instead of being flattened or guessed.  The local
-    # SiteOp is not appended here: its charge leg is a TensorKit bend handled
-    # natively by `junction_physical_cross_charge`, not an independent planar
-    # wire.  A one-child site is likewise a bend rather than a merge.
-    function canonical_junction_braid(tm, n::Int)
-        phase = one(tm.coeff)
-        child_wires = [
-            [x for x in tm.opnodes if _insub(E, x, child)]
-            for child in t.children[n]
-        ]
-        active_children = count(!isempty, child_wires)
-        active_children >= 2 || return phase
-        # A charged local factor at a genuine multi-child physical junction
-        # carries one native pivotal phase. Keep it as the scalar topological
-        # twist of the charge leg; twisting the physical input tensor instead
-        # gives different signs for a factor and its adjoint.
-        if haskey(tm.ops, n)
-            localq = charge(tm.ops[n])
-            if localq != unit_sector
-                local_twist = twist(localq)
-                local_twist isa Number || throw(ArgumentError(
-                    "graded TTNO local junction twists require scalar abelian data; got $(typeof(local_twist))",
-                ))
-                phase *= local_twist
-            end
-        end
-        # `tm.opnodes` is canonical-node sorted, so filtering each child gives
-        # its canonical in-subtree order without consulting `Term.ops`. Frame-
-        # only neutral sites are physical-input twists, not charged child wires.
-        wires = reduce(vcat, child_wires; init=Int[])
-        for i in 1:(length(wires) - 1), j in (i + 1):length(wires)
-            x, y = wires[i], wires[j]
-            # The junction fuses x before y but the canonical product puts y
-            # before x.  Apply R^{q_x q_y}_{q_x⊗q_y} exactly once.
-            x > y || continue
-            qx, qy = charge(tm.ops[x]), charge(tm.ops[y])
-            (qx == unit_sector || qy == unit_sector) && continue
-            qxy = _fuse_charge(qx, qy)
-            r = Rsymbol(qx, qy, qxy)
-            r isa Number || throw(ArgumentError(
-                "graded TTNO canonical junction braids require scalar abelian R-symbols; got $(typeof(r))",
-            ))
-            phase *= r
-        end
-        return phase
-    end
     function register!(edge::Int, key::_ChannelKey, q)
         push!(used[edge], key)
         if graded
@@ -443,34 +741,18 @@ function ttno_from_opsum(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,<:Eleme
             crossing = nothing
             scale = 1
             if graded
+                morphism = tm.plan.local_plans[n]
                 local_cross = haskey(tm.ops, n) && localq != unit_sector ?
-                    factor_cross_charge(tm, n) : unit_sector
-                node_cross = junction_physical_cross_charge(αcharges, localq)
-                frame_cross = _frame_at(tm.frame, n, unit_sector)
-                # CG-009: a charged local factor whose charge leg still has to
-                # meet canonically-later odd factors exits through its own
-                # physical input. The braid is the per-sector input twist
-                # normalized by the charge orientation `s(q)` — the identity
-                # on every one-mode carrier, and the required intra-site
-                # parity string on multi-mode (sector-degenerate) carriers.
-                exit_cross = unit_sector
-                if haskey(tm.ops, n) && localq != unit_sector
-                    later = _fuse_charges(
-                        (charge(tm.ops[x]) for x in tm.opnodes if x > n),
-                        unit_sector,
-                    )
-                    if _has_fermionic_crossing(later, unit_sector)
-                        exit_cross = later
-                        scale *= _exit_orientation_scalar(
-                            tm.ops[n].op, localq, nodeid(t, n),
-                        )
-                    end
-                end
+                    morphism.factor_bend.crossing_charge : unit_sector
+                node_cross = morphism.physical_bend.crossing_charge
+                frame_cross = morphism.input_frame.crossing_charge
+                exit_cross = morphism.charge_exit.crossing_charge
                 crossing = _fuse_charge(
                     _fuse_charge(_fuse_charge(local_cross, node_cross), frame_cross),
                     exit_cross,
                 )
-                scale *= canonical_junction_braid(tm, n)
+                scale = morphism.charge_exit.orientation_scalar *
+                    morphism.word_scale
             end
             key = (n, Tuple(αkeys), βkey, localentry, crossing)
             previous_scale = get(entry_scale, key, nothing)
