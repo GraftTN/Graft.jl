@@ -181,8 +181,8 @@ TensorOperations expert-mode tuples and ask L0 for the exact HomSpace/block
 profile of this binary contraction.  Planning stays TensorKit-type-agnostic:
 only `Backend.pair_cost` knows about fusion sectors.
 """
-function _sector_pair_profile(metrics, spaceA, conjA::Bool, spaceB, conjB::Bool,
-                              out::Tuple)
+Base.@noinline function _sector_pair_profile(metrics, spaceA, conjA::Bool,
+                                             spaceB, conjB::Bool, out::Tuple)
     pA = (Tuple(metrics.oindA), Tuple(metrics.cindA))
     # TensorOperations treats B as `(contracted, open)` for a matrix product.
     pB = (Tuple(metrics.cindB), Tuple(metrics.oindB))

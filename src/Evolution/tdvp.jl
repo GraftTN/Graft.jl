@@ -38,6 +38,7 @@ end
 
 """
     TDVP2(; order=2, trunc=TruncationScheme(), krylovdim=30, tol=1e-12,
+          contraction_optimize=true, contraction_sector_aware=true,
           verbose=true)
 
 Two-site TDVP (benchmark kernel, §5b; PyTreeNet twositetdvp.py +
@@ -46,13 +47,17 @@ per sweep (post-order edge sweep, truncated split through `TruncationScheme`),
 with a single-site *backward* evolution at the connecting parent between
 consecutive bond updates. Bond dimensions adapt up to `trunc.maxdim`. With
 `verbose=true`, emits step and half-sweep `@info` records including the
-truncation policy and bond growth.
+truncation policy and bond growth. `contraction_optimize=false` selects the
+deterministic environment-first plan; `contraction_sector_aware=false` keeps
+optimization enabled but skips the exact sector-aware dynamic program.
 """
 Base.@kwdef mutable struct TDVP2 <: Evolver
     order::Int = 2
     trunc::TruncationScheme = TruncationScheme()
     krylovdim::Int = 30
     tol::Float64 = 1e-12
+    contraction_optimize::Bool = true
+    contraction_sector_aware::Bool = true
     verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
 end
@@ -127,7 +132,9 @@ function _log_tdvp_step_start(ev::TDVP2, ψ::TTNS, H::TTNO, dz::Number;
     trunc_atol = ev.trunc.atol
     trunc_rtol = ev.trunc.rtol
     trunc_discarded_weight = ev.trunc.discarded_weight
-    @info "TDVP2 step start" dz order nodes physical_sites bonds center_site initial_maxbond krylovdim tol hermitian cache_reused trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight
+    contraction_optimize = ev.contraction_optimize
+    contraction_sector_aware = ev.contraction_sector_aware
+    @info "TDVP2 step start" dz order nodes physical_sites bonds center_site initial_maxbond krylovdim tol hermitian cache_reused trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight contraction_optimize contraction_sector_aware
     return nothing
 end
 
@@ -330,11 +337,14 @@ function _tdvp2_sweep!(ev::TDVP2, ψ::TTNS, H::TTNO, dz::Number; rev::Bool)
     return ψ
 end
 
-function _bond_forward!(ev::TDVP2, ψ::TTNS, H::TTNO, n::Int, m::Int, dz::Number;
-                        herm::Bool, center_on::Symbol)
+Base.@noinline function _bond_forward!(
+        ev::TDVP2, ψ::TTNS, H::TTNO, n::Int, m::Int, dz::Number;
+        herm::Bool, center_on::Symbol)
     cache = ev.cache::EnvCache
     Θ = two_site_tensor(ψ, n, m)
-    h2 = eff_h2(cache, ψ, H, n, m)
+    h2 = eff_h2(cache, ψ, H, n, m;
+                optimize=ev.contraction_optimize,
+                sector_aware=ev.contraction_sector_aware)
     Θ, _ = exponentiate(workspace_map(h2), dz, Θ;
                          ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
     invalidate_edge!(cache, n, m)
@@ -342,11 +352,18 @@ function _bond_forward!(ev::TDVP2, ψ::TTNS, H::TTNO, n::Int, m::Int, dz::Number
     return ψ
 end
 
-function _site_backward!(ev::Union{TDVP2,TDVP1_CBE}, ψ::TTNS, H::TTNO, m::Int,
-                         dz::Number; herm::Bool)
+Base.@noinline function _site_backward!(
+        ev::Union{TDVP2,TDVP1_CBE}, ψ::TTNS, H::TTNO, m::Int,
+        dz::Number; herm::Bool)
     @assert ψ.center == m
     cache = ev.cache::EnvCache
-    h1 = eff_h1(cache, ψ, H, m)
+    h1 = if ev isa TDVP2
+        eff_h1(cache, ψ, H, m;
+               optimize=ev.contraction_optimize,
+               sector_aware=ev.contraction_sector_aware)
+    else
+        eff_h1(cache, ψ, H, m)
+    end
     A, _ = exponentiate(workspace_map(h1), -dz, ψ.tensors[m];
                         ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
     update_tensor!(ψ, m, A; caches=(cache,))

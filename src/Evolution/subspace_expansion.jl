@@ -23,6 +23,8 @@ Base.@kwdef mutable struct GSE_TDVP <: Evolver
     enr_atol::Float64 = 1e-12
     krylovdim::Int = 30
     tol::Float64 = 1e-12
+    contraction_optimize::Bool = true
+    contraction_sector_aware::Bool = true
     verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
 end
@@ -49,6 +51,8 @@ Base.@kwdef mutable struct LSE_TDVP <: Evolver
     enr_atol::Float64 = 1e-12
     krylovdim::Int = 30
     tol::Float64 = 1e-12
+    contraction_optimize::Bool = true
+    contraction_sector_aware::Bool = true
     verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
 end
@@ -174,7 +178,9 @@ function _expand_all_bonds!(ev, ψ::TTNS, H::TTNO, cache::EnvCache; rev::Bool)
                 rng=ev.rng, trunc=ev.trunc, max_add=ev.max_add,
                 mixing=ev.mixing, enr_rtol=ev.enr_rtol,
                 enr_atol=ev.enr_atol, rsvd_oversample=ev.rsvd_oversample,
-                rsvd_poweriter=ev.rsvd_poweriter)
+                rsvd_poweriter=ev.rsvd_poweriter,
+                contraction_optimize=ev.contraction_optimize,
+                contraction_sector_aware=ev.contraction_sector_aware)
     end
     return ψ
 end

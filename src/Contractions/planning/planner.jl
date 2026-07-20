@@ -271,7 +271,8 @@ positive-label merges span the exact optimum under this model.  The Phase-1
 env-first plan stays the bounded memory-safe fallback outside this deliberately
 small local scope.
 """
-function _sector_dp_trees(spec::ContractionSpec, dims::Vector{Vector{Int}}, protos)
+Base.@noinline function _sector_dp_trees(spec::ContractionSpec,
+                                         dims::Vector{Vector{Int}}, protos)
     n = length(spec.labels)
     n <= _SECTOR_EXACT_TENSOR_LIMIT || return Any[]
     spaces = [_prototype_space(proto) for proto in protos]
@@ -569,11 +570,12 @@ non-unique fusion spaces, and non-symmetric braiding otherwise cleanly retain
 Phase-2 dense selection until their corresponding cost/execution models are
 calibrated.
 """
-function plan_contraction(spec::ContractionSpec, protos;
-                          optimize::Bool=true, memory_weight::Real=1,
-                          sector_aware::Bool=true,
-                          scalar_type::DataType=_planning_scalar_type(protos),
-                          memory_cap_bytes::Union{Nothing,Real}=nothing)
+Base.@noinline function plan_contraction(
+        spec::ContractionSpec, protos;
+        optimize::Bool=true, memory_weight::Real=1,
+        sector_aware::Bool=true,
+        scalar_type::DataType=_planning_scalar_type(protos),
+        memory_cap_bytes::Union{Nothing,Real}=nothing)
     isfinite(memory_weight) && memory_weight >= 0 ||
         throw(ArgumentError("memory_weight must be finite and nonnegative"))
     cap = _canonical_memory_cap(memory_cap_bytes)
@@ -583,7 +585,11 @@ function plan_contraction(spec::ContractionSpec, protos;
                             "conservative fixed-width model"))
     dims, label_dims = _label_dimensions(spec, protos)
     spaces = [_prototype_space(proto) for proto in protos]
-    structural_metrics = all(Backend.sector_cost_supported, spaces) &&
+    # `optimize=false` is the low-latency env-first path. Sector metrics cannot
+    # affect its fixed tree; retaining dense fallback metrics is conservative
+    # for a hard memory cap and avoids compiling the exact block-cost machinery.
+    structural_metrics = optimize &&
+                         all(Backend.sector_cost_supported, spaces) &&
                          any(Backend.sector_cost_nontrivial, spaces)
     heuristic = _compile_plan(_heuristic_tree(spec), spec, dims, protos;
                               strategy=:env_first, structural_metrics=structural_metrics,

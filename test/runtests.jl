@@ -697,8 +697,12 @@ end
 @graft_testset "TDVP vs exact propagation" begin
     @test TDVP1().verbose
     @test TDVP2().verbose
+    @test TDVP2().contraction_optimize
+    @test TDVP2().contraction_sector_aware
     @test TDVP1_CBE().verbose
     @test GSE_TDVP().verbose
+    @test GSE_TDVP().contraction_optimize
+    @test GSE_TDVP().contraction_sector_aware
     @test LSE_TDVP().verbose
 
     topo = star_topology(3, 2)

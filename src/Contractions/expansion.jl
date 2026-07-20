@@ -1,7 +1,9 @@
 """
     expand!(ψ, H, edge; scheme=:exact, cache=nothing, rng=nothing,
             trunc, max_add=8, mixing=1, enr_rtol=1e-10, enr_atol=1e-12,
-            rsvd_oversample=8, rsvd_poweriter=0) -> ψ
+            rsvd_oversample=8, rsvd_poweriter=0,
+            contraction_optimize=true,
+            contraction_sector_aware=true) -> ψ
 
 Shared bond-expansion primitive (§5a/§11.7). `edge` is `(child, parent)` or
 `child => parent` using node ids or indices. `scheme=:exact` forms the
@@ -15,7 +17,9 @@ function expand!(ψ::TTNS, H::TTNO, edge; scheme::Symbol=:exact,
                  trunc::TruncationScheme=TruncationScheme(; maxdim=100),
                  max_add::Int=8, mixing::Number=one(Float64),
                  enr_rtol::Float64=1e-10, enr_atol::Float64=1e-12,
-                 rsvd_oversample::Int=8, rsvd_poweriter::Int=0)
+                 rsvd_oversample::Int=8, rsvd_poweriter::Int=0,
+                 contraction_optimize::Bool=true,
+                 contraction_sector_aware::Bool=true)
     scheme in (:exact, :rsvd) ||
         throw(ArgumentError("expand!: scheme must be :exact or :rsvd"))
     max_add >= 0 || throw(ArgumentError("expand!: max_add must be nonnegative"))
@@ -33,7 +37,9 @@ function expand!(ψ::TTNS, H::TTNO, edge; scheme::Symbol=:exact,
     c = cache === nothing ? EnvCache(t) : cache
     move_center!(ψ, n; cache=c)
     Θ = two_site_tensor(ψ, n, m)
-    h2 = eff_h2(c, ψ, H, n, m)
+    h2 = eff_h2(c, ψ, H, n, m;
+                optimize=contraction_optimize,
+                sector_aware=contraction_sector_aware)
     PΘ = mixing * h2(Θ)
     P = _child_predictor_basis(ψ, PΘ, n, cap; scheme, rng,
                                rsvd_oversample, rsvd_poweriter)

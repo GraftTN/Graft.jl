@@ -183,13 +183,16 @@ function two_site_tensor(ψ::TTNS, n::Int, m::Int)
     A, B = ψ.tensors[n], ψ.tensors[m]
     k = childslot(t, m, n)
     pn = numout(A)
-    aidx = [-(1:pn); 1]
-    bidx = zeros(Int, numind(B))
-    o = pn
-    for j in 1:numind(B)
-        bidx[j] = j == k ? 1 : -(o += 1)
-    end
-    return ncon([A, B], [aidx, bidx], [false, false])
+    # This is a fixed binary contraction, so bypass `ncon`'s dynamic label
+    # parser and call the TensorOperations expert API through L0. Besides
+    # removing repeated label allocations, this keeps the large generic ncon
+    # method out of TDVP2's first-use JIT path.
+    pA = (Tuple(1:pn), (pn + 1,))
+    bopen = Tuple(j for j in 1:numind(B) if j != k)
+    pB = ((k,), bopen)
+    nopen = pn + length(bopen)
+    pAB = (Tuple(1:nopen), ())
+    return Backend.contract_pair(A, pA, false, B, pB, false, pAB)
 end
 
 """

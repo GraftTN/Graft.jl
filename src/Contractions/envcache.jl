@@ -250,12 +250,13 @@ function _planned_execute!(c::EnvCache, kind::Symbol, spec::ContractionSpec,
     return Planning.execute(plan, operands)
 end
 
-function _effective_map!(c::EnvCache, kind::Symbol, spec::ContractionSpec,
-                         protos, statics::Tuple, T::DataType;
-                         optimize::Bool=true, memory_weight::Real=1,
-                         sector_aware::Bool=true,
-                         memory_cap_bytes::Union{Nothing,Real}=nothing,
-                         output_twists::Tuple=())
+Base.@noinline function _effective_map!(
+        c::EnvCache, kind::Symbol, spec::ContractionSpec,
+        protos, statics::Tuple, T::DataType;
+        optimize::Bool=true, memory_weight::Real=1,
+        sector_aware::Bool=true,
+        memory_cap_bytes::Union{Nothing,Real}=nothing,
+        output_twists::Tuple=())
     plan, hit = Planning.get_or_plan!(c.plans, kind, spec, protos, T;
                                       optimize=optimize, memory_weight=memory_weight,
                                       sector_aware=sector_aware,
