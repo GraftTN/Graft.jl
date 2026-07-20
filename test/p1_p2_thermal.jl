@@ -77,6 +77,29 @@ const QUIET = (verbose=false,)
         @test state0.logZ ≈ log(3) atol = 1e-12
         O_N = physical_ttno(prob, OpSum() + Term(1.0, SiteOp(:site1, :N, PP.N)))
         @test real(thermal_expect(state0, O_N)) ≈ 1.0 atol = 1e-12
+        O_N2 = physical_ttno(prob,
+            OpSum() + Term(1.0, SiteOp(:site1, :N2, PP.N * PP.N)))
+        @test real(thermal_expect(state0, O_N2)) ≈ 5 / 3 atol = 1e-12
+
+        beta = 1.0
+        trajectory = thermalize(Purified(), prob, beta;
+            evolver=TDVP2(; QUIET...), nsteps=20)
+        expected_logZ = log(sum(exp(-0.7 * beta * n) for n in 0:2))
+        @test trajectory.final.logZ ≈ expected_logZ atol = 1e-10
+    end
+
+    @testset "P1: sector-degenerate neutral coevaluation" begin
+        P = U1Space(0 => 2)
+        N = zeros(ComplexF64, P ← P)
+        only(blocks(N))[2][2, 2] = 1
+        topo = mps_topology(1)
+        phys = Dict(:site1 => P)
+        H = OpSum() + Term(1.0, SiteOp(:site1, :N, N))
+        prob = purification_problem(H, topo, phys; hermitian=true)
+        state0 = infinite_temperature_state(prob)
+        O_N = physical_ttno(prob, H)
+        @test norm(state0.psi) ≈ 1 atol = 1e-12
+        @test real(thermal_expect(state0, O_N)) ≈ 0.5 atol = 1e-12
     end
 
     @testset "P1: malformed pp_pairs rejected" begin

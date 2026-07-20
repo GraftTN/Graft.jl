@@ -87,10 +87,18 @@ function _coevaluation_core(::Type{T}, P::S, V_parent::S) where {T<:Number, S<:E
         end
     else
         unitq = one(Q)
-        for (q, b) in blocks(t)
-            q == unitq || continue
-            for i in 1:size(b, 1)
-                b[i, 1] = one(T) / sqrt(T(d))
+        legs = S[dualP, P]
+        coord = _basis_coord_local(legs)
+        Pbasis = _flat_basis_local(P)
+        dualPbasis = _flat_basis_local(dualP)
+        for n in 1:d
+            dp_sec = dualPbasis[n]
+            p_sec = Pbasis[n]
+            fused = _fuse_abelian_local(dp_sec[1], p_sec[1])
+            fused == unitq || continue
+            cq, row = coord[(n, n)]
+            for (q, b) in blocks(t)
+                q == cq && (b[row, 1] = one(T) / sqrt(T(d)))
             end
         end
     end
@@ -113,11 +121,15 @@ function _pp_coevaluation_core(::Type{T}, P::S, Bth_space::S, V_parent::S) where
 
     for n in 0:(d - 1)
         p_sec = Pbasis[n + 1]
-        dp_sec = dualPbasis[d - n]
+        # TensorKit preserves the primal sector iteration order under `dual`:
+        # P=(0,1,...,nmax) gives dual(P)=(0,-1,...,-nmax). Pair occupation n
+        # with the same flat position; reversing the index retains only the
+        # middle occupation in the neutral block for odd `d`.
+        dp_sec = dualPbasis[n + 1]
         bth_sec = Bthbasis[n + 1]
         fused = _fuse_abelian_local(_fuse_abelian_local(dp_sec[1], bth_sec[1]), p_sec[1])
         fused == unitq || continue
-        cq, row = coord[(d - n, n + 1, n + 1)]
+        cq, row = coord[(n + 1, n + 1, n + 1)]
         for (q, b) in blocks(t)
             q == cq && (b[row, 1] = one(T) / sqrt(T(d)))
         end

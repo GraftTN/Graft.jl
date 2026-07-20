@@ -52,6 +52,36 @@ const QUIET = (verbose=false,)
         nbar = real(exact_thermal_expect(Hd, Nd, beta))
         ref_c = ref .- nbar^2
         @test maximum(abs.(series.values .- ref_c)) < 1e-9
+        @test series.metadata.centering == :thermal_mean_insertion
+        @test series.metadata.Abar ≈ nbar atol = 1e-10
+        @test series.metadata.Bbar ≈ nbar atol = 1e-10
+    end
+
+    @testset "connected insertion avoids final large-number cancellation" begin
+        S = spin_ops()
+        topo = mps_topology(1)
+        phys = Dict(:site1 => S.P)
+        H = OpSum() + Term(0.7, SiteOp(:site1, :Z, S.Z))
+        prob = purification_problem(H, topo, phys; hermitian=true)
+        Hd = dense_hamiltonian(H, topo, phys)
+        beta = 1.0
+        taus = [0.0, 0.5, 1.0]
+
+        # The connected result is O(1), while the raw correlator and product
+        # of means are O(offset^2).  A post-hoc subtraction is ill-conditioned.
+        offset = 1.0e8
+        shifted_N = S.N + offset * S.I
+        series = thermal_correlator(Purified(), prob,
+            :site1 => shifted_N, :site1 => shifted_N, beta, taus;
+            evolver=TDVP2(trunc=TruncationScheme(maxdim=4); QUIET...),
+            prep_nsteps=30, prop_nsteps=30, connected=true)
+
+        Nd = dense_hamiltonian(
+            OpSum() + Term(1.0, SiteOp(:site1, :N, S.N)), topo, phys)
+        ref = exact_thermal_correlator(Hd, Nd, Nd, beta, taus)
+        nbar = exact_thermal_expect(Hd, Nd, beta)
+        @test maximum(abs.(series.values .- (ref .- nbar^2))) < 1e-7
+        @test series.metadata.centering == :thermal_mean_insertion
     end
 
     @testset "KMS endpoint convention" begin

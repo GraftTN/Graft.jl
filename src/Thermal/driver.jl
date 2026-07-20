@@ -132,9 +132,17 @@ Thermal correlator `C_AB(τ) = tr(e^{-(β-τ)K} A e^{-τK} B) / Z` using the sta
 
 For each `τ`:
 1. obtain the normalized saved state `|ψ_b⟩` at `b=β-τ`
-2. build `bra = A†|ψ_b⟩` and `ket = B|ψ_b⟩`
-3. normalize `ket` into `ScaledTTNS`, propagate by `e^{-τK}`
-4. evaluate `C = e^{2ℓ_b+ℓ_k-2ℓ_β} ⟨A†ψ_b|k_τ⟩`
+2. when `connected=true`, replace the insertions by
+   `δA = A - ⟨A⟩_β I` and `δB = B - ⟨B⟩_β I`
+3. build `bra = δA†|ψ_b⟩` and `ket = δB|ψ_b⟩` (or use `A`, `B` for the
+   unconnected correlator)
+4. normalize `ket` into `ScaledTTNS`, propagate by `e^{-τK}`
+5. evaluate `C = e^{2ℓ_b+ℓ_k-2ℓ_β} ⟨δA†ψ_b|k_τ⟩`
+
+Thus a connected correlator is measured directly in the fluctuation sector;
+the implementation never forms `C_AB(τ) - ⟨A⟩⟨B⟩` from two extensive or
+nearly equal final results.  The centers are thermal means of the supplied
+operators, not model-specific constants such as `N - 1`.
 
 `A` and `B` are `site => op` local insertions. The returned series does NOT
 include a fermionic minus sign; the caller constructs `G(τ) = -C_{d,d†}(τ)`
@@ -165,6 +173,17 @@ function thermal_correlator(rep::Purified, problem::PurificationProblem,
     l_beta = traj.final.log_amplitude
     p_nsteps = prop_nsteps === nothing ? max(length(traj.tau_grid) - 1, 1) : prop_nsteps
 
+    Abar = zero(ComplexF64)
+    Bbar = zero(ComplexF64)
+    if connected
+        Abar = thermal_expect(
+            traj.final, physical_ttno(problem, _opsum_from_local(Asite, Aop)))
+        Bbar = thermal_expect(
+            traj.final, physical_ttno(problem, _opsum_from_local(Bsite, Bop)))
+        Aop = Aop - Abar * id(problem.phys_doubled[Asite])
+        Bop = Bop - Bbar * id(problem.phys_doubled[Bsite])
+    end
+
     vals = Vector{ComplexF64}(undef, length(taus))
     for (i, tau) in enumerate(taus)
         tau = Float64(tau)
@@ -175,6 +194,10 @@ function thermal_correlator(rep::Purified, problem::PurificationProblem,
         bra = apply_local(state_b.psi, adjoint(Aop), Asite)
         ket = apply_local(state_b.psi, Bop, Bsite)
         n_ket = norm(ket)
+        if iszero(n_ket)
+            vals[i] = 0
+            continue
+        end
         normalize!(ket)
         l_k = log(n_ket)
 
@@ -195,14 +218,10 @@ function thermal_correlator(rep::Purified, problem::PurificationProblem,
         vals[i] = exp(2 * l_b + l_k - 2 * l_beta) * overlap
     end
 
-    if connected
-        Abar = thermal_expect(traj.final, physical_ttno(problem, _opsum_from_local(Asite, Aop)))
-        Bbar = thermal_expect(traj.final, physical_ttno(problem, _opsum_from_local(Bsite, Bop)))
-        vals .-= Abar * Bbar
-    end
-
     meta = merge(metadata, (; beta=Float64(beta), Asite, Bsite,
-                             connected, evolver_type=typeof(evolver),))
+                             connected,
+                             centering=connected ? :thermal_mean_insertion : :none,
+                             Abar, Bbar, evolver_type=typeof(evolver),))
     return CorrelatorSeries(collect(Float64.(taus)), vals, meta)
 end
 
