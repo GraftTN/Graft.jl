@@ -435,6 +435,100 @@ end
     one_mode = _multimode_fermion_carrier(1)
     two_mode = _multimode_fermion_carrier(2)
 
+    # A child-boundary orientation belongs to its fused restriction charge,
+    # not to the sum of endpoint class signs.  Here (+1)+(+1)+(-3) has net
+    # charge -1 even though its factor-class sum is +1, so it is opposite to
+    # the +1 wire on :z and must not create a root branch-duality event.
+    three_mode = _multimode_fermion_carrier(3)
+    triple_charge = Vect[_MM_Q](
+        (FermionParity(1) ⊠ U1Irrep(-3)) => 1,
+    )
+    triple_annihilation = zeros(ComplexF64, 8, 8)
+    triple_annihilation[three_mode.pos[0], three_mode.pos[7]] = 1
+    destroy_three = TensorMap(
+        reshape(triple_annihilation, 8, 8, 1),
+        three_mode.P ← three_mode.P ⊗ triple_charge,
+    )
+    composite_topo = TreeTopology(:root, [
+        :root => :x, :root => :z,
+        :x => :a, :x => :b, :x => :c,
+    ])
+    composite_phys = Dict(
+        :a => one_mode.P, :b => one_mode.P,
+        :c => three_mode.P, :z => one_mode.P,
+    )
+    composite_factors = [
+        (; site=:a, name=:composite_create_a, op=one_mode.Cd[1]),
+        (; site=:b, name=:composite_create_b, op=one_mode.Cd[1]),
+        (; site=:c, name=:composite_destroy_three, op=destroy_three),
+        (; site=:z, name=:composite_create_z, op=one_mode.Cd[1]),
+    ]
+    composite_plan = _sd0_certificate_plan(
+        composite_topo, composite_phys, composite_factors,
+    )
+    root = nodeindex(composite_topo, :root)
+    @test Graft.TTNOBuild._net_u1_charge(
+        composite_plan.restriction_charge[nodeindex(composite_topo, :x)],
+    ) == -1
+    @test sum(composite_plan.factor_class[nodeindex(composite_topo, site)]
+              for site in (:a, :b, :c)) == 1
+    @test all(event.owner != root for event in composite_plan.branch_dualities)
+
+    # The converse boundary is equally important: (+2)+(-1) has net charge
+    # +1 while its factor-class sum vanishes.  Together with the +1 child it
+    # owns exactly one root duality event; the local -2 factor only neutralizes
+    # the full term and is not part of the child-child orientation decision.
+    pair_create_charge = Vect[_MM_Q](
+        (FermionParity(0) ⊠ U1Irrep(2)) => 1,
+    )
+    pair_destroy_charge = Vect[_MM_Q](
+        (FermionParity(0) ⊠ U1Irrep(-2)) => 1,
+    )
+    pair_creation = zeros(ComplexF64, 4, 4)
+    pair_creation[two_mode.pos[3], two_mode.pos[0]] = 1
+    create_two = TensorMap(
+        reshape(pair_creation, 4, 4, 1),
+        two_mode.P ← two_mode.P ⊗ pair_create_charge,
+    )
+    pair_annihilation = zeros(ComplexF64, 4, 4)
+    pair_annihilation[two_mode.pos[0], two_mode.pos[3]] = 1
+    destroy_two = TensorMap(
+        reshape(pair_annihilation, 4, 4, 1),
+        two_mode.P ← two_mode.P ⊗ pair_destroy_charge,
+    )
+    cancellation_topo = TreeTopology(:root, [
+        :root => :x, :root => :z,
+        :x => :a, :x => :b,
+    ])
+    cancellation_phys = Dict(
+        :root => two_mode.P, :a => two_mode.P,
+        :b => one_mode.P, :z => one_mode.P,
+    )
+    cancellation_factors = [
+        (; site=:root, name=:cancel_destroy_two, op=destroy_two),
+        (; site=:a, name=:cancel_create_two, op=create_two),
+        (; site=:b, name=:cancel_destroy_one, op=one_mode.C[1]),
+        (; site=:z, name=:cancel_create_one, op=one_mode.Cd[1]),
+    ]
+    cancellation_plan = _sd0_certificate_plan(
+        cancellation_topo, cancellation_phys, cancellation_factors,
+    )
+    cancellation_root = nodeindex(cancellation_topo, :root)
+    cancellation_x = nodeindex(cancellation_topo, :x)
+    @test Graft.TTNOBuild._net_u1_charge(
+        cancellation_plan.restriction_charge[cancellation_x],
+    ) == 1
+    @test sum(cancellation_plan.factor_class[
+                  nodeindex(cancellation_topo, site)
+              ] for site in (:a, :b)) == 0
+    root_dualities = [
+        event for event in cancellation_plan.branch_dualities
+        if event.owner == cancellation_root
+    ]
+    @test length(root_dualities) == 1
+    @test only(root_dualities).lhs_class == 1
+    @test only(root_dualities).rhs_class == 1
+
     # All four nested insertion variants: root (x,y)/(y,x) crossed with x's
     # (a,SPEC)/(SPEC,a), for both one- and two-mode idle spectators.  F1 is
     # the forward/forward positive control; the other routes include F2.

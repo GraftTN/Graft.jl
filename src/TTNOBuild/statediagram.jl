@@ -221,6 +221,19 @@ struct _WireCrossingEvent{Q,S<:Number} <: _BraidedTermEvent
     scalar::S
 end
 
+"Duality bend between equally oriented odd child-boundary wires."
+struct _BranchDualityEvent{Q,S<:Number} <: _BraidedTermEvent
+    lhs_child::Int
+    rhs_child::Int
+    owner::Int
+    lhs_class::Int
+    rhs_class::Int
+    lhs_charge::Q
+    rhs_charge::Q
+    fused_charge::Q
+    scalar::S
+end
+
 "Native bend of a charged local factor past earlier sibling restrictions."
 struct _LocalFactorBendEvent{Q} <: _BraidedTermEvent
     node::Int
@@ -264,7 +277,14 @@ struct _LocalMorphismPlan{Q,S<:Number,
     input_frame::_PhysicalInputFrameEvent{Q}
     charge_exit::E
     wire_crossings::Vector{_WireCrossingEvent{Q}}
+    branch_dualities::Vector{_BranchDualityEvent{Q}}
     word_scale::S
+end
+
+"Exact scalar/abelian lowering identity of one local morphism plan."
+struct _LocalMorphismSignature{Q,S<:Number}
+    crossing_charge::Q
+    scalar::S
 end
 
 "Internal per-term SD0 certificate; factor identities are canonical node ids."
@@ -273,6 +293,7 @@ struct _BraidedTermPlan{Q,F<:_CrossingFrame,C<:Number,L<:Number}
     native_word::Vector{Int}
     factor_class::Dict{Int,Int}
     crossings::Vector{_WireCrossingEvent{Q}}
+    branch_dualities::Vector{_BranchDualityEvent{Q}}
     local_plans::Vector{_LocalMorphismPlan{Q}}
     restriction_charge::Vector{Q}
     frame::F
@@ -429,6 +450,72 @@ function _build_braided_term_plan(t::TreeTopology, E::_Euler, phys,
     end
     frame = _canonical_crossing_frame(t, phys, ops, unit_sector)
 
+    # Child virtual legs are codomain boundary wires.  When two odd child
+    # restrictions have the same net creation/annihilation orientation, the
+    # dual bend at their junction contributes one R-symbol.  The orientation
+    # belongs to the complete boundary restriction, rather than to arbitrary
+    # endpoint pairs: its fused U(1) charge is authoritative, with the factor
+    # classes used only when that boundary charge has no nonzero U(1) total.
+    # A branch containing a balanced or oppositely oriented subword must not
+    # acquire an extra pairwise sign.
+    branch_dualities = _BranchDualityEvent{Q}[]
+    branch_by_owner = [_BranchDualityEvent{Q}[] for _ in 1:nnodes(t)]
+    if certificate_ready
+        for owner in 1:nnodes(t)
+            boundary_wires = Tuple{Int,Int,Q}[]
+            for child in t.children[owner]
+                any(node -> _insub(E, node, child), opnodes) || continue
+                child_charge = restriction_charge[child]
+                _has_fermionic_crossing(child_charge, unit_sector) || continue
+                net_charge = _net_u1_charge(child_charge)
+                child_class = if net_charge !== nothing && !iszero(net_charge)
+                    sign(net_charge)
+                else
+                    sum(
+                        factor_class[node] for node in opnodes
+                        if _insub(E, node, child)
+                    )
+                end
+                iszero(child_class) && continue
+                push!(boundary_wires, (child, sign(child_class), child_charge))
+            end
+            length(boundary_wires) >= 2 || continue
+            for lhs_index in 1:(length(boundary_wires) - 1)
+                lhs_child, lhs_class, lhs_charge = boundary_wires[lhs_index]
+                for rhs_index in (lhs_index + 1):length(boundary_wires)
+                    rhs_child, rhs_class, rhs_charge = boundary_wires[rhs_index]
+                    lhs_class == rhs_class || continue
+                    fused = _fuse_charge(lhs_charge, rhs_charge)
+                    scalar = Rsymbol(lhs_charge, rhs_charge, fused)
+                    scalar isa Number || throw(ArgumentError(
+                        "graded TTNO branch duality bends require scalar " *
+                        "abelian R-symbols; got $(typeof(scalar))",
+                    ))
+                    event = _BranchDualityEvent(
+                        lhs_child, rhs_child, owner, lhs_class, rhs_class,
+                        lhs_charge, rhs_charge, fused, scalar,
+                    )
+                    push!(branch_dualities, event)
+                    push!(branch_by_owner[owner], event)
+                end
+            end
+        end
+        all(
+            t.parent[event.lhs_child] == event.owner &&
+            t.parent[event.rhs_child] == event.owner &&
+            event.lhs_child != event.rhs_child
+            for event in branch_dualities
+        ) || throw(ArgumentError(
+            "TTNO branch duality certificate has a non-junction owner",
+        ))
+        length(Set(
+            (event.owner, event.lhs_child, event.rhs_child)
+            for event in branch_dualities
+        )) == length(branch_dualities) || throw(ArgumentError(
+            "TTNO branch duality certificate assigns one child pair more than once",
+        ))
+    end
+
     # Stable adjacent swaps lower the native word to the canonical word.  The
     # R-symbol orientation follows the current adjacent pair before it swaps.
     crossings = _WireCrossingEvent{Q}[]
@@ -471,6 +558,10 @@ function _build_braided_term_plan(t::TreeTopology, E::_Euler, phys,
             ))
         all(event.owner == _term_lca(t, event.lhs, event.rhs) for event in crossings) ||
             throw(ArgumentError("TTNO braid certificate has a non-LCA crossing owner"))
+        certificate_scale *= prod(
+            (event.scalar for event in branch_dualities);
+            init=one(coefficient),
+        )
     end
 
     legacy_by_node = [
@@ -536,8 +627,9 @@ function _build_braided_term_plan(t::TreeTopology, E::_Euler, phys,
         end
 
         word_scale = certificate_ready ?
-            prod((event.scalar for event in by_owner[node]);
-                 init=completion_bend_scale) : legacy_by_node[node]
+            prod((event.scalar for event in branch_by_owner[node]);
+                 init=prod((event.scalar for event in by_owner[node]);
+                           init=completion_bend_scale)) : legacy_by_node[node]
         completion_bend = _LocalCompletionBendEvent(
             node, localq, completion_bend_scale,
         )
@@ -549,7 +641,7 @@ function _build_braided_term_plan(t::TreeTopology, E::_Euler, phys,
             _PhysicalInputBendEvent{Q}(node, physical_cross),
             _PhysicalInputFrameEvent{Q}(node, frame_cross),
             charge_exit,
-            by_owner[node], word_scale,
+            by_owner[node], branch_by_owner[node], word_scale,
         ))
     end
     all(plan.node == node for (node, plan) in enumerate(local_plans)) ||
@@ -566,20 +658,43 @@ function _build_braided_term_plan(t::TreeTopology, E::_Euler, phys,
                 (event.lhs, event.rhs, event.owner, event.scalar)
                 for event in crossings
             ]
+            branch_duality_summary = [
+                (event.lhs_child, event.rhs_child, event.owner,
+                 event.lhs_class, event.scalar) for event in branch_dualities
+            ]
             completion_bend_summary = [
                 (plan.node, plan.completion_bend.charge,
                  plan.completion_bend.scalar) for plan in local_plans
                 if plan.completion_bend.scalar != one(coefficient)
             ]
-            @info "TTNO braid certificate shadow comparison" canonical_word native_word certificate_scale legacy_scale crossing_summary completion_bend_summary
+            @info "TTNO braid certificate shadow comparison" canonical_word native_word certificate_scale legacy_scale crossing_summary branch_duality_summary completion_bend_summary
         end
     end
 
     return _BraidedTermPlan(
-        canonical_word, native_word, factor_class, crossings, local_plans,
+        canonical_word, native_word, factor_class, crossings,
+        branch_dualities, local_plans,
         restriction_charge, frame, certificate_ready, certificate_scale,
         legacy_scale,
     )
+end
+
+function _local_morphism_signature(plan::_BraidedTermPlan{Q},
+                                   ops::Dict{Int,SiteOp}, node::Int,
+                                   unit_sector::Q) where {Q}
+    morphism = plan.local_plans[node]
+    localq = haskey(ops, node) ? charge(ops[node]) : unit_sector
+    local_cross = haskey(ops, node) && localq != unit_sector ?
+        morphism.factor_bend.crossing_charge : unit_sector
+    crossing = _fuse_charge(
+        _fuse_charge(
+            _fuse_charge(local_cross, morphism.physical_bend.crossing_charge),
+            morphism.input_frame.crossing_charge,
+        ),
+        morphism.charge_exit.crossing_charge,
+    )
+    scalar = morphism.charge_exit.orientation_scalar * morphism.word_scale
+    return _LocalMorphismSignature(crossing, scalar)
 end
 
 """
@@ -661,9 +776,15 @@ function ttno_from_opsum(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,<:Eleme
         opnodes = [x for x in tm.opnodes if _insub(E, x, c)]
         isempty(opnodes) && return isempty(frame) ? _PLAIN_IDLE : _FramedIdle(frame)
         restriction = if graded
+            # Equal labelled factors are mergeable only when their actual
+            # local lowering agrees.  Outside partners can change a factor's
+            # charge-exit crossing or its certificate scalar even though the
+            # subtree SiteOp names are identical.
             _rkey([
                 (x, tm.ops[x].name,
-                 tm.plan.local_plans[x].factor_bend.crossing_charge) for x in opnodes
+                 _local_morphism_signature(
+                     tm.plan, tm.ops, x, unit_sector,
+                 )) for x in opnodes
             ])
         else
             _rkey([(x, tm.ops[x].name) for x in opnodes])
@@ -741,18 +862,11 @@ function ttno_from_opsum(H::OpSum, topo::TreeTopology, phys::Dict{Symbol,<:Eleme
             crossing = nothing
             scale = 1
             if graded
-                morphism = tm.plan.local_plans[n]
-                local_cross = haskey(tm.ops, n) && localq != unit_sector ?
-                    morphism.factor_bend.crossing_charge : unit_sector
-                node_cross = morphism.physical_bend.crossing_charge
-                frame_cross = morphism.input_frame.crossing_charge
-                exit_cross = morphism.charge_exit.crossing_charge
-                crossing = _fuse_charge(
-                    _fuse_charge(_fuse_charge(local_cross, node_cross), frame_cross),
-                    exit_cross,
+                signature = _local_morphism_signature(
+                    tm.plan, tm.ops, n, unit_sector,
                 )
-                scale = morphism.charge_exit.orientation_scalar *
-                    morphism.word_scale
+                crossing = signature.crossing_charge
+                scale = signature.scalar
             end
             key = (n, Tuple(αkeys), βkey, localentry, crossing)
             previous_scale = get(entry_scale, key, nothing)

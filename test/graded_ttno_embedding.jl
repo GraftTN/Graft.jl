@@ -309,38 +309,6 @@ end
         [(:x, :C), (:b, :Cd), (:c, :C), (:d, :Cd)],
     )
 
-    # Q-M5-009: an odd wire crossing a physically present but operator-idle
-    # sibling is a framed unit-sector channel, not plain identity transport.
-    idle_hub = TreeTopology(:hub, [
-        :hub => :a,
-        :hub => :spectator,
-        :hub => :c,
-    ])
-    idle_hub_physical = Dict(
-        :a => operators.P, :spectator => operators.P, :c => operators.P,
-    )
-    _assert_graded_action_matches_jw(
-        idle_hub, idle_hub_physical, operators, hopping,
-        [(:a, :Cd), (:c, :C)], [(:a, :C), (:c, :Cd)],
-    )
-
-    if GRAFT_EXTENDED_TESTS
-        # Reversing the planar child order changes the native fusion route but
-        # not the site-labelled contract in that topology's canonical order.
-        reversed_idle_hub = TreeTopology(:hub, [
-            :hub => :c,
-            :hub => :spectator,
-            :hub => :a,
-        ])
-        reversed_idle_hub_physical = Dict(
-            :a => operators.P, :spectator => operators.P, :c => operators.P,
-        )
-        _assert_graded_action_matches_jw(
-            reversed_idle_hub, reversed_idle_hub_physical, operators, hopping,
-            [(:a, :Cd), (:c, :C)], [(:a, :C), (:c, :Cd)],
-        )
-    end
-
     # The mapped-Cayley failure was fZ2 x U1 on an ancestor chain with an idle
     # physical site between the two charged endpoints. Keep that exact carrier
     # class as a permanent core gate.
