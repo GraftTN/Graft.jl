@@ -1,4 +1,4 @@
-### Graft.jl
+# Graft.jl
 
 <p align="center">
   <img src="https://cdn.jsdelivr.net/gh/GraftTN/Graft.jl@main/assets/graftjl-logo.png" alt="Graft.jl logo" width="240">
@@ -9,7 +9,7 @@ A general-purpose tree tensor network core library. DMFT/EDMFT impurity-solver w
 The architecture is largely inspired by [PyTreeNet](https://github.com/Drachier/PyTreeNet), and its tensor network foundation is built on [TensorKit.jl](https://github.com/QuantumKitHub/TensorKit.jl), which lets us exploit the abelian and non-abelian symmetries. It is designed to flexibly adopt new algorithms from papers for experimentation and verification — i.e., tree *graft*ing.
 
 
-#### Quick example
+## Quick example
 
 ```julia
 using Graft, Graft.TestUtils, Random
@@ -35,21 +35,97 @@ ev = TDVP1_CBE(trunc=TruncationScheme(maxdim=64), d_tilde_max=16)
 evolve!(ev, ψ, O, -0.05im, 100)                  # real-time evolution, bond-adaptive
 ```
 
-#### References
+## Algorithmic References and Provenance
 
-Selected algorithmic references for Graft.jl, in implementation order:
+References are grouped by the Graft functionality they inform. Each entry states
+whether it is an implementation basis or a design reference; citing a method
+does not imply that every variant in the paper is implemented.
 
-1. **TTNO state diagrams:** R. M. Milbradt, Q. Huang, and C. B. Mendl, “State Diagrams to determine Tree Tensor Network Operators,” *SciPost Physics Core* **7**, 036 (2024). [doi:10.21468/SciPostPhysCore.7.2.036](https://doi.org/10.21468/SciPostPhysCore.7.2.036); [arXiv:2311.13433](https://arxiv.org/abs/2311.13433).
-2. **PyTreeNet:** R. M. Milbradt, Q. Huang, and C. B. Mendl, “PyTreeNet: A Python Library for easy Utilisation of Tree Tensor Networks,” arXiv:2407.13249 (2024). [arXiv:2407.13249](https://arxiv.org/abs/2407.13249).
-3. **Tree TDVP / ForkTPS:** D. Bauernfeind and M. Aichhorn, “Time Dependent Variational Principle for Tree Tensor Networks,” *SciPost Physics* **8**, 024 (2020). [doi:10.21468/SciPostPhys.8.2.024](https://doi.org/10.21468/SciPostPhys.8.2.024); [arXiv:1908.03090](https://arxiv.org/abs/1908.03090).
-4. **CBE-TDVP:** J.-W. Li, A. Gleis, and J. von Delft, “Time-dependent variational principle with controlled bond expansion for matrix product states,” *Physical Review Letters* **133**, 026401 (2024). [doi:10.1103/PhysRevLett.133.026401](https://doi.org/10.1103/PhysRevLett.133.026401); [arXiv:2208.10972](https://arxiv.org/abs/2208.10972).
-5. **DMRG3S:** C. Hubig, I. P. McCulloch, U. Schollwöck, and F. A. Wolf, “A Strictly Single-Site DMRG Algorithm with Subspace Expansion,” *Physical Review B* **91**, 155115 (2015). [doi:10.1103/PhysRevB.91.155115](https://doi.org/10.1103/PhysRevB.91.155115); [arXiv:1501.05504](https://arxiv.org/abs/1501.05504).
-6. **RSVD post-expansion:** I. P. McCulloch and J. J. Osborne, “Comment on ‘Controlled Bond Expansion for Density Matrix Renormalization Group Ground State Search at Single-Site Costs’ (Extended Version),” arXiv:2403.00562 (2024). [arXiv:2403.00562](https://arxiv.org/abs/2403.00562).
-7. **Global Krylov:** S. Paeckel, T. Köhler, A. Swoboda, S. R. Manmana, U. Schollwöck, and C. Hubig, “Time-evolution methods for matrix-product states,” *Annals of Physics* **411**, 167998 (2019). [doi:10.1016/j.aop.2019.167998](https://doi.org/10.1016/j.aop.2019.167998); [arXiv:1901.05824](https://arxiv.org/abs/1901.05824).
-8. **GSE/LSE TDVP:** M. Yang and S. R. White, “Time Dependent Variational Principle with Ancillary Krylov Subspace,” *Physical Review B* **102**, 094315 (2020). This is the global ancillary-Krylov foundation used by Graft's GSE/LSE expansion family. [doi:10.1103/PhysRevB.102.094315](https://doi.org/10.1103/PhysRevB.102.094315); [arXiv:2005.06104](https://arxiv.org/abs/2005.06104).
-9. **Implicit logarithmic-time evolution:** J. P. Zima, E. M. Stoudenmire, S. R. White, O. Parcollet, and J. Kaye, “Fast Tensor Network Imaginary Time Evolution by Implicit Stepping on Logarithmic Grids,” arXiv:2606.02930 (2026). [arXiv:2606.02930](https://arxiv.org/abs/2606.02930).
-10. **Projected purification for bosons:** T. Köhler, J. Stolpp, and S. Paeckel, “Efficient and Flexible Approach to Simulate Low-Dimensional Quantum Lattice Models with Large Local Hilbert Spaces,” *SciPost Physics* **10**, 058 (2021). [doi:10.21468/SciPostPhys.10.3.058](https://doi.org/10.21468/SciPostPhys.10.3.058); [arXiv:2008.08466](https://arxiv.org/abs/2008.08466).
+### Tree Operators and Software Architecture
 
-#### License
+1. **TTNO state diagrams** — *implemented; algorithmic basis*
+
+   R. M. Milbradt, Q. Huang, and C. B. Mendl, “State Diagrams to determine Tree Tensor Network Operators,” *SciPost Physics Core* **7**, 036 (2024).
+   [DOI](https://doi.org/10.21468/SciPostPhysCore.7.2.036) ·
+   [arXiv](https://arxiv.org/abs/2311.13433)
+
+   **Provenance:** Basis for constructing TTNOs from operator sums through state diagrams.
+
+2. **Tree-network architecture** — *implemented; PyTreeNet design reference*
+
+   R. M. Milbradt, Q. Huang, and C. B. Mendl, “PyTreeNet: A Python Library for easy Utilisation of Tree Tensor Networks,” arXiv:2407.13249 (2024).
+   [arXiv](https://arxiv.org/abs/2407.13249)
+
+   **Provenance:** Informs the package's tree-network organization, terminology, and parts of its TDVP implementation lineage.
+
+### Ground-State and Time-Evolution Algorithms
+
+1. **Tree TDVP / ForkTPS** — *implemented; algorithmic basis*
+
+   D. Bauernfeind and M. Aichhorn, “Time Dependent Variational Principle for Tree Tensor Networks,” *SciPost Physics* **8**, 024 (2020).
+   [DOI](https://doi.org/10.21468/SciPostPhys.8.2.024) ·
+   [arXiv](https://arxiv.org/abs/1908.03090)
+
+   **Provenance:** Basis for TDVP sweeps and local time evolution on tree tensor networks.
+
+2. **CBE-TDVP** — *implemented; adapted algorithmic basis*
+
+   J.-W. Li, A. Gleis, and J. von Delft, “Time-dependent variational principle with controlled bond expansion for matrix product states,” *Physical Review Letters* **133**, 026401 (2024).
+   [DOI](https://doi.org/10.1103/PhysRevLett.133.026401) ·
+   [arXiv](https://arxiv.org/abs/2208.10972)
+
+   **Provenance:** Basis for controlled bond expansion, adapted from chains to tree tensor networks.
+
+3. **DMRG3S** — *planned; design reference*
+
+   C. Hubig, I. P. McCulloch, U. Schollwöck, and F. A. Wolf, “A Strictly Single-Site DMRG Algorithm with Subspace Expansion,” *Physical Review B*
+   **91**, 155115 (2015).
+   [DOI](https://doi.org/10.1103/PhysRevB.91.155115) ·
+   [arXiv](https://arxiv.org/abs/1501.05504)
+
+   **Provenance:** Design reference for single-site DMRG with subspace expansion.
+
+4. **RSVD post-expansion** — *planned; design reference*
+
+   I. P. McCulloch and J. J. Osborne, “Comment on ‘Controlled Bond Expansion for Density Matrix Renormalization Group Ground State Search at Single-Site Costs’ (Extended Version),” arXiv:2403.00562 (2024).
+   [arXiv](https://arxiv.org/abs/2403.00562)
+
+   **Provenance:** Design reference for randomized-SVD post-expansion choices.
+
+5. **Global Krylov** — *design reference*
+
+   S. Paeckel, T. Köhler, A. Swoboda, S. R. Manmana, U. Schollwöck, and C. Hubig, “Time-evolution methods for matrix-product states,” *Annals of
+   Physics* **411**, 167998 (2019).
+   [DOI](https://doi.org/10.1016/j.aop.2019.167998) ·
+   [arXiv](https://arxiv.org/abs/1901.05824)
+
+   **Provenance:** Design reference for global Krylov time evolution.
+
+6. **GSE/LSE TDVP** — *algorithmic basis*
+
+   M. Yang and S. R. White, “Time Dependent Variational Principle with Ancillary Krylov Subspace,” *Physical Review B* **102**, 094315 (2020).
+   [DOI](https://doi.org/10.1103/PhysRevB.102.094315) ·
+   [arXiv](https://arxiv.org/abs/2005.06104)
+
+   **Provenance:** Global ancillary-Krylov foundation for the planned GSE/LSE expansion family.
+
+7. **Implicit logarithmic-time evolution** — *design reference*
+
+   J. P. Zima, E. M. Stoudenmire, S. R. White, O. Parcollet, and J. Kaye, “Fast Tensor Network Imaginary Time Evolution by Implicit Stepping on Logarithmic Grids,” arXiv:2606.02930 (2026).
+   [arXiv](https://arxiv.org/abs/2606.02930)
+
+   **Provenance:** Design reference for implicit imaginary-time stepping on logarithmic grids.
+
+### Thermal-State Algorithms
+
+1. **Projected purification for bosons** — *planned; algorithmic basis*
+
+   T. Köhler, J. Stolpp, and S. Paeckel, “Efficient and Flexible Approach to Simulate Low-Dimensional Quantum Lattice Models with Large Local Hilbert Spaces,” *SciPost Physics* **10**, 058 (2021).
+   [DOI](https://doi.org/10.21468/SciPostPhys.10.3.058) ·
+   [arXiv](https://arxiv.org/abs/2008.08466)
+
+   **Provenance:** Algorithmic basis for the planned projected-purification treatment of large bosonic local spaces.
+
+## License
 
 Graft.jl is licensed under the [Apache License 2.0](LICENSE).
