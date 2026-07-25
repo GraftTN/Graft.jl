@@ -40,6 +40,17 @@ evolve!(ev, ψ, O, -0.05im, 100)                  # real-time evolution, bond-ad
 Use focused tests for the affected code by default. Run the full suite only for
 broad or shared low-level changes; full acceptance uses four parallel shards.
 
+```bash
+# Focused test (replace with the affected test file)
+julia --project=. --startup-file=no test/ttno_compression.jl
+
+# Full acceptance: four shards in parallel
+printf '%s\n' 1 2 3 4 | xargs -P4 -I{} env \
+  GRAFT_TEST_SHARD_COUNT=4 GRAFT_TEST_SHARD_INDEX={} \
+  JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+  julia --project=. --startup-file=no test/runtests.jl
+```
+
 ## Parallel runtime
 
 When using Julia-level fan-out, launch Julia with one BLAS thread and configure
