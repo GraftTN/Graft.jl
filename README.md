@@ -35,6 +35,11 @@ ev = TDVP1_CBE(trunc=TruncationScheme(maxdim=64), d_tilde_max=16)
 evolve!(ev, ψ, O, -0.05im, 100)                  # real-time evolution, bond-adaptive
 ```
 
+## Tests
+
+Use focused tests for the affected code by default. Run the full suite only for
+broad or shared low-level changes; full acceptance uses four parallel shards.
+
 ## Parallel runtime
 
 When using Julia-level fan-out, launch Julia with one BLAS thread and configure
