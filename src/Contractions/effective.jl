@@ -15,6 +15,374 @@
 # static-slot order so Planning never mistakes the physical x–W leg for an
 # environment edge.
 
+"""
+Opt-in Tier-3 effective map split over one TTNO virtual channel. Each partial
+map owns reduced, immutable statics and is safe to execute in a fresh task.
+Results are accumulated serially in slice order, so task scheduling does not
+affect the reduction order. `concurrent_live_bytes` conservatively sums every
+slice-plan live-memory peak because completed roots remain retained until
+reduction.
+"""
+struct ChannelSlicedEffectiveMap{M<:Tuple}
+    maps::M
+    minbatch::Int
+    concurrent_live_bytes::Int
+end
+
+function (f::ChannelSlicedEffectiveMap)(x::AbstractTensorMap)
+    partials = Vector{Any}(undef, length(f.maps))
+    threaded_foreach(eachindex(f.maps); threaded=true, minbatch=f.minbatch) do i
+        # PlanWorkspace is deliberately not reused here: it is task-bound, and
+        # @threads creates fresh tasks on each Krylov invocation.
+        partials[i] = f.maps[i](x)
+    end
+    y = partials[1]::AbstractTensorMap
+    for i in 2:length(partials)
+        axpy!(1, partials[i]::AbstractTensorMap, y)
+    end
+    return y
+end
+
+function Base.show(io::IO, f::ChannelSlicedEffectiveMap)
+    print(io, "ChannelSlicedEffectiveMap(slices=", length(f.maps),
+          ", concurrent_live≈", f.concurrent_live_bytes, " B)")
+end
+
+# Keep the public generic free of background-task lifecycle obligations.
+# Internal Krylov call sites use `_with_workspace_map` below to scope a
+# persistent worker pool and close it deterministically after each solve.
+Planning.workspace_map(f::ChannelSlicedEffectiveMap) = f
+
+mutable struct _ChannelSlicedWorkspaceMap{F<:ChannelSlicedEffectiveMap}
+    effective::F
+    requests::Vector{Channel{Any}}
+    responses::Vector{Channel{Any}}
+    tasks::Vector{Task}
+    owner::Union{Nothing,Task}
+    busy::Bool
+    closed::Bool
+end
+
+function _channel_worker(map_::EffectiveMap, request::Channel{Any},
+                         response::Channel{Any})
+    workspace = Planning.workspace_map(map_)
+    while true
+        x = take!(request)
+        x === nothing && return nothing
+        result = try
+            (ok=true, value=workspace(x), error=nothing)
+        catch err
+            (ok=false, value=nothing,
+             error=CapturedException(err, catch_backtrace()))
+        end
+        put!(response, result)
+    end
+end
+
+function _channel_workspace_map(effective::ChannelSlicedEffectiveMap)
+    requests = [Channel{Any}(1) for _ in effective.maps]
+    responses = [Channel{Any}(1) for _ in effective.maps]
+    tasks = map(eachindex(effective.maps)) do i
+        Threads.@spawn _channel_worker(effective.maps[i], requests[i], responses[i])
+    end
+    return _ChannelSlicedWorkspaceMap(effective, requests, responses, tasks,
+                                      nothing, false, false)
+end
+
+function (f::_ChannelSlicedWorkspaceMap)(x::AbstractTensorMap)
+    f.closed && throw(ArgumentError("channel workspace map is closed"))
+    task = current_task()
+    if f.owner === nothing
+        f.owner = task
+    elseif f.owner !== task
+        throw(ArgumentError("channel workspace map is task-local"))
+    end
+    f.busy && throw(ArgumentError("channel workspace map cannot be used reentrantly"))
+    f.busy = true
+    try
+        foreach(request -> put!(request, x), f.requests)
+        results = map(take!, f.responses)
+        failed = findfirst(result -> !result.ok, results)
+        failed === nothing || throw(results[failed].error)
+        y = results[1].value::AbstractTensorMap
+        for i in 2:length(results)
+            axpy!(1, results[i].value::AbstractTensorMap, y)
+        end
+        return y
+    finally
+        f.busy = false
+    end
+end
+
+function Base.close(f::_ChannelSlicedWorkspaceMap)
+    f.closed && return nothing
+    f.busy && throw(ArgumentError("cannot close a busy channel workspace map"))
+    foreach(request -> put!(request, nothing), f.requests)
+    foreach(fetch, f.tasks)
+    f.closed = true
+    return nothing
+end
+
+_with_workspace_map(body, effective) = body(Planning.workspace_map(effective))
+function _with_workspace_map(body, effective::ChannelSlicedEffectiveMap)
+    workspace = _channel_workspace_map(effective)
+    try
+        return body(workspace)
+    finally
+        close(workspace)
+    end
+end
+
+_channel_slice_space(V::ComplexSpace, groups) =
+    ComplexSpace(sum(length, values(groups)); dual=isdual(V))
+_channel_slice_space(V::GradedSpace, groups) = typeof(V)(
+    ((isdual(V) ? dual(q) : q) => length(groups[q])
+     for q in sectors(V) if haskey(groups, q));
+    dual=isdual(V))
+
+function _channel_inclusion(::Type{T}, V::ElementarySpace, groups) where {T<:Number}
+    all(q -> dim(q) == 1, keys(groups)) ||
+        throw(ArgumentError("channel slicing requires one-dimensional abelian sectors"))
+    Vs = _channel_slice_space(V, groups)
+    inclusion = zeros(T, V ← Vs)
+    for (q, block_) in blocks(inclusion)
+        for (j, old) in enumerate(groups[q])
+            block_[old, j] = one(T)
+        end
+    end
+    return inclusion
+end
+
+function _restrict_channel_leg(A::AbstractTensorMap, leg::Int, groups)
+    inclusion = _channel_inclusion(scalartype(A), space(A, leg), groups)
+    return Backend.transform_leg(A, adjoint(inclusion), leg)
+end
+
+_dual_channel_groups(groups) =
+    Dict{Any,Vector{Int}}(dual(q) => copy(indices) for (q, indices) in groups)
+
+function _fixed_plan_flops(plan::ContractionPlan, operands::Tuple)
+    ninputs = plan.nslots - length(plan.steps)
+    length(operands) == ninputs ||
+        throw(ArgumentError("channel cost model received the wrong operand count"))
+    slots = Vector{Any}(undef, plan.nslots)
+    for (i, operand) in enumerate(operands)
+        slots[i] = Planning._prototype_space(operand)
+    end
+    total = 0.0
+    for step in plan.steps
+        A, B = slots[step.a], slots[step.b]
+        metrics = Backend.pair_cost(A, (step.oindA, step.cindA), step.conjA,
+                                    B, (step.cindB, step.oindB), step.conjB,
+                                    step.out)
+        isfinite(metrics.sector_flops) || return 1.0
+        total += metrics.sector_flops
+        slots[step.dst] = metrics.output
+        slots[step.a] = nothing
+        slots[step.b] = nothing
+    end
+    return total
+end
+
+function _restrict_channel_statics(statics::Tuple, targets, selected)
+    sliced = collect(statics)
+    for (static_slot, leg, use_dual_groups) in targets
+        groups = use_dual_groups ? _dual_channel_groups(selected) : selected
+        sliced[static_slot] = _restrict_channel_leg(statics[static_slot], leg, groups)
+    end
+    return Tuple(sliced)
+end
+
+function _restrict_channel_static_spaces(statics::Tuple, targets, selected)
+    sliced = Any[Planning._prototype_space(static) for static in statics]
+    for (static_slot, leg, use_dual_groups) in targets
+        groups = use_dual_groups ? _dual_channel_groups(selected) : selected
+        V = space(statics[static_slot], leg)
+        Vs = _channel_slice_space(V, groups)
+        sliced[static_slot] = Backend.transform_leg_space(
+            sliced[static_slot], Vs, leg)
+    end
+    return Tuple(sliced)
+end
+
+function _channel_groups(V::ElementarySpace, requested::Int,
+                         plan::ContractionPlan, protos, statics::Tuple,
+                         targets)
+    entries = [(q, j) for q in sectors(V) for j in 1:dim(V, q)]
+    nslices = min(requested, length(entries))
+    weights = map(entries) do (q, j)
+        selected = Dict{Any,Vector{Int}}(q => [j])
+        sliced = _restrict_channel_static_spaces(statics, targets, selected)
+        _fixed_plan_flops(plan, (protos[1], sliced...))
+    end
+
+    # Deterministic longest-processing-time bin packing. Ties retain channel
+    # order and then choose the lowest-index bin, fixing both plans and the
+    # later reduction order independently of task scheduling.
+    order = sortperm(eachindex(entries); by=i -> (-weights[i], i))
+    bins = [Dict{Any,Vector{Int}}() for _ in 1:nslices]
+    loads = zeros(Float64, nslices)
+    for i in order
+        bin = argmin(loads)
+        q, j = entries[i]
+        push!(get!(bins[bin], q, Int[]), j)
+        loads[bin] += weights[i]
+    end
+    return bins
+end
+
+function _channel_group_flops(groups, plan::ContractionPlan, protos,
+                              statics::Tuple, targets)
+    return map(groups) do selected
+        sliced = _restrict_channel_static_spaces(statics, targets, selected)
+        _fixed_plan_flops(plan, (protos[1], sliced...))
+    end
+end
+
+function _slice_live_bytes(plan::ContractionPlan)
+    bytes = plan.sector_live_peak_bytes
+    return isfinite(bytes) ? bytes : plan.live_peak_bytes
+end
+
+function _concurrent_slice_bytes(maps)
+    # Completed roots remain live until the fixed-order reduction. Summing all
+    # plan peaks is conservative even when slices outnumber Julia threads.
+    return ceil(Int, sum(map_ -> _slice_live_bytes(map_.plan), maps))
+end
+
+function _channel_sliced_h1!(cache::EnvCache, full::EffectiveMap,
+                             spec::ContractionSpec, statics::Tuple, protos,
+                             ψ::TTNS, n::Int;
+                             channel_slices::Int,
+                             channel_minbatch::Int,
+                             channel_memory_cap_bytes::Union{Nothing,Real},
+                             optimize::Bool, memory_weight::Real,
+                             sector_aware::Bool,
+                             memory_cap_bytes::Union{Nothing,Real})
+    channel_slices >= 2 || throw(ArgumentError("channel_slices must be at least 2"))
+    channel_minbatch >= 1 || throw(ArgumentError("channel_minbatch must be positive"))
+    Threads.nthreads() > 1 || return full
+    channel_memory_cap_bytes === nothing && throw(ArgumentError(
+        "threaded_channels=true requires an explicit channel_memory_cap_bytes"))
+    cap = Float64(channel_memory_cap_bytes)
+    isfinite(cap) && cap >= 0 || throw(ArgumentError(
+        "channel_memory_cap_bytes must be a finite nonnegative number"))
+
+    t = ψ.topo
+    W = statics[1]
+    hp = hasphys(ψ, n)
+    neighbor_list = collect(neighbors(t, n))
+    isempty(neighbor_list) && return full
+    operator_legs = [_opleg(t, hp, n, neighbor) for neighbor in neighbor_list]
+    channel_dims = [dim(space(W, leg)) for leg in operator_legs]
+    edge_index = argmax(channel_dims)
+    channel_dims[edge_index] >= 2 || return full
+    operator_leg = operator_legs[edge_index]
+    env_static_slot = 1 + edge_index
+    targets = ((1, operator_leg, false), (env_static_slot, 2, true))
+
+    groups = _channel_groups(space(W, operator_leg), channel_slices,
+                             full.plan, protos, statics, targets)
+    maps = map(enumerate(groups)) do (slice, selected)
+        sliced_statics = _restrict_channel_statics(statics, targets, selected)
+        sliced_protos = (protos[1], sliced_statics...)
+        kind = Symbol("h1_channel_", operator_leg, "_", slice)
+        _effective_map!(cache, kind, spec, sliced_protos, sliced_statics,
+                        scalartype(ψ.tensors[n]);
+                        optimize, memory_weight, sector_aware, memory_cap_bytes,
+                        output_twists=full.output_twists)
+    end
+    map_tuple = Tuple(maps)
+    concurrent_live_bytes = _concurrent_slice_bytes(map_tuple)
+    concurrent_live_bytes <= cap || throw(ArgumentError(
+        "channel-sliced h1 requires approximately $concurrent_live_bytes live bytes, " *
+        "exceeding channel_memory_cap_bytes=$channel_memory_cap_bytes"))
+    return ChannelSlicedEffectiveMap(map_tuple, channel_minbatch,
+                                     concurrent_live_bytes)
+end
+
+function _h2_channel_candidates(ψ::TTNS, n::Int, m::Int, statics::Tuple)
+    t = ψ.topo
+    Wn, Wm = statics[1], statics[2]
+    k = childslot(t, m, n)
+    candidates = Any[]
+
+    # The crossed n-m TTNO bond is internal to the two-site block. Restricting
+    # both ends partitions its exact contracted sum without involving an env.
+    push!(candidates, (space=space(Wn, numind(Wn)),
+                       targets=((1, numind(Wn), false), (2, k, true))))
+
+    static_slot = 3
+    for w in neighbors(t, n)
+        w == m && continue
+        leg = _opleg(t, hasphys(ψ, n), n, w)
+        push!(candidates, (space=space(Wn, leg),
+                           targets=((1, leg, false), (static_slot, 2, true))))
+        static_slot += 1
+    end
+    for w in neighbors(t, m)
+        w == n && continue
+        leg = _opleg(t, hasphys(ψ, m), m, w)
+        push!(candidates, (space=space(Wm, leg),
+                           targets=((2, leg, false), (static_slot, 2, true))))
+        static_slot += 1
+    end
+    return candidates
+end
+
+function _channel_sliced_h2!(cache::EnvCache, full::EffectiveMap,
+                             spec::ContractionSpec, statics::Tuple, protos,
+                             ψ::TTNS, n::Int, m::Int;
+                             channel_slices::Int,
+                             channel_minbatch::Int,
+                             channel_memory_cap_bytes::Union{Nothing,Real},
+                             optimize::Bool, memory_weight::Real,
+                             sector_aware::Bool,
+                             memory_cap_bytes::Union{Nothing,Real})
+    channel_slices >= 2 || throw(ArgumentError("channel_slices must be at least 2"))
+    channel_minbatch >= 1 || throw(ArgumentError("channel_minbatch must be positive"))
+    Threads.nthreads() > 1 || return full
+    channel_memory_cap_bytes === nothing && throw(ArgumentError(
+        "threaded_channels=true requires an explicit channel_memory_cap_bytes"))
+    cap = Float64(channel_memory_cap_bytes)
+    isfinite(cap) && cap >= 0 || throw(ArgumentError(
+        "channel_memory_cap_bytes must be a finite nonnegative number"))
+
+    candidates = _h2_channel_candidates(ψ, n, m, statics)
+    partitions = map(enumerate(candidates)) do (edge_index, candidate)
+        dim(candidate.space) >= 2 || return nothing
+        groups = _channel_groups(candidate.space, channel_slices, full.plan,
+                                 protos, statics, candidate.targets)
+        costs = _channel_group_flops(groups, full.plan, protos, statics,
+                                     candidate.targets)
+        return (; edge_index, candidate, groups, costs)
+    end
+    filter!(!isnothing, partitions)
+    isempty(partitions) && return full
+    scores = map(p -> (maximum(p.costs), sum(p.costs), p.edge_index), partitions)
+    partition = partitions[argmin(scores)]
+    edge_index = partition.edge_index
+    candidate = partition.candidate
+    groups = partition.groups
+    maps = map(enumerate(groups)) do (slice, selected)
+        sliced_statics = _restrict_channel_statics(
+            statics, candidate.targets, selected)
+        sliced_protos = (protos[1], sliced_statics...)
+        kind = Symbol("h2_channel_", edge_index, "_", slice)
+        _effective_map!(cache, kind, spec, sliced_protos, sliced_statics,
+                        scalartype(ψ.tensors[n]);
+                        optimize, memory_weight, sector_aware, memory_cap_bytes,
+                        output_twists=full.output_twists)
+    end
+    map_tuple = Tuple(maps)
+    concurrent_live_bytes = _concurrent_slice_bytes(map_tuple)
+    concurrent_live_bytes <= cap || throw(ArgumentError(
+        "channel-sliced h2 requires approximately $concurrent_live_bytes live bytes, " *
+        "exceeding channel_memory_cap_bytes=$channel_memory_cap_bytes"))
+    return ChannelSlicedEffectiveMap(map_tuple, channel_minbatch,
+                                     concurrent_live_bytes)
+end
+
 function _ncon_effective_reference(spec::ContractionSpec, x::AbstractTensorMap,
                                    statics::Tuple)
     return Planning.ncon_reference(spec, x, statics)
@@ -94,18 +462,32 @@ part of cache identity.  `sector_aware=true` (the default) uses the Phase-3 exac
 unique-fusion block-GEMM objective when the TensorKit spaces support it;
 non-unique fusion spaces retain the dense model.  Planar/anyonic execution is
 outside the current regular TensorOperations backend surface.
+
+`threaded_channels=true` enables the experimental Tier-3 split of the largest
+TTNO virtual leg into `channel_slices` exact subspaces. It is off by
+default, requires more than one Julia thread and an explicit
+`channel_memory_cap_bytes`, and currently benefits only sufficiently large
+branch-node maps. Slice outputs are accumulated serially in fixed order.
 """
 function eff_h1(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int;
                 optimize::Bool=true, memory_weight::Real=1,
                 sector_aware::Bool=true,
-                memory_cap_bytes::Union{Nothing,Real}=nothing)
+                memory_cap_bytes::Union{Nothing,Real}=nothing,
+                threaded_channels::Bool=false, channel_slices::Int=2,
+                channel_minbatch::Int=2,
+                channel_memory_cap_bytes::Union{Nothing,Real}=nothing)
     spec, statics, protos = _h1_spec(cache, ψ, H, n)
-    return _effective_map!(cache, :h1, spec, protos, statics,
+    full = _effective_map!(cache, :h1, spec, protos, statics,
                            scalartype(ψ.tensors[n]);
                            optimize=optimize, memory_weight=memory_weight,
                            sector_aware=sector_aware,
                            memory_cap_bytes=memory_cap_bytes,
                            output_twists=_euclidean_output_legs(ψ, n))
+    threaded_channels || return full
+    return _channel_sliced_h1!(cache, full, spec, statics, protos, ψ, n;
+                               channel_slices, channel_minbatch,
+                               channel_memory_cap_bytes, optimize, memory_weight,
+                               sector_aware, memory_cap_bytes)
 end
 
 function _h0_input_space(En::AbstractTensorMap, Em::AbstractTensorMap)
@@ -333,12 +715,16 @@ end
 
 Two-site effective Hamiltonian on child-parent bond `(n, m)`, acting on the
 all-codomain structure returned by `two_site_tensor(ψ, n, m)`. Planner
-keywords have the same semantics as `eff_h1`.
+keywords and experimental channel-slicing controls have the same semantics as
+`eff_h1`.
 """
 function eff_h2(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int, m::Int;
                 optimize::Bool=true, memory_weight::Real=1,
                 sector_aware::Bool=true,
-                memory_cap_bytes::Union{Nothing,Real}=nothing)
+                memory_cap_bytes::Union{Nothing,Real}=nothing,
+                threaded_channels::Bool=false, channel_slices::Int=2,
+                channel_minbatch::Int=2,
+                channel_memory_cap_bytes::Union{Nothing,Real}=nothing)
     spec, statics, protos = _h2_spec(cache, ψ, H, n, m)
     t = ψ.topo
     Kn, Km = nchildren(t, n), nchildren(t, m)
@@ -365,10 +751,15 @@ function eff_h2(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int, m::Int;
         isdual(xspace[pos]) &&
             _component_has_dual_physical(ψ, t.parent[m], m) && push!(twists, pos)
     end
-    return _effective_map!(cache, :h2, spec, protos, statics,
+    full = _effective_map!(cache, :h2, spec, protos, statics,
                            scalartype(ψ.tensors[n]);
                            optimize=optimize, memory_weight=memory_weight,
                            sector_aware=sector_aware,
                            memory_cap_bytes=memory_cap_bytes,
                            output_twists=Tuple(twists))
+    threaded_channels || return full
+    return _channel_sliced_h2!(cache, full, spec, statics, protos, ψ, n, m;
+                               channel_slices, channel_minbatch,
+                               channel_memory_cap_bytes, optimize, memory_weight,
+                               sector_aware, memory_cap_bytes)
 end

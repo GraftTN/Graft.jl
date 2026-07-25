@@ -104,5 +104,14 @@ const RNG = Xoshiro(20260712)
         Zref = tr(exp(-beta * Hd))
         @test real(Zb) ≈ real(Zref) atol = 1e-10
         @test exact_thermal_logZ(Hd, beta) ≈ log(real(Zref)) atol = 1e-10
+
+        Zd = dense_hamiltonian(
+            OpSum() + Term(1.0, SiteOp(:site1, :Z, S.Z)), topo, phys)
+        taus = [0.0, 0.25, 0.5, 1.0]
+        dense_serial = exact_thermal_correlator(
+            Hd, Zd, Zd, beta, taus; threaded=false)
+        dense_threaded = exact_thermal_correlator(
+            Hd, Zd, Zd, beta, (tau for tau in taus); threaded=true, minbatch=1)
+        @test dense_threaded == dense_serial
     end
 end

@@ -35,6 +35,44 @@ ev = TDVP1_CBE(trunc=TruncationScheme(maxdim=64), d_tilde_max=16)
 evolve!(ev, ψ, O, -0.05im, 100)                  # real-time evolution, bond-adaptive
 ```
 
+## Parallel runtime
+
+When using Julia-level fan-out, launch Julia with one BLAS thread and configure
+the Strided backend once before starting work:
+
+```bash
+JULIA_NUM_THREADS=24 OPENBLAS_NUM_THREADS=1 julia --project=.
+```
+
+```julia
+using Graft
+configure_parallel_runtime!()  # BLAS = 1, Strided = 1
+```
+
+This avoids nested BLAS/Strided threading inside each Graft task. Benchmark a
+different backend thread count explicitly for workloads dominated by one large
+contraction; sector-rich workloads with many small blocks should keep both at
+one. On multi-socket hosts, choose thread count and CPU affinity so work is
+balanced across NUMA domains. Thermal correlators, dense thermal references,
+and RSVD probe generation accept `threaded`/`minbatch` or
+`rsvd_threaded`/`rsvd_minbatch` controls for serial A/B runs and
+workload-specific granularity.
+
+Tier-3 one- and two-site TTNO channel slicing is experimental and remains off
+by default. Large Krylov maps can opt in through `eff_h1`, `eff_h2`, the DMRG
+drivers, or the TDVP evolvers, with an explicit contraction live-memory budget:
+
+```julia
+ev = TDVP1(threaded_channels=true, channel_slices=3,
+           channel_memory_cap_bytes=2_000_000_000)
+```
+
+Small maps can regress. On the current 24-thread star benchmarks, one-site maps
+cross break-even near χ=32 and reach about 1.25× at χ=64. Two-site maps use a
+cost model to choose between internal and external TTNO edges; the 3×1 star is
+0.63–0.67× at χ=16 but 1.22–1.53× at χ=64. Keep BLAS and Strided at one
+thread when this outer fan-out is active.
+
 ## Algorithmic References and Provenance
 
 References are grouped by the Graft functionality they inform. Each entry states
@@ -76,7 +114,7 @@ does not imply that every variant in the paper is implemented.
 
    **Provenance:** Basis for controlled bond expansion, adapted from chains to tree tensor networks.
 
-3. **DMRG3S** — *planned; design reference*
+3. **DMRG3S** — *implemented; algorithmic basis*
 
    C. Hubig, I. P. McCulloch, U. Schollwöck, and F. A. Wolf, “A Strictly Single-Site DMRG Algorithm with Subspace Expansion,” *Physical Review B*
    **91**, 155115 (2015).
@@ -85,7 +123,7 @@ does not imply that every variant in the paper is implemented.
 
    **Provenance:** Design reference for single-site DMRG with subspace expansion.
 
-4. **RSVD post-expansion** — *planned; design reference*
+4. **RSVD post-expansion** — *implemented; algorithmic basis*
 
    I. P. McCulloch and J. J. Osborne, “Comment on ‘Controlled Bond Expansion for Density Matrix Renormalization Group Ground State Search at Single-Site Costs’ (Extended Version),” arXiv:2403.00562 (2024).
    [arXiv](https://arxiv.org/abs/2403.00562)

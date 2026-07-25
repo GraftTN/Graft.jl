@@ -17,8 +17,32 @@ and checkpoints are subtree-dispatchable, no global implicit state (§9.9).
 module Parallel
 
 import Base.Threads
+using LinearAlgebra: BLAS
+using TensorOperations: TensorOperations
 
-export threaded_foreach
+export threaded_foreach, configure_parallel_runtime!
+
+"""
+    configure_parallel_runtime!(; blas_threads=1, strided_threads=1) -> NamedTuple
+
+Configure process-global backend thread pools before entering Graft's outer
+Julia-thread fan-out regions. The defaults prevent BLAS and Strided from
+nested threading inside each Graft task. Returns the effective Julia, BLAS,
+and Strided thread counts.
+
+This function changes global runtime state and should be called once during
+process setup, before concurrent work starts.
+"""
+function configure_parallel_runtime!(; blas_threads::Integer=1,
+                                     strided_threads::Integer=1)
+    blas_threads >= 1 || throw(ArgumentError("blas_threads must be positive"))
+    strided_threads >= 1 || throw(ArgumentError("strided_threads must be positive"))
+    BLAS.set_num_threads(blas_threads)
+    TensorOperations.Strided.set_num_threads(strided_threads)
+    return (; julia_threads=Threads.nthreads(),
+            blas_threads=BLAS.get_num_threads(),
+            strided_threads=TensorOperations.Strided.get_num_threads())
+end
 
 """
     threaded_foreach(f, items; threaded=Threads.nthreads() > 1, minbatch=2) -> nothing

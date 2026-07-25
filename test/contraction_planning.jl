@@ -192,6 +192,121 @@ end
         _exercise_effective_maps!(ψ, O)
     end
 
+    # Tier 3 is an explicit large-map optimization. The selected TTNO child
+    # channel is projected to smaller exact spaces, each partial executes in
+    # task-local storage, and the result is reduced in slice order.
+    topo = star_topology(3, 1)
+    phys = allspin(topo)
+    O = ttno_from_opsum(tfi(topo; g=0.41), topo, phys; hermitian=true)
+    ψ = random_ttns(MersenneTwister(1391), ComplexF64, topo, phys, ℂ^3)
+    root = topo.root
+    full = eff_h1(EnvCache(topo), ψ, O, root)
+    if Base.Threads.nthreads() > 1
+        @test_throws ArgumentError eff_h1(
+            EnvCache(topo), ψ, O, root; threaded_channels=true,
+            channel_slices=3, channel_memory_cap_bytes=0,
+        )
+        sliced = eff_h1(
+            EnvCache(topo), ψ, O, root; threaded_channels=true,
+            channel_slices=3, channel_memory_cap_bytes=1_000_000_000,
+        )
+        @test sliced isa ChannelSlicedEffectiveMap
+        @test workspace_map(sliced) === sliced
+        reference = full(ψ.tensors[root])
+        got1 = sliced(ψ.tensors[root])
+        got2 = sliced(ψ.tensors[root])
+        scale = max(norm(reference), 1.0)
+        @test norm(got1 - reference) <= 1e-12 * scale
+        @test norm(got2 - got1) == 0
+
+        pooled = _CP._channel_workspace_map(sliced)
+        worker_tasks = copy(pooled.tasks)
+        try
+            pooled1 = pooled(ψ.tensors[root])
+            pooled2 = pooled(ψ.tensors[root])
+            @test norm(pooled1 - reference) <= 1e-12 * scale
+            @test norm(pooled2 - pooled1) == 0
+            @test all(!istaskdone(task) for task in worker_tasks)
+            cross_task_error = fetch(@async begin
+                try
+                    pooled(ψ.tensors[root])
+                    nothing
+                catch err
+                    err
+                end
+            end)
+            @test cross_task_error isa ArgumentError
+        finally
+            close(pooled)
+        end
+        @test all(istaskdone, worker_tasks)
+        @test_throws ArgumentError pooled(ψ.tensors[root])
+        @test isnothing(close(pooled))
+
+        scoped = _CP._with_workspace_map(sliced) do h1map
+            h1map(ψ.tensors[root])
+        end
+        @test norm(scoped - reference) <= 1e-12 * scale
+
+        # The two-site map may split either an external TTNO edge or the
+        # internal child-parent TTNO bond. Candidate selection minimizes the
+        # predicted maximum slice cost before building the actual maps.
+        child = first(topo.children[root])
+        move_center!(ψ, child)
+        Θ = two_site_tensor(ψ, child, root)
+        h2full = eff_h2(EnvCache(topo), ψ, O, child, root)
+        @test_throws ArgumentError eff_h2(
+            EnvCache(topo), ψ, O, child, root; threaded_channels=true,
+            channel_slices=3, channel_memory_cap_bytes=0,
+        )
+        h2sliced = eff_h2(
+            EnvCache(topo), ψ, O, child, root; threaded_channels=true,
+            channel_slices=3, channel_memory_cap_bytes=1_000_000_000,
+        )
+        @test h2sliced isa ChannelSlicedEffectiveMap
+        h2reference = h2full(Θ)
+        h2scale = max(norm(h2reference), 1.0)
+        h2pooled = _CP._channel_workspace_map(h2sliced)
+        h2tasks = copy(h2pooled.tasks)
+        try
+            h2got1 = h2pooled(Θ)
+            h2got2 = h2pooled(Θ)
+            @test norm(h2got1 - h2reference) <= 1e-12 * h2scale
+            @test norm(h2got2 - h2got1) == 0
+        finally
+            close(h2pooled)
+        end
+        @test all(istaskdone, h2tasks)
+
+        # A leaf has only its parent TTNO leg, which is a domain flat leg.
+        # This covers the generic transform-leg path and parent-edge slicing.
+        leaf = first(leaves(topo))
+        leaf_full = eff_h1(EnvCache(topo), ψ, O, leaf)
+        leaf_sliced = eff_h1(
+            EnvCache(topo), ψ, O, leaf; threaded_channels=true,
+            channel_slices=3, channel_memory_cap_bytes=1_000_000_000,
+        )
+        @test leaf_sliced isa ChannelSlicedEffectiveMap
+        leaf_reference = leaf_full(ψ.tensors[leaf])
+        leaf_got = _CP._with_workspace_map(leaf_sliced) do h1map
+            h1map(ψ.tensors[leaf])
+        end
+        @test norm(leaf_got - leaf_reference) <=
+            1e-12 * max(norm(leaf_reference), 1.0)
+    else
+        fallback = eff_h1(
+            EnvCache(topo), ψ, O, root; threaded_channels=true,
+            channel_slices=3,
+        )
+        @test fallback isa EffectiveMap
+        child = first(topo.children[root])
+        h2fallback = eff_h2(
+            EnvCache(topo), ψ, O, child, root; threaded_channels=true,
+            channel_slices=3,
+        )
+        @test h2fallback isa EffectiveMap
+    end
+
     # Neutral U(1) TTNO/state: the plan uses exact TensorKit spaces, not just
     # dense array dimensions, so this is the symmetric counterpart of the
     # trivial-sector checks above.
@@ -199,6 +314,14 @@ end
     topo = star_topology(2, 1)
     phys = Dict(nodeid(topo, i) => U.P for i in 1:nnodes(topo))
     H = OpSum()
+    for (c, p) in edges(topo)
+        H += Term(0.11, SiteOp(nodeid(topo, c), :Z, U.Z),
+                  SiteOp(nodeid(topo, p), :Z, U.Z))
+        H += Term(0.07, SiteOp(nodeid(topo, c), :Sp, U.Sp),
+                  SiteOp(nodeid(topo, p), :Sm, U.Sm))
+        H += Term(0.07, SiteOp(nodeid(topo, c), :Sm, U.Sm),
+                  SiteOp(nodeid(topo, p), :Sp, U.Sp))
+    end
     for n in 1:nnodes(topo)
         H += Term(0.17 + 0.03 * n, SiteOp(nodeid(topo, n), :Z, U.Z))
     end
@@ -206,6 +329,30 @@ end
     V = U1Space(-1 => 1, 0 => 2, 1 => 1)
     ψ = random_ttns(MersenneTwister(1401), ComplexF64, topo, phys, V)
     _exercise_effective_maps!(ψ, O)
+    if Base.Threads.nthreads() > 1
+        full = eff_h1(EnvCache(topo), ψ, O, topo.root)
+        sliced = eff_h1(
+            EnvCache(topo), ψ, O, topo.root; threaded_channels=true,
+            channel_slices=2, channel_memory_cap_bytes=1_000_000_000,
+        )
+        reference = full(ψ.tensors[topo.root])
+        got = sliced(ψ.tensors[topo.root])
+        @test norm(got - reference) <= 1e-12 * max(norm(reference), 1.0)
+
+        child = first(topo.children[topo.root])
+        move_center!(ψ, child)
+        Θ = two_site_tensor(ψ, child, topo.root)
+        h2full = eff_h2(EnvCache(topo), ψ, O, child, topo.root)
+        h2sliced = eff_h2(
+            EnvCache(topo), ψ, O, child, topo.root; threaded_channels=true,
+            channel_slices=2, channel_memory_cap_bytes=1_000_000_000,
+        )
+        @test h2sliced isa ChannelSlicedEffectiveMap
+        h2reference = h2full(Θ)
+        h2got = h2sliced(Θ)
+        @test norm(h2got - h2reference) <=
+            1e-12 * max(norm(h2reference), 1.0)
+    end
 end
 
 @graft_testset "compiled contraction plans: sector-aware 3-map action gate" begin

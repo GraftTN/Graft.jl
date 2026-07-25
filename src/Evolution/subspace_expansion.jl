@@ -19,12 +19,18 @@ Base.@kwdef mutable struct GSE_TDVP <: Evolver
     rng::Union{Nothing,AbstractRNG} = nothing
     rsvd_oversample::Int = 8
     rsvd_poweriter::Int = 0
+    rsvd_threaded::Bool = Base.Threads.nthreads() > 1
+    rsvd_minbatch::Int = max(2, Base.Threads.nthreads())
     enr_rtol::Float64 = 1e-10
     enr_atol::Float64 = 1e-12
     krylovdim::Int = 30
     tol::Float64 = 1e-12
     contraction_optimize::Bool = true
     contraction_sector_aware::Bool = true
+    threaded_channels::Bool = false
+    channel_slices::Int = 2
+    channel_minbatch::Int = 2
+    channel_memory_cap_bytes::Union{Nothing,Real} = nothing
     verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
 end
@@ -47,12 +53,18 @@ Base.@kwdef mutable struct LSE_TDVP <: Evolver
     rng::Union{Nothing,AbstractRNG} = nothing
     rsvd_oversample::Int = 8
     rsvd_poweriter::Int = 0
+    rsvd_threaded::Bool = Base.Threads.nthreads() > 1
+    rsvd_minbatch::Int = max(2, Base.Threads.nthreads())
     enr_rtol::Float64 = 1e-10
     enr_atol::Float64 = 1e-12
     krylovdim::Int = 30
     tol::Float64 = 1e-12
     contraction_optimize::Bool = true
     contraction_sector_aware::Bool = true
+    threaded_channels::Bool = false
+    channel_slices::Int = 2
+    channel_minbatch::Int = 2
+    channel_memory_cap_bytes::Union{Nothing,Real} = nothing
     verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
 end
@@ -68,6 +80,10 @@ function step!(ev::GSE_TDVP, ψ::TTNS, H::TTNO, dz::Number)
                                           rev=false,
                                           maxbond_before=expansion_maxbond_before)
     base = TDVP1(; order=ev.order, krylovdim=ev.krylovdim, tol=ev.tol,
+                 threaded_channels=ev.threaded_channels,
+                 channel_slices=ev.channel_slices,
+                 channel_minbatch=ev.channel_minbatch,
+                 channel_memory_cap_bytes=ev.channel_memory_cap_bytes,
                  verbose=false, cache)
     step!(base, ψ, H, dz)
     ev.cache = base.cache
@@ -81,6 +97,10 @@ function step!(ev::LSE_TDVP, ψ::TTNS, H::TTNO, dz::Number)
     cache = _prepare_subspace_expansion!(ev, ψ, H, dz, "LSE_TDVP")
     ev.verbose && _log_subspace_tdvp_start("LSE_TDVP", ev, ψ, H, dz; cache_reused)
     base = TDVP1(; order=1, krylovdim=ev.krylovdim, tol=ev.tol,
+                 threaded_channels=ev.threaded_channels,
+                 channel_slices=ev.channel_slices,
+                 channel_minbatch=ev.channel_minbatch,
+                 channel_memory_cap_bytes=ev.channel_memory_cap_bytes,
                  verbose=false, cache)
     if ev.order == 1
         maxbond_before = ev.verbose ? _tdvp_max_bond_dim(ψ) : 0
@@ -126,11 +146,13 @@ function _log_subspace_tdvp_start(name::String, ev, ψ::TTNS, H::TTNO,
     enr_atol = ev.enr_atol
     rsvd_oversample = ev.rsvd_oversample
     rsvd_poweriter = ev.rsvd_poweriter
+    rsvd_threaded = ev.rsvd_threaded
+    rsvd_minbatch = ev.rsvd_minbatch
     trunc_maxdim = ev.trunc.maxdim
     trunc_atol = ev.trunc.atol
     trunc_rtol = ev.trunc.rtol
     trunc_discarded_weight = ev.trunc.discarded_weight
-    @info "$name step start" dz order nodes physical_sites bonds center_site initial_maxbond krylovdim tol hermitian cache_reused expand_scheme max_add mixing enr_rtol enr_atol rsvd_oversample rsvd_poweriter trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight
+    @info "$name step start" dz order nodes physical_sites bonds center_site initial_maxbond krylovdim tol hermitian cache_reused expand_scheme max_add mixing enr_rtol enr_atol rsvd_oversample rsvd_poweriter rsvd_threaded rsvd_minbatch trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight
     return nothing
 end
 
@@ -164,6 +186,7 @@ function _prepare_subspace_expansion!(ev, ψ::TTNS, H::TTNO, dz::Number, name::S
     end
     ev.max_add >= 0 || throw(ArgumentError("$name: max_add must be nonnegative"))
     ev.mixing >= 0 || throw(ArgumentError("$name: mixing must be nonnegative"))
+    ev.rsvd_minbatch >= 1 || throw(ArgumentError("$name: rsvd_minbatch must be positive"))
     if ev.cache === nothing || ev.cache.topo != ψ.topo
         ev.cache = EnvCache(ψ.topo)
     end
@@ -179,8 +202,14 @@ function _expand_all_bonds!(ev, ψ::TTNS, H::TTNO, cache::EnvCache; rev::Bool)
                 mixing=ev.mixing, enr_rtol=ev.enr_rtol,
                 enr_atol=ev.enr_atol, rsvd_oversample=ev.rsvd_oversample,
                 rsvd_poweriter=ev.rsvd_poweriter,
+                rsvd_threaded=ev.rsvd_threaded,
+                rsvd_minbatch=ev.rsvd_minbatch,
                 contraction_optimize=ev.contraction_optimize,
-                contraction_sector_aware=ev.contraction_sector_aware)
+                contraction_sector_aware=ev.contraction_sector_aware,
+                threaded_channels=ev.threaded_channels,
+                channel_slices=ev.channel_slices,
+                channel_minbatch=ev.channel_minbatch,
+                channel_memory_cap_bytes=ev.channel_memory_cap_bytes)
     end
     return ψ
 end

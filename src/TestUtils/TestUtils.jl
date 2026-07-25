@@ -18,6 +18,7 @@ using ..Trees
 using ..Networks
 using ..Contractions: EnvCache, inner
 using ..Symbolic
+using ..Parallel: threaded_foreach
 
 export random_ttns, product_ttns, canonicalize!, to_dense,
     categorical_coordinates, dense_hamiltonian,
@@ -494,19 +495,30 @@ function exact_thermal_expect(Hd::AbstractMatrix, Od::AbstractMatrix, beta::Real
 end
 
 """
-    exact_thermal_correlator(Hd, Ad, Bd, beta, taus) -> Vector
+    exact_thermal_correlator(Hd, Ad, Bd, beta, taus;
+                             threaded=Base.Threads.nthreads() > 1,
+                             minbatch=max(2, Base.Threads.nthreads())) -> Vector
 
 Dense thermal correlator `C_AB(tau) = tr(exp(-(beta-tau)*Hd) * A * exp(-tau*Hd) * B) / Z`
 for each `tau` in `taus`. Uses the stable β-τ preparation formula.
 """
 function exact_thermal_correlator(Hd::AbstractMatrix, Ad::AbstractMatrix,
-                                  Bd::AbstractMatrix, beta::Real, taus)
+                                  Bd::AbstractMatrix, beta::Real, taus;
+                                  threaded::Bool=Base.Threads.nthreads() > 1,
+                                  minbatch::Integer=max(2, Base.Threads.nthreads()))
+    minbatch >= 1 || throw(ArgumentError("minbatch must be positive"))
     Z = exact_thermal_Z(Hd, beta)
     Hd64 = Matrix{ComplexF64}(Hd)
     A64 = Matrix{ComplexF64}(Ad)
     B64 = Matrix{ComplexF64}(Bd)
-    return [tr(LinearAlgebra.exp(-(Float64(beta) - Float64(tau)) * Hd64) * A64 *
-               LinearAlgebra.exp(-Float64(tau) * Hd64) * B64) / Z for tau in taus]
+    tau_values = Float64.(collect(taus))
+    values = Vector{ComplexF64}(undef, length(tau_values))
+    threaded_foreach(eachindex(tau_values); threaded, minbatch) do i
+        tau = tau_values[i]
+        values[i] = tr(LinearAlgebra.exp(-(Float64(beta) - tau) * Hd64) * A64 *
+                       LinearAlgebra.exp(-tau * Hd64) * B64) / Z
+    end
+    return values
 end
 
 """

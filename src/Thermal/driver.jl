@@ -125,7 +125,8 @@ thermal_expect(traj::PurificationTrajectory, O::TTNO) = thermal_expect(traj.fina
                        evolver, prep_grid=:uniform, prep_nsteps=nothing,
                        prop_grid=:uniform, prop_nsteps=nothing,
                        trajectory=nothing, connected=false,
-                       metadata=(;)) -> CorrelatorSeries
+                       metadata=(;), threaded=Base.Threads.nthreads() > 1,
+                       minbatch=2) -> CorrelatorSeries
 
 Thermal correlator `C_AB(τ) = tr(e^{-(β-τ)K} A e^{-τK} B) / Z` using the stable
 β-τ preparation formula (§05 plan §1.3, §2.5).
@@ -155,7 +156,16 @@ function thermal_correlator(rep::Purified, problem::PurificationProblem,
                            prop_grid=:uniform, prop_nsteps=nothing,
                            trajectory=nothing,
                            connected::Bool=false,
-                           metadata::NamedTuple=(;))
+                           metadata::NamedTuple=(;),
+                           threaded::Bool=Base.Threads.nthreads() > 1,
+                           minbatch::Integer=2)
+    minbatch >= 1 || throw(ArgumentError("minbatch must be positive"))
+    beta_value = Float64(beta)
+    beta_value >= 0 || throw(ArgumentError("beta must be nonnegative"))
+    tau_values = Float64.(collect(taus))
+    all(tau -> 0 <= tau <= beta_value, tau_values) ||
+        throw(ArgumentError("all taus must lie in [0, beta]"))
+
     Asite, Aop = _local_insertion_thermal(A)
     Bsite, Bop = _local_insertion_thermal(B)
     K = problem.K
@@ -164,7 +174,7 @@ function thermal_correlator(rep::Purified, problem::PurificationProblem,
         traj = trajectory
         _validate_trajectory(traj, problem, beta, evolver)
     else
-        save_betas = sort(unique(vcat([beta - Float64(tau) for tau in taus], [Float64(beta)])))
+        save_betas = sort(unique(vcat(beta_value .- tau_values, [beta_value])))
         traj = thermalize(rep, problem, beta;
                          evolver=evolver, tau_grid=prep_grid, nsteps=prep_nsteps,
                          save_betas=save_betas)
@@ -184,11 +194,16 @@ function thermal_correlator(rep::Purified, problem::PurificationProblem,
         Bop = Bop - Bbar * id(problem.phys_doubled[Bsite])
     end
 
-    vals = Vector{ComplexF64}(undef, length(taus))
-    for (i, tau) in enumerate(taus)
-        tau = Float64(tau)
-        b = Float64(beta) - tau
-        state_b = state_at(traj, b; atol=1e-10)
+    # Resolve Dict-backed checkpoints and strip any warm cache from the
+    # evolver before entering the threaded region. Each task clones this clean
+    # template only when propagation is needed, so mutable state is task-local
+    # without retaining one evolver per time point.
+    evolver_template = _fresh_evolver_thermal(evolver)
+    tau_items = [(i, tau, state_at(traj, beta_value - tau; atol=1e-10))
+                 for (i, tau) in enumerate(tau_values)]
+    vals = Vector{ComplexF64}(undef, length(tau_values))
+    threaded_foreach(tau_items; threaded, minbatch) do item
+        i, tau, state_b = item
         l_b = state_b.log_amplitude
 
         bra = apply_local(state_b.psi, adjoint(Aop), Asite)
@@ -196,33 +211,33 @@ function thermal_correlator(rep::Purified, problem::PurificationProblem,
         n_ket = norm(ket)
         if iszero(n_ket)
             vals[i] = 0
-            continue
-        end
-        normalize!(ket)
-        l_k = log(n_ket)
+        else
+            normalize!(ket)
+            l_k = log(n_ket)
 
-        if tau > 0
-            ev = _fresh_evolver_thermal(evolver)
-            pgrid = _build_prop_grid(tau, prop_grid, p_nsteps)
-            for j in 1:(length(pgrid) - 1)
-                dtau = pgrid[j + 1] - pgrid[j]
-                iszero(dtau) && continue
-                step!(ev, ket, K, -dtau)
-                nrm = norm(ket)
-                normalize!(ket)
-                l_k += log(nrm)
+            if tau > 0
+                ev = _fresh_evolver_thermal(evolver_template)
+                pgrid = _build_prop_grid(tau, prop_grid, p_nsteps)
+                for j in 1:(length(pgrid) - 1)
+                    dtau = pgrid[j + 1] - pgrid[j]
+                    iszero(dtau) && continue
+                    step!(ev, ket, K, -dtau)
+                    nrm = norm(ket)
+                    normalize!(ket)
+                    l_k += log(nrm)
+                end
             end
-        end
 
-        overlap = inner(bra, ket)
-        vals[i] = exp(2 * l_b + l_k - 2 * l_beta) * overlap
+            overlap = inner(bra, ket)
+            vals[i] = exp(2 * l_b + l_k - 2 * l_beta) * overlap
+        end
     end
 
     meta = merge(metadata, (; beta=Float64(beta), Asite, Bsite,
                              connected,
                              centering=connected ? :thermal_mean_insertion : :none,
                              Abar, Bbar, evolver_type=typeof(evolver),))
-    return CorrelatorSeries(collect(Float64.(taus)), vals, meta)
+    return CorrelatorSeries(tau_values, vals, meta)
 end
 
 function _check_evolver_no_normalize(evolver)

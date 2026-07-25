@@ -32,6 +32,10 @@ Base.@kwdef mutable struct TDVP1 <: Evolver
     order::Int = 2
     krylovdim::Int = 30
     tol::Float64 = 1e-12
+    threaded_channels::Bool = false
+    channel_slices::Int = 2
+    channel_minbatch::Int = 2
+    channel_memory_cap_bytes::Union{Nothing,Real} = nothing
     verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
 end
@@ -58,6 +62,10 @@ Base.@kwdef mutable struct TDVP2 <: Evolver
     tol::Float64 = 1e-12
     contraction_optimize::Bool = true
     contraction_sector_aware::Bool = true
+    threaded_channels::Bool = false
+    channel_slices::Int = 2
+    channel_minbatch::Int = 2
+    channel_memory_cap_bytes::Union{Nothing,Real} = nothing
     verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
 end
@@ -84,6 +92,10 @@ Base.@kwdef mutable struct TDVP1_CBE <: Evolver
     enabled::Bool = true
     krylovdim::Int = 30
     tol::Float64 = 1e-12
+    threaded_channels::Bool = false
+    channel_slices::Int = 2
+    channel_minbatch::Int = 2
+    channel_memory_cap_bytes::Union{Nothing,Real} = nothing
     verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
 end
@@ -200,9 +212,15 @@ function _tdvp1_sweep!(ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO, dz::Number
         n = order[i]
         @assert ψ.center == n
         # forward-evolve the site
-        h1 = eff_h1(cache, ψ, H, n)
-        A, _ = exponentiate(workspace_map(h1), dz, ψ.tensors[n];
-                            ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
+        h1 = eff_h1(cache, ψ, H, n;
+                    threaded_channels=ev.threaded_channels,
+                    channel_slices=ev.channel_slices,
+                    channel_minbatch=ev.channel_minbatch,
+                    channel_memory_cap_bytes=ev.channel_memory_cap_bytes)
+        A, _ = Contractions._with_workspace_map(h1) do h1map
+            exponentiate(h1map, dz, ψ.tensors[n];
+                         ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
+        end
         update_tensor!(ψ, n, A; caches=(cache,))
         # walk to the next update site, backward-evolving the links that the
         # splitting assigns to this sweep direction
@@ -344,9 +362,15 @@ Base.@noinline function _bond_forward!(
     Θ = two_site_tensor(ψ, n, m)
     h2 = eff_h2(cache, ψ, H, n, m;
                 optimize=ev.contraction_optimize,
-                sector_aware=ev.contraction_sector_aware)
-    Θ, _ = exponentiate(workspace_map(h2), dz, Θ;
-                         ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
+                sector_aware=ev.contraction_sector_aware,
+                threaded_channels=ev.threaded_channels,
+                channel_slices=ev.channel_slices,
+                channel_minbatch=ev.channel_minbatch,
+                channel_memory_cap_bytes=ev.channel_memory_cap_bytes)
+    Θ, _ = Contractions._with_workspace_map(h2) do h2map
+        exponentiate(h2map, dz, Θ;
+                     ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
+    end
     invalidate_edge!(cache, n, m)
     split_two_site!(ψ, Θ, n, m; trunc=ev.trunc, center_on)
     return ψ
@@ -360,12 +384,22 @@ Base.@noinline function _site_backward!(
     h1 = if ev isa TDVP2
         eff_h1(cache, ψ, H, m;
                optimize=ev.contraction_optimize,
-               sector_aware=ev.contraction_sector_aware)
+               sector_aware=ev.contraction_sector_aware,
+               threaded_channels=ev.threaded_channels,
+               channel_slices=ev.channel_slices,
+               channel_minbatch=ev.channel_minbatch,
+               channel_memory_cap_bytes=ev.channel_memory_cap_bytes)
     else
-        eff_h1(cache, ψ, H, m)
+        eff_h1(cache, ψ, H, m;
+               threaded_channels=ev.threaded_channels,
+               channel_slices=ev.channel_slices,
+               channel_minbatch=ev.channel_minbatch,
+               channel_memory_cap_bytes=ev.channel_memory_cap_bytes)
     end
-    A, _ = exponentiate(workspace_map(h1), -dz, ψ.tensors[m];
-                        ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
+    A, _ = Contractions._with_workspace_map(h1) do h1map
+        exponentiate(h1map, -dz, ψ.tensors[m];
+                     ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
+    end
     update_tensor!(ψ, m, A; caches=(cache,))
     return ψ
 end
@@ -421,9 +455,16 @@ function _cbe_predictor(ev::TDVP1_CBE, ψ::TTNS, H::TTNO, u::Int, v::Int, dz::Nu
     n, m = t.parent[u] == v ? (u, v) : (v, u)       # (child, parent) of the edge
     cache = ev.cache::EnvCache
     Θ = two_site_tensor(ψ, n, m)
-    h2 = eff_h2(cache, ψ, H, n, m)
-    Θ, _ = exponentiate(workspace_map(h2), dz, Θ;
-                        ishermitian=ishermitian(H), krylovdim=ev.krylovdim, tol=ev.tol)
+    h2 = eff_h2(cache, ψ, H, n, m;
+                threaded_channels=ev.threaded_channels,
+                channel_slices=ev.channel_slices,
+                channel_minbatch=ev.channel_minbatch,
+                channel_memory_cap_bytes=ev.channel_memory_cap_bytes)
+    Θ, _ = Contractions._with_workspace_map(h2) do h2map
+        exponentiate(h2map, dz, Θ;
+                    ishermitian=ishermitian(H), krylovdim=ev.krylovdim,
+                    tol=ev.tol)
+    end
     pn = numout(ψ.tensors[n])
     NΘ = numind(Θ)
     Θs = permute(Θ, (ntuple(identity, pn), ntuple(j -> pn + j, NΘ - pn)))

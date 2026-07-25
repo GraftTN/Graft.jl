@@ -32,6 +32,7 @@ using ..Contractions
 using ..Symbolic
 using ..TTNOBuild
 using ..Evolution
+using ..Parallel: threaded_foreach
 
 using ..Backend: ℂ, ComplexSpace, ⊗, ←, dual, oneunit, dim, space, id,
     numind, numout, numin, codomain, domain, sectors, sectortype, spacetype,

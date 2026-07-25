@@ -50,7 +50,9 @@ export @tensor, ncon, contract_pair, pair_cost, space_signature,
     contract_pair_compatible
 # Graft-defined
 export FermionSector, AbelianSector, TruncationScheme, truncspec, split_svd,
-    split_svd_with_error, absorb_on_leg, orth_factor_leg, trivialspace, ones_tensor
+    split_svd_with_error, absorb_on_leg, transform_leg, transform_leg_space,
+    orth_factor_leg,
+    trivialspace, ones_tensor
 
 # ---------------------------------------------------------------------------
 # standard impurity sector types (§2)
@@ -417,6 +419,52 @@ function absorb_on_leg(A::AbstractTensorMap, C::AbstractTensorMap, k::Int)
     t = permute(A, (_others(N, k), (k,)))          # :: others ← dual(V_old)
     t = t * transpose(C)                           # :: others ← dual(V_new)
     return permute(t, _restore_perm(N, No, k))
+end
+
+"""
+    transform_leg(A, C, k) -> A′
+
+Apply `C :: V_new ← V_old` to arbitrary flat leg `k` of `A`, preserving the
+original flat-leg order and codomain/domain partition. Codomain legs use the
+specialized [`absorb_on_leg`](@ref) path; domain legs use one expert-mode
+TensorOperations contraction. This is an exact structural transformation,
+not a truncation.
+"""
+function transform_leg(A::AbstractTensorMap, C::AbstractTensorMap, k::Int)
+    N, No = numind(A), numout(A)
+    1 <= k <= N || throw(ArgumentError("leg $k is outside tensor rank $N"))
+    domain(C)[1] == space(A, k) ||
+        throw(SpaceMismatch("transform_leg: domain of C ($(domain(C)[1])) ≠ leg $k of A ($(space(A, k)))"))
+    k <= No && return absorb_on_leg(A, C, k)
+
+    pA = (_others(N, k), (k,))
+    # C's second flat leg is dual(V_old); its first is the new open V_new.
+    pC = ((2,), (1,))
+    order = (ntuple(identity, k - 1)..., N,
+             ntuple(i -> k + i - 1, N - k)...)
+    pAC = (Tuple(order[1:No]), Tuple(order[(No + 1):end]))
+    return contract_pair(A, pA, false, C, pC, false, pAC)
+end
+
+"""
+    transform_leg_space(A, Vnew, k) -> TensorMapSpace
+
+Shape-only counterpart of [`transform_leg`](@ref). Replace flat leg `k` by
+`Vnew` using TensorOperations' structural contraction, without allocating a
+tensor payload. `A` may be a tensor or a TensorMapSpace.
+"""
+function transform_leg_space(A, Vnew::ElementarySpace, k::Int)
+    W = A isa AbstractTensorMap ? space(A) : A
+    N, No = numind(W), numout(W)
+    1 <= k <= N || throw(ArgumentError("leg $k is outside tensor rank $N"))
+    Vold = W[k]
+    C = Vnew ← Vold
+    pA = (_others(N, k), (k,))
+    pC = ((2,), (1,))
+    order = (ntuple(identity, k - 1)..., N,
+             ntuple(i -> k + i - 1, N - k)...)
+    pAC = (Tuple(order[1:No]), Tuple(order[(No + 1):end]))
+    return TensorOperations.tensorcontract(W, pA, false, C, pC, false, pAC)
 end
 
 """

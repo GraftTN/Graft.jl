@@ -32,7 +32,10 @@ drops below `tol`. With `verbose=true`, emits setup and per-sweep `@info`
 records with topology, solver, energy, convergence, center, and bond statistics.
 """
 function dmrg1!(ψ::TTNS, H::TTNO; nsweeps::Int=10, tol::Float64=1e-10,
-                krylovdim::Int=20, verbose::Bool=true)
+                krylovdim::Int=20, verbose::Bool=true,
+                threaded_channels::Bool=false, channel_slices::Int=2,
+                channel_minbatch::Int=2,
+                channel_memory_cap_bytes::Union{Nothing,Real}=nothing)
     ishermitian(H) || throw(ArgumentError("dmrg1!: DMRG requires ishermitian(H) == true (§9.8)"))
     cache = EnvCache(ψ.topo)
     energies = Float64[]
@@ -44,9 +47,12 @@ function dmrg1!(ψ::TTNS, H::TTNO; nsweeps::Int=10, tol::Float64=1e-10,
         E = NaN
         for n in Iterators.flatten((order, Iterators.reverse(order)))
             move_center!(ψ, n; cache)
-            h1 = eff_h1(cache, ψ, H, n)
-            vals, vecs, _ = eigsolve(workspace_map(h1), ψ.tensors[n], 1, :SR;
-                                     ishermitian=true, krylovdim)
+            h1 = eff_h1(cache, ψ, H, n; threaded_channels, channel_slices,
+                        channel_minbatch, channel_memory_cap_bytes)
+            vals, vecs, _ = Contractions._with_workspace_map(h1) do h1map
+                eigsolve(h1map, ψ.tensors[n], 1, :SR;
+                         ishermitian=true, krylovdim)
+            end
             E = real(vals[1])
             update_tensor!(ψ, n, vecs[1]; caches=(cache,))
         end
@@ -77,6 +83,9 @@ which of the newly available directions acquire weight.
 """
 function dmrg2!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(),
                 nsweeps::Int=10, tol::Float64=1e-10, krylovdim::Int=20,
+                threaded_channels::Bool=false, channel_slices::Int=2,
+                channel_minbatch::Int=2,
+                channel_memory_cap_bytes::Union{Nothing,Real}=nothing,
                 verbose::Bool=true)
     ishermitian(H) || throw(ArgumentError("dmrg2!: DMRG requires ishermitian(H) == true (§9.8)"))
     t = ψ.topo
@@ -95,9 +104,11 @@ function dmrg2!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(),
             m = t.parent[n]
             move_center!(ψ, n; cache)
             Θ = two_site_tensor(ψ, n, m)
-            h2 = eff_h2(cache, ψ, H, n, m)
-            vals, vecs, _ = eigsolve(workspace_map(h2), Θ, 1, :SR;
-                                     ishermitian=true, krylovdim)
+            h2 = eff_h2(cache, ψ, H, n, m; threaded_channels, channel_slices,
+                        channel_minbatch, channel_memory_cap_bytes)
+            vals, vecs, _ = Contractions._with_workspace_map(h2) do h2map
+                eigsolve(h2map, Θ, 1, :SR; ishermitian=true, krylovdim)
+            end
             E = real(vals[1])
             invalidate_edge!(cache, n, m)
             split_two_site!(ψ, vecs[1], n, m; trunc, center_on)
@@ -129,6 +140,11 @@ function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(;
                    mixing=1.0, max_add::Int=8, expand_scheme::Symbol=:exact,
                    rng::Union{Nothing,AbstractRNG}=nothing,
                    rsvd_oversample::Int=8, rsvd_poweriter::Int=0,
+                   rsvd_threaded::Bool=Base.Threads.nthreads() > 1,
+                   rsvd_minbatch::Int=max(2, Base.Threads.nthreads()),
+                   threaded_channels::Bool=false, channel_slices::Int=2,
+                   channel_minbatch::Int=2,
+                   channel_memory_cap_bytes::Union{Nothing,Real}=nothing,
                    enr_rtol::Float64=1e-10, enr_atol::Float64=1e-12,
                    verbose::Bool=true)
     ishermitian(H) || throw(ArgumentError("dmrg1_3s!: DMRG requires ishermitian(H) == true (§9.8)"))
@@ -141,14 +157,18 @@ function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(;
                                          updates_per_sweep=2 * length(order),
                                          trunc, expand_scheme, max_add,
                                          rsvd_oversample, rsvd_poweriter,
+                                         rsvd_threaded, rsvd_minbatch,
                                          enr_rtol, enr_atol)
     for sweep in 1:nsweeps
         E = NaN
         for n in Iterators.flatten((order, Iterators.reverse(order)))
             move_center!(ψ, n; cache)
-            h1 = eff_h1(cache, ψ, H, n)
-            vals, vecs, _ = eigsolve(workspace_map(h1), ψ.tensors[n], 1, :SR;
-                                     ishermitian=true, krylovdim)
+            h1 = eff_h1(cache, ψ, H, n; threaded_channels, channel_slices,
+                        channel_minbatch, channel_memory_cap_bytes)
+            vals, vecs, _ = Contractions._with_workspace_map(h1) do h1map
+                eigsolve(h1map, ψ.tensors[n], 1, :SR;
+                         ishermitian=true, krylovdim)
+            end
             E = real(vals[1])
             update_tensor!(ψ, n, vecs[1]; caches=(cache,))
         end
@@ -158,7 +178,10 @@ function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(;
             for n in bonds
                 expand!(ψ, H, (n, t.parent[n]); scheme=expand_scheme, cache,
                         rng, trunc, max_add, mixing=α, enr_rtol, enr_atol,
-                        rsvd_oversample, rsvd_poweriter)
+                        rsvd_oversample, rsvd_poweriter,
+                        rsvd_threaded, rsvd_minbatch, threaded_channels,
+                        channel_slices, channel_minbatch,
+                        channel_memory_cap_bytes)
             end
             Contractions._bootstrap_physless_root!(ψ, cache, root_targets)
         end
@@ -226,7 +249,8 @@ function _log_dmrg_expansion_start(name::String, ψ::TTNS; nsweeps::Int, tol::Fl
                                    krylovdim::Int, updates_per_sweep::Int,
                                    trunc::TruncationScheme, expand_scheme::Symbol,
                                    max_add::Int, rsvd_oversample::Int,
-                                   rsvd_poweriter::Int, enr_rtol::Float64,
+                                   rsvd_poweriter::Int, rsvd_threaded::Bool,
+                                   rsvd_minbatch::Int, enr_rtol::Float64,
                                    enr_atol::Float64)
     t = ψ.topo
     nodes = nnodes(t)
@@ -238,7 +262,7 @@ function _log_dmrg_expansion_start(name::String, ψ::TTNS; nsweeps::Int, tol::Fl
     trunc_atol = trunc.atol
     trunc_rtol = trunc.rtol
     trunc_discarded_weight = trunc.discarded_weight
-    @info "$name start" nodes physical_sites bonds center_site nsweeps tol krylovdim updates_per_sweep initial_maxbond trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight expand_scheme max_add rsvd_oversample rsvd_poweriter enr_rtol enr_atol
+    @info "$name start" nodes physical_sites bonds center_site nsweeps tol krylovdim updates_per_sweep initial_maxbond trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight expand_scheme max_add rsvd_oversample rsvd_poweriter rsvd_threaded rsvd_minbatch enr_rtol enr_atol
     return nothing
 end
 

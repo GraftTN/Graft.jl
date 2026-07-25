@@ -43,15 +43,28 @@ const QUIET = (verbose=false,)
         Hd = dense_hamiltonian(H, topo, phys)
         beta = 1.0
         taus = [0.0, 0.25, 0.5, 0.75, 1.0]
+        save_betas = sort(unique(vcat(beta .- taus, [beta])))
+        traj = thermalize(Purified(), prob, beta;
+            evolver=TDVP2(trunc=TruncationScheme(maxdim=8); QUIET...),
+            nsteps=30, save_betas=save_betas)
         series = thermal_correlator(Purified(), prob,
             :site1 => S.N, :site1 => S.N, beta, taus;
             evolver=TDVP2(trunc=TruncationScheme(maxdim=8); QUIET...),
-            prep_nsteps=30, prop_nsteps=30, connected=true)
+            trajectory=traj, prop_nsteps=30, connected=true,
+            threaded=false)
+        series_threaded = thermal_correlator(Purified(), prob,
+            :site1 => S.N, :site1 => S.N, beta, taus;
+            evolver=TDVP2(trunc=TruncationScheme(maxdim=8); QUIET...),
+            trajectory=traj, prop_nsteps=30, connected=true,
+            threaded=true, minbatch=1)
         Nd = dense_hamiltonian(OpSum() + Term(1.0, SiteOp(:site1, :N, S.N)), topo, phys)
         ref = exact_thermal_correlator(Hd, Nd, Nd, beta, taus)
         nbar = real(exact_thermal_expect(Hd, Nd, beta))
         ref_c = ref .- nbar^2
         @test maximum(abs.(series.values .- ref_c)) < 1e-9
+        @test series_threaded.times == series.times
+        @test maximum(abs.(series_threaded.values .- series.values)) < 1e-12
+        @test series_threaded.metadata == series.metadata
         @test series.metadata.centering == :thermal_mean_insertion
         @test series.metadata.Abar ≈ nbar atol = 1e-10
         @test series.metadata.Bbar ≈ nbar atol = 1e-10
@@ -123,12 +136,19 @@ const QUIET = (verbose=false,)
         s1 = thermal_correlator(Purified(), prob,
             :site1 => S.Z, :site1 => S.Z, beta, taus;
             evolver=TDVP2(trunc=TruncationScheme(maxdim=4); QUIET...),
-            trajectory=traj, prop_nsteps=40)
+            trajectory=traj, prop_nsteps=40, threaded=false)
         s2 = thermal_correlator(Purified(), prob,
             :site1 => S.Z, :site1 => S.Z, beta, taus;
             evolver=TDVP2(trunc=TruncationScheme(maxdim=4); QUIET...),
             prep_nsteps=40, prop_nsteps=40)
+        s3 = thermal_correlator(Purified(), prob,
+            :site1 => S.Z, :site1 => S.Z, beta, (tau for tau in taus);
+            evolver=TDVP2(trunc=TruncationScheme(maxdim=4); QUIET...),
+            trajectory=traj, prop_nsteps=40, threaded=true, minbatch=1)
         @test maximum(abs.(s1.values .- s2.values)) < 1e-10
+        @test s3.times == s1.times
+        @test maximum(abs.(s3.values .- s1.values)) < 1e-12
+        @test s3.metadata == s1.metadata
     end
 
     @testset "trajectory mismatch rejected" begin

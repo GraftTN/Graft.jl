@@ -9,7 +9,8 @@ using Graft.Backend: ℂ, ⊗, ←, dim, domain, dual, space, id, numind, numout
     U1Space, U1Irrep, FermionParity, TensorMap, blocks, oneunit, sectors
 using TensorOperations
 using Graft.Trees: edges
-using Graft.Contractions: two_site_tensor, two_site_space, split_two_site!
+using Graft.Contractions: two_site_tensor, two_site_space, split_two_site!,
+    _rsvd_random_probe
 using Random
 using LinearAlgebra: I, dot, norm
 
@@ -160,6 +161,27 @@ include("fermionic_operator_algebra.jl")
     end
     @test out2 == [2 * i for i in 1:8]
     @test_throws ArgumentError threaded_foreach(identity, [1]; minbatch=0)
+
+    runtime = configure_parallel_runtime!()
+    @test runtime.julia_threads == Base.Threads.nthreads()
+    @test runtime.blas_threads == 1
+    @test runtime.strided_threads == 1
+    @test_throws ArgumentError configure_parallel_runtime!(; blas_threads=0)
+    @test_throws ArgumentError configure_parallel_runtime!(; strided_threads=0)
+
+    U = spin_ops_u1()
+    probe_target = U.P ← U.P
+    rng_serial = Xoshiro(2026072501)
+    rng_threaded = Xoshiro(2026072501)
+    probe_serial = _rsvd_random_probe(
+        rng_serial, ComplexF64, probe_target; threaded=false, minbatch=1)
+    probe_threaded = _rsvd_random_probe(
+        rng_threaded, ComplexF64, probe_target; threaded=true, minbatch=1)
+    @test length(collect(blocks(probe_serial))) == 2
+    @test iszero(norm(probe_threaded - probe_serial))
+    @test rand(rng_threaded, UInt64) == rand(rng_serial, UInt64)
+    @test_throws ArgumentError _rsvd_random_probe(
+        Xoshiro(1), ComplexF64, probe_target; minbatch=0)
 end
 
 @graft_testset "canonical form & gauge invariance" begin
@@ -542,10 +564,11 @@ end
     ψr1, ψr2 = copy(ψr), copy(ψr)
     expand!(ψr1, O, (leaf, topo.parent[leaf]); scheme=:rsvd,
             rng=MersenneTwister(2202), trunc=TruncationScheme(maxdim=4),
-            max_add=3, rsvd_oversample=2)
+            max_add=3, rsvd_oversample=2, rsvd_threaded=false)
     expand!(ψr2, O, (leaf, topo.parent[leaf]); scheme=:rsvd,
             rng=MersenneTwister(2202), trunc=TruncationScheme(maxdim=4),
-            max_add=3, rsvd_oversample=2)
+            max_add=3, rsvd_oversample=2,
+            rsvd_threaded=true, rsvd_minbatch=1)
     @test norm(to_dense(ψr1) - to_dense(ψr)) < 1e-10
     @test norm(to_dense(ψr1) - to_dense(ψr2)) < 1e-12
     @test maximum(bonddims(ψr1)) > 1
@@ -697,12 +720,15 @@ end
 
 @graft_testset "TDVP vs exact propagation" begin
     @test TDVP1().verbose
+    @test !TDVP1().threaded_channels
     @test TDVP2().verbose
     @test TDVP2().contraction_optimize
     @test TDVP2().contraction_sector_aware
     @test TDVP1_CBE().verbose
+    @test !TDVP1_CBE().threaded_channels
     @test GSE_TDVP().verbose
     @test GSE_TDVP().contraction_optimize
+    @test !GSE_TDVP().threaded_channels
     @test GSE_TDVP().contraction_sector_aware
     @test LSE_TDVP().verbose
 

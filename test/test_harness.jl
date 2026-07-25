@@ -16,6 +16,7 @@ end
 # Expensive diagnostic prefixes and stress permutations are opt-in; the
 # default tier retains public action/ED/topology/interface contracts.
 const GRAFT_EXTENDED_TESTS = _graft_boolean_env("GRAFT_EXTENDED_TESTS", false)
+const GRAFT_TEST_LIST_STAGES = _graft_boolean_env("GRAFT_TEST_LIST_STAGES", false)
 
 function _graft_positive_env_int(name::String, default::Int)
     raw = get(ENV, name, string(default))
@@ -46,6 +47,23 @@ end
 
 const _GRAFT_TEST_TOTALS = _GraftTestTotals(0, 0, 0, 0, 0)
 
+function _graft_test_counts(testset::Test.DefaultTestSet)
+    counts = Test.get_test_counts(testset)
+    if counts isa Tuple
+        passed = counts[1] + counts[5]
+        failed = counts[2] + counts[6]
+        errors = counts[3] + counts[7]
+        broken = counts[4] + counts[8]
+        return (; passed, failed, errors, broken)
+    else
+        passed = counts.passes + counts.cumulative_passes
+        failed = counts.fails + counts.cumulative_fails
+        errors = counts.errors + counts.cumulative_errors
+        broken = counts.broken + counts.cumulative_broken
+        return (; passed, failed, errors, broken)
+    end
+end
+
 function _graft_next_test_stage()
     ordinal = (_GRAFT_TEST_STAGE_ORDINAL[] += 1)
     selected = mod1(ordinal, GRAFT_TEST_SHARD_COUNT) == GRAFT_TEST_SHARD_INDEX
@@ -53,11 +71,11 @@ function _graft_next_test_stage()
 end
 
 function _graft_report_test_stage(testset::Test.DefaultTestSet, elapsed::Float64)
-    counts = Test.get_test_counts(testset)
-    passed = counts.passes + counts.cumulative_passes
-    failed = counts.fails + counts.cumulative_fails
-    errors = counts.errors + counts.cumulative_errors
-    broken = counts.broken + counts.cumulative_broken
+    counts = _graft_test_counts(testset)
+    passed = counts.passed
+    failed = counts.failed
+    errors = counts.errors
+    broken = counts.broken
     total = passed + failed + errors + broken
     elapsed_text = @sprintf "%.3fs" elapsed
     _GRAFT_TEST_TOTALS.passed += passed
@@ -85,6 +103,8 @@ end
 macro graft_testset(name, body)
     return quote
         local graft_stage = _graft_next_test_stage()
+        GRAFT_TEST_LIST_STAGES &&
+            println("[stage-list] ordinal=$(graft_stage.ordinal) name=", $name)
         if graft_stage.selected
             local graft_started = time_ns()
             local graft_testset = Test.@testset $name $body
@@ -112,6 +132,8 @@ macro graft_extended_testset(args...)
     end
     return quote
         local graft_stage = _graft_next_test_stage()
+        GRAFT_TEST_LIST_STAGES &&
+            println("[stage-list] ordinal=$(graft_stage.ordinal) name=", $name)
         if (GRAFT_EXTENDED_TESTS || $force) && graft_stage.selected
             local graft_started = time_ns()
             local graft_testset = Test.@testset $name $body

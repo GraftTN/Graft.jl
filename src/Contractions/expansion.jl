@@ -2,14 +2,19 @@
     expand!(ψ, H, edge; scheme=:exact, cache=nothing, rng=nothing,
             trunc, max_add=8, mixing=1, enr_rtol=1e-10, enr_atol=1e-12,
             rsvd_oversample=8, rsvd_poweriter=0,
+            rsvd_threaded=Base.Threads.nthreads() > 1,
+            rsvd_minbatch=max(2, Base.Threads.nthreads()),
             contraction_optimize=true,
-            contraction_sector_aware=true) -> ψ
+            contraction_sector_aware=true,
+            threaded_channels=false, channel_slices=2,
+            channel_minbatch=2, channel_memory_cap_bytes=nothing) -> ψ
 
 Shared bond-expansion primitive (§5a/§11.7). `edge` is `(child, parent)` or
 `child => parent` using node ids or indices. `scheme=:exact` forms the
 predictor basis with a deterministic SVD. `scheme=:rsvd` uses explicit-RNG
 blockwise randomized probes on the fused rest space and never touches global
-randomness.
+randomness. Probe-block RNG seeds are derived serially from `rng`, so
+`rsvd_threaded=true` is bitwise-equivalent to the serial probe generation.
 """
 function expand!(ψ::TTNS, H::TTNO, edge; scheme::Symbol=:exact,
                  cache::Union{Nothing,EnvCache}=nothing,
@@ -18,13 +23,19 @@ function expand!(ψ::TTNS, H::TTNO, edge; scheme::Symbol=:exact,
                  max_add::Int=8, mixing::Number=one(Float64),
                  enr_rtol::Float64=1e-10, enr_atol::Float64=1e-12,
                  rsvd_oversample::Int=8, rsvd_poweriter::Int=0,
+                 rsvd_threaded::Bool=Base.Threads.nthreads() > 1,
+                 rsvd_minbatch::Integer=max(2, Base.Threads.nthreads()),
                  contraction_optimize::Bool=true,
-                 contraction_sector_aware::Bool=true)
+                 contraction_sector_aware::Bool=true,
+                 threaded_channels::Bool=false, channel_slices::Int=2,
+                 channel_minbatch::Int=2,
+                 channel_memory_cap_bytes::Union{Nothing,Real}=nothing)
     scheme in (:exact, :rsvd) ||
         throw(ArgumentError("expand!: scheme must be :exact or :rsvd"))
     max_add >= 0 || throw(ArgumentError("expand!: max_add must be nonnegative"))
     rsvd_oversample >= 0 || throw(ArgumentError("expand!: rsvd_oversample must be nonnegative"))
     rsvd_poweriter >= 0 || throw(ArgumentError("expand!: rsvd_poweriter must be nonnegative"))
+    rsvd_minbatch >= 1 || throw(ArgumentError("expand!: rsvd_minbatch must be positive"))
     scheme === :rsvd && rng === nothing &&
         throw(ArgumentError("expand!: scheme=:rsvd requires an explicit rng (§9.6)"))
     iszero(mixing) && return ψ
@@ -39,10 +50,13 @@ function expand!(ψ::TTNS, H::TTNO, edge; scheme::Symbol=:exact,
     Θ = two_site_tensor(ψ, n, m)
     h2 = eff_h2(c, ψ, H, n, m;
                 optimize=contraction_optimize,
-                sector_aware=contraction_sector_aware)
+                sector_aware=contraction_sector_aware,
+                threaded_channels, channel_slices, channel_minbatch,
+                channel_memory_cap_bytes)
     PΘ = mixing * h2(Θ)
     P = _child_predictor_basis(ψ, PΘ, n, cap; scheme, rng,
-                               rsvd_oversample, rsvd_poweriter)
+                               rsvd_oversample, rsvd_poweriter,
+                               rsvd_threaded, rsvd_minbatch)
     U, R = _expand_enrich_split(ψ.tensors[n], P; maxdim=cap,
                                 max_add=cap - olddim,
                                 enr_rtol, enr_atol)
@@ -77,13 +91,16 @@ function _child_predictor_basis(ψ::TTNS, PΘ::AbstractTensorMap, n::Int, maxdim
                                 scheme::Symbol=:exact,
                                 rng::Union{Nothing,AbstractRNG}=nothing,
                                 rsvd_oversample::Int=8,
-                                rsvd_poweriter::Int=0)
+                                rsvd_poweriter::Int=0,
+                                rsvd_threaded::Bool=Base.Threads.nthreads() > 1,
+                                rsvd_minbatch::Integer=max(2, Base.Threads.nthreads()))
     pn = numout(ψ.tensors[n])
     NP = numind(PΘ)
     Ps = permute(PΘ, (ntuple(identity, pn), ntuple(j -> pn + j, NP - pn)))
     if scheme === :rsvd
         return _rsvd_predictor_basis(Ps, maxdim; rng, rsvd_oversample,
-                                     rsvd_poweriter)
+                                     rsvd_poweriter, threaded=rsvd_threaded,
+                                     minbatch=rsvd_minbatch)
     end
     U, _, _ = split_svd(Ps, TruncationScheme(; maxdim))
     return U
@@ -92,17 +109,34 @@ end
 function _rsvd_predictor_basis(Ps::AbstractTensorMap, maxdim::Int;
                                rng::AbstractRNG,
                                rsvd_oversample::Int,
-                               rsvd_poweriter::Int)
+                               rsvd_poweriter::Int,
+                               threaded::Bool=Base.Threads.nthreads() > 1,
+                               minbatch::Integer=max(2, Base.Threads.nthreads()))
     Vrest = fuse(domain(Ps))
     budget = min(dim(Vrest), maxdim + rsvd_oversample)
     K = _rsvd_probe_space(Vrest, budget)
-    Ω = randn(rng, scalartype(Ps), domain(Ps) ← K)
+    Ω = _rsvd_random_probe(rng, scalartype(Ps), domain(Ps) ← K;
+                           threaded, minbatch)
     Y = Ps * Ω
     for _ in 1:rsvd_poweriter
         Y = Ps * (Ps' * Y)
     end
     U, _, _ = split_svd(Y, TruncationScheme(; maxdim))
     return U
+end
+
+function _rsvd_random_probe(rng::AbstractRNG, ::Type{T}, target;
+                            threaded::Bool=Base.Threads.nthreads() > 1,
+                            minbatch::Integer=max(2, Base.Threads.nthreads())) where {T<:Number}
+    minbatch >= 1 || throw(ArgumentError("RSVD probe minbatch must be positive"))
+    Ω = zeros(T, target)
+    probe_blocks = collect(blocks(Ω))
+    seeds = rand(rng, UInt64, length(probe_blocks))
+    threaded_foreach(eachindex(probe_blocks); threaded, minbatch) do i
+        _, block_ = probe_blocks[i]
+        randn!(Xoshiro(seeds[i]), block_)
+    end
+    return Ω
 end
 
 function _rsvd_probe_space(::ComplexSpace, budget::Int)

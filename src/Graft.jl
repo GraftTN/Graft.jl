@@ -32,6 +32,7 @@ module Graft
 include("Backend/Backend.jl")
 include("Trees/Trees.jl")
 include("Networks/Networks.jl")
+include("Parallel/Parallel.jl")
 include("Contractions/Contractions.jl")
 # `apply` and `fit!` use the generic complete-tuple planner. Load their methods
 # after the lower-level Networks data types and Contractions.Planning exist.
@@ -44,7 +45,6 @@ include("Evolution/Evolution.jl")
 include("Thermal/Thermal.jl")
 include("FreqDomain/FreqDomain.jl")
 include("IO/Checkpoints.jl")
-include("Parallel/Parallel.jl")
 include("TestUtils/TestUtils.jl")
 
 using .Backend
@@ -73,7 +73,8 @@ export TTNS, TTNO, TTNDO, topology, center, move_center!, update_tensor!,
     normalize!, check_arrows, physspace, virtualspace, apply, fit!, apply_local,
     compress!, TTNOCompressionSectorReport, TTNOCompressionEdgeReport,
     TTNOCompressionReport,
-    EnvCache, EffectiveMap, PlanWorkspace, workspace_map, workspace_stats,
+    EnvCache, EffectiveMap, ChannelSlicedEffectiveMap, PlanWorkspace,
+    workspace_map, workspace_stats,
     env_cache_stats, inner, expect, eff_h1, eff_h0, eff_h2
 # L4
 export OpSum, Term, SiteOp, charge, spin_ops, spin_ops_u1,
@@ -93,7 +94,8 @@ export dmrg1!, dmrg2!, dmrg1_3s!, expand!,
     infinite_temperature_state, thermal_expect, thermal_correlator,
     state_at
 # cross-cutting
-export checkpoint!, resume, with_checkpoint, threaded_foreach
+export checkpoint!, resume, with_checkpoint, threaded_foreach,
+    configure_parallel_runtime!
 
 include("precompile.jl")
 
