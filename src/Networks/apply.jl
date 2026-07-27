@@ -58,6 +58,12 @@ function _apply_node_spec(O::TTNO{S}, ψ::TTNS{S}, n::Int,
     W = O.tensors[n]
     K = nchildren(t, n)
     hp = hasphys(ψ, n)
+    # A dual physical output wire carries the ribbon pivotal twist, exactly as
+    # _bent_edge_fusion does for a dual state bond: without it the zip negates
+    # every odd-parity block of the node output at a dual-physical node.
+    if hp && isdual(space(W, K + 1))
+        W = twist(W, K + 1)
+    end
     parent_fusion = get(fusions, n, nothing)
     parent_fusion === nothing &&
         throw(ArgumentError("apply node $(nodeid(t, n)) is missing its edge fusion"))
@@ -155,6 +161,9 @@ function _apply_node_tensor_ncon_reference(O::TTNO{S}, ψ::TTNS{S}, n::Int,
     T = promote_type(eltype(O), eltype(ψ))
     K = nchildren(t, n)
     hp = hasphys(ψ, n)
+    if hp && isdual(space(W, K + 1))
+        W = twist(W, K + 1)
+    end
 
     tensors = Any[A, W]
     aidx = zeros(Int, numind(A))
