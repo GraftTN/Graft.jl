@@ -290,6 +290,7 @@ function _channel_sliced_h1!(cache::EnvCache, full::EffectiveMap,
         _effective_map!(cache, kind, spec, sliced_protos, sliced_statics,
                         scalartype(ψ.tensors[n]);
                         optimize, memory_weight, sector_aware, memory_cap_bytes,
+                        input_twists=full.input_twists,
                         output_twists=full.output_twists)
     end
     map_tuple = Tuple(maps)
@@ -372,6 +373,7 @@ function _channel_sliced_h2!(cache::EnvCache, full::EffectiveMap,
         _effective_map!(cache, kind, spec, sliced_protos, sliced_statics,
                         scalartype(ψ.tensors[n]);
                         optimize, memory_weight, sector_aware, memory_cap_bytes,
+                        input_twists=full.input_twists,
                         output_twists=full.output_twists)
     end
     map_tuple = Tuple(maps)
@@ -498,6 +500,8 @@ function _h0_input_space(En::AbstractTensorMap, Em::AbstractTensorMap)
 end
 
 function _h0_spec(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int, m::Int)
+    ψ.topo.parent[n] == m ||
+        throw(ArgumentError("eff_h0: m must be the parent of n"))
     En = env!(cache, ψ, H, n, m)
     Em = env!(cache, ψ, H, m, n)
     Cspace = _h0_input_space(En, Em)
@@ -513,22 +517,46 @@ end
 Zero-site (link) effective Hamiltonian on adjacent nodes `n, m`, acting on the
 gauge link tensor used by the TDVP backward step. The returned map has direct
 `(1, 1)` output partitioning; no trailing `repartition` copy is made. Planner
-keywords have the same semantics as `eff_h1`.
+keywords have the same semantics as `eff_h1`. `m` must be the parent of `n`,
+and the detached link must have left the orthogonality center on either `n`
+(`_split_link_up`) or `m` (`_split_link_down`); the center side selects the
+corresponding pivotal link coordinates.
 """
 function eff_h0(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int, m::Int;
                 optimize::Bool=true, memory_weight::Real=1,
                 sector_aware::Bool=true,
                 memory_cap_bytes::Union{Nothing,Real}=nothing)
     spec, statics, protos = _h0_spec(cache, ψ, H, n, m)
+    ψ.center in (n, m) ||
+        throw(ArgumentError("eff_h0: orthogonality center must lie on the active edge"))
     Cspace = first(protos)
-    twists = isdual(codomain(Cspace)[1]) &&
-        _component_has_dual_physical(ψ, n, m) ? (1,) : ()
+    euclidean_twists = Int[]
+    isdual(Cspace[1]) && _component_has_dual_physical(ψ, n, m) &&
+        push!(euclidean_twists, 1)
+    # The second flat output leg closes the parent-side environment.  As for
+    # h1/h2, its supertrace residue depends on that actual leg orientation,
+    # not on the physical carriers in the parent component.
+    isdual(Cspace[2]) && push!(euclidean_twists, 2)
+
+    # `_split_link_down` leaves the center on the parent and represents the
+    # detached gauge link before the `_pivotal_link` used at absorption.  On
+    # a mixed-duality down link the generator therefore acts by the
+    # similarity P⁻¹ H₀ P, with P the codomain-leg ribbon twist.  A mixed link
+    # produced by `_split_link_up` (center still on the child) is different:
+    # its raw contraction already includes that bend, so applying P again
+    # would corrupt the next forward sweep.
+    down_split = ψ.center == m
+    mixed_duality =
+        isdual(codomain(Cspace)[1]) != isdual(domain(Cspace)[1])
+    pivotal_twists = down_split && mixed_duality ? (1,) : ()
+    output_twists = (Tuple(euclidean_twists)..., pivotal_twists...)
     return _effective_map!(cache, :h0, spec, protos, statics,
                            scalartype(ψ.tensors[n]);
                            optimize=optimize, memory_weight=memory_weight,
                            sector_aware=sector_aware,
                            memory_cap_bytes=memory_cap_bytes,
-                           output_twists=twists)
+                           input_twists=pivotal_twists,
+                           output_twists=output_twists)
 end
 
 """
@@ -748,8 +776,10 @@ function eff_h2(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int, m::Int;
         push!(twists, mpos(Km + 1))
     if t.parent[m] != 0
         pos = mpos(parentleg(ψ, m))
-        isdual(xspace[pos]) &&
-            _component_has_dual_physical(ψ, t.parent[m], m) && push!(twists, pos)
+        # As in the one-site map, this is a parent-side environment closure.
+        # Its pivotal correction is determined by the actual open flat leg,
+        # not by physical carriers elsewhere in that component.
+        isdual(xspace[pos]) && push!(twists, pos)
     end
     full = _effective_map!(cache, :h2, spec, protos, statics,
                            scalartype(ψ.tensors[n]);

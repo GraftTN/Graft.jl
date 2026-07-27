@@ -177,18 +177,25 @@ end
 """
 Callable effective Hamiltonian. `statics` owns W, cached environments and an
 optional root cap; slot 1 is supplied afresh by KrylovKit on every invocation.
+`input_twists` and `output_twists` implement local pivotal coordinate changes
+without mutating KrylovKit's input vector.
 """
-struct EffectiveMap{T<:Tuple,I<:Tuple}
+struct EffectiveMap{T<:Tuple,I<:Tuple,O<:Tuple}
     plan::ContractionPlan
     statics::T
-    output_twists::I
+    input_twists::I
+    output_twists::O
 end
 
 EffectiveMap(plan::ContractionPlan, statics::T) where {T<:Tuple} =
-    EffectiveMap(plan, statics, ())
+    EffectiveMap(plan, statics, (), ())
+EffectiveMap(plan::ContractionPlan, statics::T, output_twists::O) where
+        {T<:Tuple,O<:Tuple} =
+    EffectiveMap(plan, statics, (), output_twists)
 
 function (f::EffectiveMap)(x::AbstractTensorMap)
-    y = execute(f.plan, x, f.statics)
+    x′ = isempty(f.input_twists) ? x : Backend.twist(x, f.input_twists)
+    y = execute(f.plan, x′, f.statics)
     isempty(f.output_twists) || Backend.twist!(y, f.output_twists)
     return y
 end
@@ -312,7 +319,10 @@ workspace_map(effective::EffectiveMap) =
     WorkspaceMap(effective, PlanWorkspace(effective.plan))
 
 function (map::WorkspaceMap)(x::AbstractTensorMap)
-    y = execute(map.effective.plan, x, map.effective.statics; workspace=map.workspace)
+    x′ = isempty(map.effective.input_twists) ?
+        x : Backend.twist(x, map.effective.input_twists)
+    y = execute(map.effective.plan, x′, map.effective.statics;
+                workspace=map.workspace)
     isempty(map.effective.output_twists) ||
         Backend.twist!(y, map.effective.output_twists)
     return y

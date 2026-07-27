@@ -256,6 +256,7 @@ Base.@noinline function _effective_map!(
         optimize::Bool=true, memory_weight::Real=1,
         sector_aware::Bool=true,
         memory_cap_bytes::Union{Nothing,Real}=nothing,
+        input_twists::Tuple=(),
         output_twists::Tuple=())
     plan, hit = Planning.get_or_plan!(c.plans, kind, spec, protos, T;
                                       optimize=optimize, memory_weight=memory_weight,
@@ -266,7 +267,7 @@ Base.@noinline function _effective_map!(
     else
         c.plan_misses += 1
     end
-    return EffectiveMap(plan, statics, output_twists)
+    return EffectiveMap(plan, statics, input_twists, output_twists)
 end
 
 # is node `n` on the `u`-side of the directed edge (u, v)?
@@ -351,8 +352,13 @@ function _euclidean_output_legs(psi::TTNS, n::Int)
     parent = psi.topo.parent[n]
     if parent != 0
         p = parentleg(psi, n)
-        isdual(space(psi.tensors[n], p)) &&
-            _component_has_dual_physical(psi, parent, n) && push!(inds, p)
+        # A parent-side environment is stored with the categorical
+        # supertrace residue on its open bra leg.  Closing it through a dual
+        # flat parent leg does not cancel that residue, irrespective of
+        # whether the parent component contains a dual physical carrier.
+        # The latter was a purification-specific proxy and misses ordinary
+        # fermionic gauges produced by left_orth/split_two_site!.
+        isdual(space(psi.tensors[n], p)) && push!(inds, p)
     end
     return Tuple(inds)
 end
