@@ -14,14 +14,18 @@ thermofield code is a frozen EDMFT bosonic-bath layout experiment: it would
 organize purified bath modes into emission/absorption branches, not prepare the
 thermal state. Its public fit/mount calls warn and return `nothing`.
 
-## Scope (v1)
+## Implemented scope
 
-- `Purified(; aux_evolution=:none)` is the only implemented representation.
-  `METTS` and `HybridMETTS` remain declared future representations.
-- Equilibrium imaginary time only: `thermalize(Purified, ...)` prepares
-  `|Ψ_β⟩` and supports `thermal_expect` and `thermal_correlator`.
+- `Purified` equilibrium preparation, imaginary-time correlators, and
+  finite-temperature real-time correlators with
+  `aux_evolution=:none|:backward|custom_ttno`.
+- serial `METTS` and partial-purification `HybridMETTS`, including explicit
+  RNGs, conditional Born collapse, burn-in/thinning, autocorrelation-aware
+  errors, and restartable trajectories.
 - Abelian symmetry only (trivial, fermion parity, U(1)).
 - PP-dressed bosons: the `P + B_PP + B_thermal` cluster is supported.
+- Matsubara transforms, finite-mode Anderson-Holstein benchmark records, and
+  strict CTSEG CSV exchange/acceptance gates.
 """
 module Thermal
 
@@ -33,6 +37,7 @@ using ..Symbolic
 using ..TTNOBuild
 using ..Evolution
 using ..Parallel: threaded_foreach
+using Random: AbstractRNG
 
 using ..Backend: ℂ, ComplexSpace, ⊗, ←, dual, oneunit, dim, space, id,
     numind, numout, numin, codomain, domain, sectors, sectortype, spacetype,
@@ -59,8 +64,23 @@ using ..Evolution: Evolver, step!, supports_complex_step
 export ThermalRep, Purified, METTS, HybridMETTS, thermalize,
     PurificationProblem, purification_problem, physical_ttno,
     PurifiedState, PurificationTrajectory, ScaledTTNS,
+    METTSSample, METTSTrajectory, METTSStatistics, metts_statistics,
+    MatsubaraSeries, matsubara_transform,
+    KondoScalingResult, fit_kondo_scaling,
+    SemicircularBathReport, semicircular_hybridization,
+    gauss_semicircular_bath, discrete_bath_hybridization,
+    validate_semicircular_bath, read_bath_csv,
+    FiniteModeAction, finite_mode_hash, fermionic_frequency,
+    bosonic_frequency, hybridization_iw, retarded_interaction_iv,
+    CTSEGMetadata, CTSEGDatum, CTSEGArtifact, CTSEGReadinessReport,
+    assess_ctseg_readiness, certify_ctseg,
+    ThermalBenchmarkDatum, CTSEGComparison, compare_ctseg,
+    write_ctseg_input_csv, write_ctseg_results_csv, read_ctseg_results_csv,
+    FiniteModeBenchmarkCell, BosonCutoffReport, assess_boson_cutoff,
+    RepresentationComparison, compare_representations,
+    write_finite_mode_benchmark_csv,
     infinite_temperature_state, thermal_expect, thermal_correlator,
-    state_at, logZ
+    thermal_realtime_correlator, state_at, logZ
 
 abstract type ThermalRep end
 
@@ -70,8 +90,8 @@ abstract type ThermalRep end
 Ancilla-leg purification. `aux_evolution` is a first-class knob (§11.4):
 `:none | :backward | :custom(H_aux)` — Karrasch–Barthel backward evolution of
 the auxiliary legs; half of the real-time entanglement budget lives here.
-v1 implements only `:none` (imaginary-time equilibrium). `:backward` and
-`:custom` belong to the future finite-T real-time driver.
+Equilibrium preparation is independent of this gauge choice; the real-time
+driver applies the requested auxiliary evolution.
 TODO(M4): `infinite_T_state(::Type{SU2Irrep})` Feiguin–White singlet
 structure via symmetry dispatch.
 """
@@ -82,12 +102,60 @@ end
 """
     METTS(; rng, collapse_basis=:alternating)
 
-Minimally entangled typical thermal states. TODO(M2) — no methods yet.
+Minimally entangled typical thermal states with explicit RNG and sampling
+schedule. See `thermalize(::METTS, ...)`.
 """
-struct METTS <: ThermalRep end
+struct METTS{R<:AbstractRNG,B} <: ThermalRep
+    rng::R
+    collapse_basis::B
+    burnin::Int
+    nsamples::Int
+    thin::Int
+    function METTS(rng::R, collapse_basis::B, burnin::Integer,
+                   nsamples::Integer, thin::Integer) where {R<:AbstractRNG,B}
+        burnin >= 0 || throw(ArgumentError("METTS burnin must be nonnegative"))
+        nsamples >= 1 || throw(ArgumentError("METTS nsamples must be positive"))
+        thin >= 1 || throw(ArgumentError("METTS thin must be positive"))
+        return new{R,B}(rng, collapse_basis, Int(burnin), Int(nsamples), Int(thin))
+    end
+end
 
-"""Impurity/bath may each pick sampling or purification (§5c). TODO(M2)."""
-struct HybridMETTS <: ThermalRep end
+METTS(; rng::AbstractRNG,
+      collapse_basis=:alternating,
+      burnin::Integer=10,
+      nsamples::Integer=100,
+      thin::Integer=1) =
+    METTS(rng, collapse_basis, burnin, nsamples, thin)
+
+"""Impurity/bath logical groups may independently use sampling or purification."""
+struct HybridMETTS{R<:AbstractRNG,B} <: ThermalRep
+    rng::R
+    sampled_sites::Vector{Symbol}
+    collapse_basis::B
+    burnin::Int
+    nsamples::Int
+    thin::Int
+    function HybridMETTS(rng::R, sampled_sites, collapse_basis::B,
+                         burnin::Integer, nsamples::Integer,
+                         thin::Integer) where {R<:AbstractRNG,B}
+        sites = unique(Symbol.(collect(sampled_sites)))
+        isempty(sites) &&
+            throw(ArgumentError("HybridMETTS needs at least one sampled site"))
+        burnin >= 0 || throw(ArgumentError("HybridMETTS burnin must be nonnegative"))
+        nsamples >= 1 || throw(ArgumentError("HybridMETTS nsamples must be positive"))
+        thin >= 1 || throw(ArgumentError("HybridMETTS thin must be positive"))
+        return new{R,B}(rng, sites, collapse_basis,
+                        Int(burnin), Int(nsamples), Int(thin))
+    end
+end
+
+HybridMETTS(; rng::AbstractRNG,
+            sampled_sites,
+            collapse_basis=:alternating,
+            burnin::Integer=10,
+            nsamples::Integer=100,
+            thin::Integer=1) =
+    HybridMETTS(rng, sampled_sites, collapse_basis, burnin, nsamples, thin)
 
 """
     PurificationProblem{S}
@@ -104,6 +172,8 @@ struct PurificationProblem{S<:ElementarySpace}
     pp_ancilla_of::Dict{Symbol,Symbol}      # P site => B_PP leaf (ppdress)
     thermal_ancilla_of::Dict{Symbol,Symbol} # P site => B_thermal leaf
     logical_groups::Vector{Vector{Symbol}}  # each group is one logical degree
+    generator::OpSum                        # source for auxiliary transpose
+    K_orig::TTNO{S}                         # generator on original topology
     K::TTNO{S}                              # lifted thermal generator
     log_hilbert_dim::Float64
     hermitian::Bool
@@ -172,5 +242,10 @@ logZ(t::PurificationTrajectory) = t.final.logZ
 include("problem.jl")
 include("state.jl")
 include("driver.jl")
+include("metts.jl")
+include("fourier.jl")
+include("kondo.jl")
+include("ctseg.jl")
+include("benchmarks.jl")
 
 end # module Thermal

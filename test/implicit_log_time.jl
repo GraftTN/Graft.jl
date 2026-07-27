@@ -36,7 +36,8 @@ end
     @test logarithmic_time_grid(0.01, 0.08; nsteps_per_panel=2) ==
           [0.0, 0.005, 0.01, 0.015, 0.02, 0.03, 0.04, 0.06, 0.08]
     @test_throws ArgumentError logarithmic_time_grid(0.0, 1.0)
-    @test_throws ArgumentError logarithmic_time_grid(0.01, 0.07)
+    @test logarithmic_time_grid(0.01, 0.07) ==
+          [0.0, 0.01, 0.02, 0.04, 0.07]
     @test_throws ArgumentError logarithmic_time_grid(0.01, 0.08;
                                                      nsteps_per_panel=0)
     @test_throws ArgumentError LogGaussLegendre(0)
@@ -66,6 +67,23 @@ end
     @test trap.scheme isa LogTrapezoid
     @test trap.last_info.converged == 1
     @test norm(to_dense(ψtrap) - trap_ref) < 2e-7
+
+    energy = real(dot(v2, Hd2 * v2) / dot(v2, v2))
+    shifted_matrix = Hd2 - energy * I2
+    shifted_ref = (I2 + h * shifted_matrix / 2) \
+                  ((I2 - h * shifted_matrix / 2) * v2)
+    ψshift = copy(ψ2)
+    shifted = ImplicitLogTime(; energy_shift=true, common...)
+    step!(shifted, ψshift, O2, -h)
+    @test shifted.last_shift ≈ energy atol=1e-12
+    @test norm(to_dense(ψshift) - shifted_ref) < 2e-7
+
+    ψshiftg2 = copy(ψ2)
+    shiftedg2 = ImplicitLogTime(
+        ; scheme=LogGaussLegendre(2), energy_shift=true, common...)
+    step!(shiftedg2, ψshiftg2, O2, -h)
+    @test shiftedg2.last_shift ≈ energy atol=1e-12
+    @test norm(to_dense(ψshiftg2) - exp(-h * shifted_matrix) * v2) < 2e-7
 
     ψbe = copy(ψ2)
     step!(ImplicitLogTime(; scheme=LogBackwardEuler(), common...), ψbe, O2, -h)

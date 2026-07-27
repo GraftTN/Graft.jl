@@ -147,6 +147,15 @@ include("ttno_compression.jl")
 include("graded_ttno_embedding.jl")
 include("graded_multimode_carrier.jl")
 include("fermionic_operator_algebra.jl")
+include("spectral.jl")
+include("metts.jl")
+include("matsubara.jl")
+include("ctseg.jl")
+include("finite_mode_benchmark.jl")
+include("p4_finite_mode_anderson_holstein.jl")
+include("p4_pp_lbo_thermal.jl")
+include("m2_metal_bath_gtau.jl")
+include("kondo_scaling.jl")
 
 @graft_testset "Parallel helpers" begin
     out = zeros(Int, 8)
@@ -909,19 +918,23 @@ end
     @test norm(to_dense(ϕ) - dense_hamiltonian(OpSum() + Term(1.0, SiteOp(:site1, :X, S.X)), ψ0) * v0) < 1e-12
     @test norm(to_dense(ψ0) - v0) < 1e-12
 
-    ts = [0.0, 0.05, 0.11]
-    vals = correlator(ψ0, E0, :site1 => S.X, :site1 => S.X, ts;
+    times = [0.0, 0.05, 0.11]
+    vals = correlator(ψ0, E0, :site1 => S.X, :site1 => S.X, times;
                       H=O, evolver=LocalZEvolver(:site1, ω))
-    series = correlator_series(ψ0, E0, :site1 => S.X, :site1 => S.X, ts;
+    series = correlator_series(ψ0, E0, :site1 => S.X, :site1 => S.X, times;
                                H=O, evolver=LocalZEvolver(:site1, ω),
                                metadata=(; kind=:test))
     @test series isa CorrelatorSeries
-    @test collect(series) == collect(zip(ts, vals))
+    @test collect(series) == collect(zip(times, vals))
     @test series.metadata.kind == :test
     @test series.metadata.Asite == :site1
     X1 = dense_hamiltonian(OpSum() + Term(1.0, SiteOp(:site1, :X, S.X)), ψ0)
     Hd = dense_hamiltonian(H, ψ0)
-    ref = [exp(im * E0 * t) * dot(X1 * v0, exact_evolve(Hd, X1 * v0, -im * t)) for t in ts]
+    ref = [
+        exp(im * E0 * t) *
+        dot(X1 * v0, exact_evolve(Hd, X1 * v0, -im * t))
+        for t in times
+    ]
     @test norm(vals - ref) < 1e-10
 
     topoχ = mps_topology(1)
@@ -933,10 +946,17 @@ end
     Eχ = real(dot(vχ, dense_hamiltonian(Hχ, ψχ) * vχ))
     Nχ = dense_hamiltonian(OpSum() + Term(1.0, SiteOp(:site1, :N, S.N)), ψχ)
     nbar = expect(ψχ, S.N, :site1)
-    valsχ = correlator(ψχ, Eχ, :site1 => S.N, :site1 => S.N, ts;
+    valsχ = correlator(ψχ, Eχ, :site1 => S.N, :site1 => S.N, times;
                        H=Oχ, evolver=LocalXEvolver(:site1, ω)) .- nbar^2
-    refχ = [exp(im * Eχ * t) * dot(Nχ * vχ, exact_evolve(dense_hamiltonian(Hχ, ψχ), Nχ * vχ, -im * t)) - nbar^2
-            for t in ts]
+    refχ = [
+        exp(im * Eχ * t) *
+        dot(
+            Nχ * vχ,
+            exact_evolve(
+                dense_hamiltonian(Hχ, ψχ), Nχ * vχ, -im * t),
+        ) - nbar^2
+        for t in times
+    ]
     @test norm(valsχ - refχ) < 1e-10
     @test maximum(abs.(valsχ .- valsχ[1])) > 1e-4
 end

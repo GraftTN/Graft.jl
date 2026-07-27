@@ -202,6 +202,20 @@ end
     root = topo.root
     full = eff_h1(EnvCache(topo), ψ, O, root)
     if Base.Threads.nthreads() > 1
+        gated = eff_h1(
+            EnvCache(topo), ψ, O, root; threaded_channels=true,
+            channel_slices=3, channel_min_flops=1e300,
+        )
+        @test gated isa EffectiveMap
+        @test_throws ArgumentError eff_h1(
+            EnvCache(topo), ψ, O, root; threaded_channels=true,
+            channel_slices=3, channel_min_flops=-1,
+        )
+        @test_throws ArgumentError eff_h1(
+            EnvCache(topo), ψ, O, root; threaded_channels=true,
+            channel_slices=3, channel_min_flops=Inf,
+            channel_memory_cap_bytes=1_000_000_000,
+        )
         @test_throws ArgumentError eff_h1(
             EnvCache(topo), ψ, O, root; threaded_channels=true,
             channel_slices=3, channel_memory_cap_bytes=0,
@@ -247,6 +261,14 @@ end
             h1map(ψ.tensors[root])
         end
         @test norm(scoped - reference) <= 1e-12 * scale
+
+        serial_sliced = ChannelSlicedEffectiveMap(
+            sliced.maps, length(sliced.maps) + 1, sliced.concurrent_live_bytes)
+        serial_workspace = _CP._channel_workspace_map(serial_sliced)
+        @test serial_workspace isa _CP._SerialChannelSlicedWorkspaceMap
+        serial_got = serial_workspace(ψ.tensors[root])
+        @test norm(serial_got - reference) <= 1e-12 * scale
+        @test isnothing(close(serial_workspace))
 
         # The two-site map may split either an external TTNO edge or the
         # internal child-parent TTNO bond. Candidate selection minimizes the
@@ -331,6 +353,9 @@ end
     _exercise_effective_maps!(ψ, O)
     if Base.Threads.nthreads() > 1
         full = eff_h1(EnvCache(topo), ψ, O, topo.root)
+        expected_gate_flops = isfinite(full.plan.sector_flops) ?
+            full.plan.sector_flops : full.plan.flops
+        @test _CP._channel_plan_flops(full.plan) == expected_gate_flops
         sliced = eff_h1(
             EnvCache(topo), ψ, O, topo.root; threaded_channels=true,
             channel_slices=2, channel_memory_cap_bytes=1_000_000_000,

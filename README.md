@@ -51,6 +51,95 @@ printf '%s\n' 1 2 3 4 | xargs -P4 -I{} env \
   julia --project=. --startup-file=no test/runtests.jl
 ```
 
+M1/M2 focused entrypoints:
+
+```bash
+julia --project=. --startup-file=no test/spectral.jl
+julia --project=. --startup-file=no test/implicit_log_time.jl
+julia --project=. --startup-file=no test/metts.jl
+
+# Fast finite-mode ED/action smoke; writes benchmark and CTSEG-input CSVs.
+GRAFT_P4_OUTPUT=/tmp/p4.csv \
+  julia --project=. examples/finite_mode_anderson_holstein_acceptance.jl
+
+# Fast Kondo configuration/model gate. Omit DRY_RUN for the METTS path.
+GRAFT_KONDO_DRY_RUN=true GRAFT_KONDO_OUTPUT=/tmp/kondo.csv \
+  julia --project=. examples/kondo_scaling_acceptance.jl
+```
+
+Paper-scale Kondo mode uses the checked-in 29-site adapol bath artifact. Set
+`GRAFT_KONDO_BATH_CSV` only when validating another fit:
+
+```bash
+GRAFT_KONDO_FULL=true \
+GRAFT_KONDO_OUTPUT=/path/to/kondo.csv \
+  julia --project=. examples/kondo_scaling_acceptance.jl
+```
+
+The bath CSV header is `energy,coupling_re,coupling_im`. Full mode checks the
+semicircular hybridization pointwise from `π/1024` through the high-frequency
+tail at `1e-6` absolute tolerance before running any tensor-network work.
+The checked-in artifact can be regenerated with external `adapol==0.1.0`:
+
+```bash
+python3 examples/generate_kondo_bath.py
+```
+
+The CTSEG producer is intentionally external to the Julia environment. First
+generate exact finite-mode action inputs with the P4 script, then run two
+independent ensembles in the official TRIQS container. Podman is sufficient;
+Docker is not required:
+
+```bash
+podman run --rm -v "$PWD:/work" -w /work \
+  docker.io/flatironinstitute/triqs:latest \
+  python3 examples/ctseg_finite_mode_producer.py \
+  /work/results/p4.csv.spinless_one_bath_one_boson.ctseg_input.csv \
+  /work/results/ctseg-short.csv \
+  --replicas 16 --warmup-cycles 100000 --cycles 1000000 --seed 26060727
+
+podman run --rm -v "$PWD:/work" -w /work \
+  docker.io/flatironinstitute/triqs:latest \
+  python3 examples/ctseg_finite_mode_producer.py \
+  /work/results/p4.csv.spinless_one_bath_one_boson.ctseg_input.csv \
+  /work/results/ctseg-long.csv \
+  --replicas 16 --warmup-cycles 200000 --cycles 2000000 --seed 26061727
+```
+
+The producer records replica count, cycles, warmup, cycle length, and seed.
+`assess_ctseg_readiness(short, long)` reports independent-run mean and
+per-observable error stability; `certify_ctseg(short, long)` is the only
+in-process path that promotes both readiness flags. The Julia comparison
+rejects either false flag. To consume a directory containing one certified
+result file per benchmark label:
+
+```bash
+GRAFT_P4_FULL=true \
+GRAFT_P4_OUTPUT=/path/to/p4.csv \
+GRAFT_CTSEG_RESULTS_DIR=/path/to/ctseg \
+  julia --project=. examples/finite_mode_anderson_holstein_acceptance.jl
+```
+
+The producer follows the official
+[TRIQS/CTSEG one-boson retarded-interaction tutorial](https://triqs.github.io/ctseg/latest/tutorials/One-boson%20retarded%20interaction.html)
+and supports both TRIQS 3 (`triqs.gf`) and TRIQS 4 (`triqs.gfs`) imports.
+
+## Spectral and thermal analysis
+
+`esprit`, `linear_prediction`, and `complex_time_krylov` provide the M1
+spectral post-processing layer. Scalar and matrix-valued ESPRIT use shared-pole
+block Hankel fits; complex-time Krylov accepts either dense Gram matrices or
+TTNS snapshots plus a Hermitian TTNO.
+
+The M2 layer includes deterministic purification, `METTS`, `HybridMETTS`,
+Matsubara transforms, and real-time purification with auxiliary
+`:backward`/custom evolution. `FiniteModeAction` generates exact
+`Delta(iω_n)` and retarded-interaction kernels. `CTSEGArtifact` and
+`compare_ctseg` keep the external Monte Carlo executable outside the Julia
+dependency graph while enforcing action hashes, endpoint/density conventions,
+equilibration, stable jackknife errors, and the three-sigma plus cutoff error
+budget.
+
 ## Parallel runtime
 
 When using Julia-level fan-out, launch Julia with one BLAS thread and configure
@@ -69,8 +158,10 @@ This avoids nested BLAS/Strided threading inside each Graft task. Benchmark a
 different backend thread count explicitly for workloads dominated by one large
 contraction; sector-rich workloads with many small blocks should keep both at
 one. On multi-socket hosts, choose thread count and CPU affinity so work is
-balanced across NUMA domains. Thermal correlators, dense thermal references,
-and RSVD probe generation accept `threaded`/`minbatch` or
+balanced across NUMA domains. Thermal correlators and dense thermal references
+keep fan-out off by default because each active item retains its own state and
+environments; opt in with `threaded=true` after budgeting that per-item memory.
+They and RSVD probe generation accept `threaded`/`minbatch` or
 `rsvd_threaded`/`rsvd_minbatch` controls for serial A/B runs and
 workload-specific granularity.
 
@@ -80,14 +171,19 @@ drivers, or the TDVP evolvers, with an explicit contraction live-memory budget:
 
 ```julia
 ev = TDVP1(threaded_channels=true, channel_slices=3,
+           channel_min_flops=1_000_000,
            channel_memory_cap_bytes=2_000_000_000)
 ```
 
-Small maps can regress. On the current 24-thread star benchmarks, one-site maps
-cross break-even near χ=32 and reach about 1.25× at χ=64. Two-site maps use a
-cost model to choose between internal and external TTNO edges; the 3×1 star is
-0.63–0.67× at χ=16 but 1.22–1.53× at χ=64. Keep BLAS and Strided at one
-thread when this outer fan-out is active.
+Solver/evolver entry points default `channel_min_flops` to `1_000_000`, so
+small maps fall back before slice construction or memory-cap enforcement.
+Direct `eff_h1`/`eff_h2` calls default the gate to zero to preserve explicit
+opt-in behavior. The gate uses stored-sector FLOPs when the planner can model
+them and otherwise falls back to the dense estimate. On the current 24-thread
+star benchmarks, one-site maps cross break-even near χ=32 and reach about
+1.25× at χ=64. Two-site maps use a cost model to choose between internal and
+external TTNO edges; the 3×1 star is 0.63–0.67× at χ=16 but 1.22–1.53× at χ=64.
+Keep BLAS and Strided at one thread when this outer fan-out is active.
 
 ## Algorithmic References and Provenance
 
@@ -163,7 +259,7 @@ does not imply that every variant in the paper is implemented.
 
    **Provenance:** Global ancillary-Krylov foundation for the planned GSE/LSE expansion family.
 
-7. **Implicit logarithmic-time evolution** — *design reference*
+7. **Implicit logarithmic-time evolution** — *implemented; algorithmic basis*
 
    J. P. Zima, E. M. Stoudenmire, S. R. White, O. Parcollet, and J. Kaye, “Fast Tensor Network Imaginary Time Evolution by Implicit Stepping on Logarithmic Grids,” arXiv:2606.02930 (2026).
    [arXiv](https://arxiv.org/abs/2606.02930)
@@ -172,7 +268,7 @@ does not imply that every variant in the paper is implemented.
 
 ### Thermal-State Algorithms
 
-1. **Projected purification for bosons** — *planned; algorithmic basis*
+1. **Projected purification for bosons** — *implemented; algorithmic basis*
 
    T. Köhler, J. Stolpp, and S. Paeckel, “Efficient and Flexible Approach to Simulate Low-Dimensional Quantum Lattice Models with Large Local Hilbert Spaces,” *SciPost Physics* **10**, 058 (2021).
    [DOI](https://doi.org/10.21468/SciPostPhys.10.3.058) ·

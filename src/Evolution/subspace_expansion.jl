@@ -30,6 +30,7 @@ Base.@kwdef mutable struct GSE_TDVP <: Evolver
     threaded_channels::Bool = false
     channel_slices::Int = 2
     channel_minbatch::Int = 2
+    channel_min_flops::Real = 1_000_000
     channel_memory_cap_bytes::Union{Nothing,Real} = nothing
     verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
@@ -64,6 +65,7 @@ Base.@kwdef mutable struct LSE_TDVP <: Evolver
     threaded_channels::Bool = false
     channel_slices::Int = 2
     channel_minbatch::Int = 2
+    channel_min_flops::Real = 1_000_000
     channel_memory_cap_bytes::Union{Nothing,Real} = nothing
     verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
@@ -83,6 +85,7 @@ function step!(ev::GSE_TDVP, ψ::TTNS, H::TTNO, dz::Number)
                  threaded_channels=ev.threaded_channels,
                  channel_slices=ev.channel_slices,
                  channel_minbatch=ev.channel_minbatch,
+                 channel_min_flops=ev.channel_min_flops,
                  channel_memory_cap_bytes=ev.channel_memory_cap_bytes,
                  verbose=false, cache)
     step!(base, ψ, H, dz)
@@ -100,6 +103,7 @@ function step!(ev::LSE_TDVP, ψ::TTNS, H::TTNO, dz::Number)
                  threaded_channels=ev.threaded_channels,
                  channel_slices=ev.channel_slices,
                  channel_minbatch=ev.channel_minbatch,
+                 channel_min_flops=ev.channel_min_flops,
                  channel_memory_cap_bytes=ev.channel_memory_cap_bytes,
                  verbose=false, cache)
     if ev.order == 1
@@ -209,6 +213,7 @@ function _expand_all_bonds!(ev, ψ::TTNS, H::TTNO, cache::EnvCache; rev::Bool)
                 threaded_channels=ev.threaded_channels,
                 channel_slices=ev.channel_slices,
                 channel_minbatch=ev.channel_minbatch,
+                channel_min_flops=ev.channel_min_flops,
                 channel_memory_cap_bytes=ev.channel_memory_cap_bytes)
     end
     return ψ
