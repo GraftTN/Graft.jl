@@ -82,7 +82,8 @@ export TTNS, TTNO, TTNDO, topology, center, move_center!, update_tensor!,
 export OpSum, Term, SiteOp, charge, spin_ops, spin_ops_u1,
     boson_ops, boson_ops_u1, boson_ops_pp, fermion_ops_z2,
     boson_modes, BosonCoupling,
-    Lindbladian, ppdress, ttno_from_opsum
+    Lindbladian, ppdress, ttno_from_opsum,
+    THCFactorization, THCReport, isdf_thc, fit_thc, reconstruct_thc
 # L5
 export dmrg1!, dmrg2!, dmrg1_3s!, expand!,
     Evolver, step!, evolve!, CorrelatorSeries, correlator, correlator_series,
