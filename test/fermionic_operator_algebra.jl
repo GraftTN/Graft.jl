@@ -492,3 +492,61 @@ end
         end
     end
 end
+
+# The exact TTNO application zips each state/operator bond into one fused edge.
+# `fuse` hands back a primal edge, so a bond stored dual bends across that
+# isomorphism and owes a ribbon pivotal twist at the child end. Only downward
+# `move_center!` moves and two-site splits produce dual bonds, so the action
+# matrix alone never sees them — these gates pin the action of `apply` on the
+# same abstract state carried in every reachable bond orientation.
+@graft_testset "graded apply is covariant under bond orientation" begin
+    operators = fermion_ops_z2()
+    topologies = [
+        ("chain", TreeTopology(:a, [:a => :spectator, :spectator => :b])),
+        ("branch", TreeTopology(:hub, [
+            :hub => :a, :hub => :spectator, :hub => :b,
+        ])),
+    ]
+    for (label, topo) in topologies
+        @testset "$label" begin
+            physical = Dict(
+                :a => operators.P,
+                :spectator => operators.P,
+                :b => operators.P,
+            )
+            sites = _foa_physical_sites(topo, physical)
+            positions = Dict(site => i for (i, site) in enumerate(sites))
+            annihilators = [
+                _foa_jw_annihilator(length(sites), position)
+                for position in eachindex(sites)
+            ]
+            hamiltonian = OpSum()
+            hamiltonian += Term(0.6, SiteOp(:a, :N, operators.N))
+            hamiltonian += Term(-0.9, SiteOp(:a, :Cd, operators.Cd),
+                                SiteOp(:b, :C, operators.C))
+            hamiltonian += Term(-0.9, SiteOp(:b, :Cd, operators.Cd),
+                                SiteOp(:a, :C, operators.C))
+            operator = ttno_from_opsum(hamiltonian, topo, physical; hermitian=true)
+            expected = 0.6 .* (annihilators[positions[:a]]' * annihilators[positions[:a]])
+            expected .-= 0.9 .* (annihilators[positions[:a]]' * annihilators[positions[:b]])
+            expected .-= 0.9 .* (annihilators[positions[:b]]' * annihilators[positions[:a]])
+
+            basis = _foa_product_basis(topo, physical)
+            @test _foa_action_matrix(operator, basis) ≈ expected atol=2e-12 rtol=2e-12
+
+            # Product-sector states span every charge sector, including the odd
+            # ones a fixed-parity random state can never reach.
+            probes = vcat(basis, [random_ttns(
+                Xoshiro(20260727), ComplexF64, topo, physical,
+                Vect[FermionParity](FermionParity(0) => 2, FermionParity(1) => 2))])
+            for probe in probes, target in 1:nnodes(topo)
+                state = move_center!(copy(probe), target)
+                coordinates = categorical_coordinates(state)
+                @test categorical_coordinates(apply(operator, state; optimize=false)) ≈
+                    expected * coordinates atol=2e-12 rtol=2e-12
+                @test categorical_coordinates(apply(operator, state; optimize=true)) ≈
+                    expected * coordinates atol=2e-12 rtol=2e-12
+            end
+        end
+    end
+end
