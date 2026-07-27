@@ -1,4 +1,11 @@
-using Graft.Thermal
+using Test
+using Graft
+using Graft.Backend
+using Graft.TestUtils
+using LinearAlgebra: norm
+using Random: Xoshiro
+
+isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
 
 struct METTSLocalZEvolver <: Evolver
     coefficient::Float64

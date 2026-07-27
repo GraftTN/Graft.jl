@@ -1,8 +1,12 @@
+using Test
+using Graft
 using Graft.Spectral
 using Graft.TestUtils
 using Graft.Backend: ℂ
 using LinearAlgebra: I, dot, norm
 using Random: Xoshiro
+
+isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
 
 @graft_testset "M1 exponential sums and ESPRIT" begin
     times = collect(range(0.0, 4.0; length=41))

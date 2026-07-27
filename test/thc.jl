@@ -1,6 +1,8 @@
 using Graft
 using LinearAlgebra: norm
 
+isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
+
 function _grid_interaction(orbitals, kernel)
     density = Matrix{promote_type(eltype(orbitals), eltype(kernel))}(
         undef, size(orbitals, 1), size(orbitals, 2)^2)

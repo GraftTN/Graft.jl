@@ -57,72 +57,13 @@ M1/M2 focused entrypoints:
 julia --project=. --startup-file=no test/spectral.jl
 julia --project=. --startup-file=no test/implicit_log_time.jl
 julia --project=. --startup-file=no test/metts.jl
-
-# Fast finite-mode ED/action smoke; writes benchmark and CTSEG-input CSVs.
-GRAFT_P4_OUTPUT=/tmp/p4.csv \
-  julia --project=. examples/finite_mode_anderson_holstein_acceptance.jl
-
-# Fast Kondo configuration/model gate. Omit DRY_RUN for the METTS path.
-GRAFT_KONDO_DRY_RUN=true GRAFT_KONDO_OUTPUT=/tmp/kondo.csv \
-  julia --project=. examples/kondo_scaling_acceptance.jl
 ```
 
-Paper-scale Kondo mode uses the checked-in 29-site adapol bath artifact. Set
-`GRAFT_KONDO_BATH_CSV` only when validating another fit:
-
-```bash
-GRAFT_KONDO_FULL=true \
-GRAFT_KONDO_OUTPUT=/path/to/kondo.csv \
-  julia --project=. examples/kondo_scaling_acceptance.jl
-```
-
-The bath CSV header is `energy,coupling_re,coupling_im`. Full mode checks the
-semicircular hybridization pointwise from `π/1024` through the high-frequency
-tail at `1e-6` absolute tolerance before running any tensor-network work.
-The checked-in artifact can be regenerated with external `adapol==0.1.0`:
-
-```bash
-python3 examples/generate_kondo_bath.py
-```
-
-The CTSEG producer is intentionally external to the Julia environment. First
-generate exact finite-mode action inputs with the P4 script, then run two
-independent ensembles in the official TRIQS container. Podman is sufficient;
-Docker is not required:
-
-```bash
-podman run --rm -v "$PWD:/work" -w /work \
-  docker.io/flatironinstitute/triqs:latest \
-  python3 examples/ctseg_finite_mode_producer.py \
-  /work/results/p4.csv.spinless_one_bath_one_boson.ctseg_input.csv \
-  /work/results/ctseg-short.csv \
-  --replicas 16 --warmup-cycles 100000 --cycles 1000000 --seed 26060727
-
-podman run --rm -v "$PWD:/work" -w /work \
-  docker.io/flatironinstitute/triqs:latest \
-  python3 examples/ctseg_finite_mode_producer.py \
-  /work/results/p4.csv.spinless_one_bath_one_boson.ctseg_input.csv \
-  /work/results/ctseg-long.csv \
-  --replicas 16 --warmup-cycles 200000 --cycles 2000000 --seed 26061727
-```
-
-The producer records replica count, cycles, warmup, cycle length, and seed.
-`assess_ctseg_readiness(short, long)` reports independent-run mean and
-per-observable error stability; `certify_ctseg(short, long)` is the only
-in-process path that promotes both readiness flags. The Julia comparison
-rejects either false flag. To consume a directory containing one certified
-result file per benchmark label:
-
-```bash
-GRAFT_P4_FULL=true \
-GRAFT_P4_OUTPUT=/path/to/p4.csv \
-GRAFT_CTSEG_RESULTS_DIR=/path/to/ctseg \
-  julia --project=. examples/finite_mode_anderson_holstein_acceptance.jl
-```
-
-The producer follows the official
-[TRIQS/CTSEG one-boson retarded-interaction tutorial](https://triqs.github.io/ctseg/latest/tutorials/One-boson%20retarded%20interaction.html)
-and supports both TRIQS 3 (`triqs.gf`) and TRIQS 4 (`triqs.gfs`) imports.
+Impurity acceptance workflows (finite-mode Anderson-Holstein benchmarks,
+Kondo scaling with the checked-in adapol bath artifact, Matsubara transforms,
+and the CTSEG cross-check against committed reference data) live in the
+companion [GraftImpurity.jl](https://github.com/GraftTN/GraftImpurity.jl)
+package.
 
 ## Spectral and thermal analysis
 
@@ -132,13 +73,7 @@ block Hankel fits; complex-time Krylov accepts either dense Gram matrices or
 TTNS snapshots plus a Hermitian TTNO.
 
 The M2 layer includes deterministic purification, `METTS`, `HybridMETTS`,
-Matsubara transforms, and real-time purification with auxiliary
-`:backward`/custom evolution. `FiniteModeAction` generates exact
-`Delta(iω_n)` and retarded-interaction kernels. `CTSEGArtifact` and
-`compare_ctseg` keep the external Monte Carlo executable outside the Julia
-dependency graph while enforcing action hashes, endpoint/density conventions,
-equilibration, stable jackknife errors, and the three-sigma plus cutoff error
-budget.
+and real-time purification with auxiliary `:backward`/custom evolution.
 
 ## Parallel runtime
 

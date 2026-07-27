@@ -1,4 +1,7 @@
+using Test
 using LinearAlgebra: Diagonal, I, diag, eigen, Hermitian, kron, norm, svd
+
+isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
 
 function _p4_pp_expect(amplitudes, fermion_values, boson_values)
     normalization = sum(abs2, amplitudes)
