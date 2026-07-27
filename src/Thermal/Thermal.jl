@@ -24,8 +24,11 @@ thermal state. Its public fit/mount calls warn and return `nothing`.
   errors, and restartable trajectories.
 - Abelian symmetry only (trivial, fermion parity, U(1)).
 - PP-dressed bosons: the `P + B_PP + B_thermal` cluster is supported.
-- Matsubara transforms, finite-mode Anderson-Holstein benchmark records, and
-  strict CTSEG CSV exchange/acceptance gates.
+
+Impurity-domain utilities that used to live here (Matsubara transforms,
+finite-mode Anderson-Holstein benchmarks, CTSEG CSV exchange, Kondo/bath
+scaling analysis) moved to the companion `GraftImpurity.jl` package; Thermal
+keeps only the representation layer definable from `(ψ, K, operators, Evolver)`.
 """
 module Thermal
 
@@ -65,20 +68,6 @@ export ThermalRep, Purified, METTS, HybridMETTS, thermalize,
     PurificationProblem, purification_problem, physical_ttno,
     PurifiedState, PurificationTrajectory, ScaledTTNS,
     METTSSample, METTSTrajectory, METTSStatistics, metts_statistics,
-    MatsubaraSeries, matsubara_transform,
-    KondoScalingResult, fit_kondo_scaling,
-    SemicircularBathReport, semicircular_hybridization,
-    gauss_semicircular_bath, discrete_bath_hybridization,
-    validate_semicircular_bath, read_bath_csv,
-    FiniteModeAction, finite_mode_hash, fermionic_frequency,
-    bosonic_frequency, hybridization_iw, retarded_interaction_iv,
-    CTSEGMetadata, CTSEGDatum, CTSEGArtifact, CTSEGReadinessReport,
-    assess_ctseg_readiness, certify_ctseg,
-    ThermalBenchmarkDatum, CTSEGComparison, compare_ctseg,
-    write_ctseg_input_csv, write_ctseg_results_csv, read_ctseg_results_csv,
-    FiniteModeBenchmarkCell, BosonCutoffReport, assess_boson_cutoff,
-    RepresentationComparison, compare_representations,
-    write_finite_mode_benchmark_csv,
     infinite_temperature_state, thermal_expect, thermal_correlator,
     thermal_realtime_correlator, state_at, logZ
 
@@ -243,9 +232,5 @@ include("problem.jl")
 include("state.jl")
 include("driver.jl")
 include("metts.jl")
-include("fourier.jl")
-include("kondo.jl")
-include("ctseg.jl")
-include("benchmarks.jl")
 
 end # module Thermal

@@ -151,13 +151,7 @@ include("charged_local_orientation_covariance.jl")
 include("thc.jl")
 include("spectral.jl")
 include("metts.jl")
-include("matsubara.jl")
-include("ctseg.jl")
-include("finite_mode_benchmark.jl")
-include("p4_finite_mode_anderson_holstein.jl")
 include("p4_pp_lbo_thermal.jl")
-include("m2_metal_bath_gtau.jl")
-include("kondo_scaling.jl")
 
 @graft_testset "Parallel helpers" begin
     out = zeros(Int, 8)

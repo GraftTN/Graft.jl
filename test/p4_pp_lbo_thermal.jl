@@ -91,11 +91,4 @@ end
     @test discarded_weights[end] < 1e-28
     @test density_errors[end] < 1e-12
     @test boson_errors[end] < 1e-12
-
-    recorded = ThermalBenchmarkDatum(
-        :boson_occupation, :scalar, 0.0,
-        boson_exact + boson_errors[2];
-        lbo_error=boson_errors[2])
-    @test recorded.stderr == 0
-    @test recorded.lbo_error == boson_errors[2]
 end
