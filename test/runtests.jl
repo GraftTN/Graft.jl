@@ -147,6 +147,7 @@ include("ttno_compression.jl")
 include("graded_ttno_embedding.jl")
 include("graded_multimode_carrier.jl")
 include("fermionic_operator_algebra.jl")
+include("charged_local_orientation_covariance.jl")
 
 @graft_testset "Parallel helpers" begin
     out = zeros(Int, 8)

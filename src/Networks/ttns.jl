@@ -256,7 +256,101 @@ function _apply_charged_local(ψ::TTNS{S,T}, op::AbstractTensorMap, site::Symbol
         end
         update_tensor!(ϕ, n, Anew; caches, gauge=(n == nsite))
     end
+    _apply_canonical_string!(ϕ, nsite, q; caches)
     return ϕ
+end
+
+# Charge-wire transport (§9.3 leg convention `(children… ⊗ P) ← V_parent`)
+# ---------------------------------------------------------------------------
+# A charged insertion runs one charge wire from the physical leg of the
+# insertion node to the root's domain leg. Two independent pieces of
+# categorical data fix its phase, and neither may be inferred from the depth or
+# the parity of the path index:
+#
+#  (T1) *Tree-native braid word.* Through an ancestor the wire arrives on the
+#       child slot `k` carrying it and leaves through the single domain leg, so
+#       it braids past exactly the codomain legs `k+1 … numout` — the later
+#       sibling bonds and the node's own physical leg. Through the insertion
+#       node the wire is born on the physical leg, which is last in the
+#       codomain, so it crosses nothing. On top of that word each traversed
+#       edge contributes a pivotal bend, and only when the edge is stored dual
+#       (see `_shift_path_tensor`) — the flat sector relabelling is not the
+#       identity transport. The word is evaluated per basis element from the
+#       *stored* leg sectors and orientations, so the result is invariant under
+#       root choice, gauge, center position, and which primal/dual orientation
+#       an evolver happened to leave on a bond.
+#
+#  (T2) *Native-to-canonical reordering.* (T1) orders the physical wires the
+#       way the tree contracts them (a node's own physical wire, then its child
+#       branches in reverse codomain order). Every dense oracle and the TTNO
+#       lowerer instead pin the canonical internal-node order — see
+#       `TTNOBuild._canonical_crossing_frame`, which performs the same
+#       conversion for operator factors. `_apply_canonical_string!` closes the
+#       gap with the explicit Jordan–Wigner string on the symmetric difference
+#       of the two predecessor sets.
+#
+# TODO(M3, §4a): non-abelian charges need an oriented fusion route instead of
+# these scalar R-symbols; `_fuse_sector` and `_charge_braid` fail closed today.
+
+"""
+Scalar braid phase of a charge wire carrying sector `q` crossing a leg that
+carries sector `s`. Abelian one-channel fusion only — a non-scalar R-symbol
+(non-abelian braiding) is rejected rather than silently truncated.
+"""
+function _charge_braid(q, s)
+    r = Rsymbol(q, s, _fuse_sector(q, s))
+    r isa Number || throw(ArgumentError(
+        "charged apply_local braid requires scalar abelian R-symbols; got $(typeof(r))"))
+    return r
+end
+
+"""Sector carried by each flat basis index of `V`, in `_flat_basis` order."""
+_flat_sectors(V::ElementarySpace) = [s for (s, _) in _flat_basis(V)]
+
+"""
+Physical nodes on which the tree-native charge-wire order and the canonical
+internal-node order disagree about crossing the insertion at `nsite`.
+
+The native order visits a node's own physical wire before its child branches
+and walks the children in reverse codomain order (the same walk as
+`TTNOBuild._physical_node_orders`); the canonical order is increasing internal
+node index. A wire crosses everything preceding it, so the correction set is
+the symmetric difference of the two predecessor sets.
+"""
+function _canonical_string_nodes(ψ::TTNS, nsite::Int)
+    t = ψ.topo
+    native = Int[]
+    function visit(n::Int)
+        hasphys(ψ, n) && push!(native, n)
+        for c in Iterators.reverse(t.children[n])
+            visit(c)
+        end
+        return nothing
+    end
+    visit(t.root)
+    canonical = [n for n in 1:nnodes(t) if hasphys(ψ, n)]
+    inative = findfirst(==(nsite), native)
+    icanon = findfirst(==(nsite), canonical)
+    (inative === nothing || icanon === nothing) &&
+        throw(ArgumentError("charged apply_local needs a physical leg at the insertion node"))
+    return sort!(collect(symdiff(Set(native[1:inative - 1]), Set(canonical[1:icanon - 1]))))
+end
+
+# The string is diagonal and unitary on each physical leg, so it commutes with
+# the isometry conditions and needs no gauge move of its own (§9.1/§9.2).
+function _apply_canonical_string!(ψ::TTNS, nsite::Int, q; caches=())
+    θ = twist(q)
+    θ isa Number || throw(ArgumentError(
+        "charged apply_local string requires scalar abelian twists; got $(typeof(θ))"))
+    θ == 1 && return ψ                       # bosonic charge: no string at all
+    θ == -1 || throw(ArgumentError(
+        "charged apply_local currently supports fℤ₂×abelian charges only; got twist $θ for $q"))
+    for n in _canonical_string_nodes(ψ, nsite)
+        # `twist` on the physical leg is exactly R(q, ·) for a fermionic-odd q
+        # over an fℤ₂×abelian grading, and is orientation-aware for dual legs.
+        update_tensor!(ψ, n, twist(ψ.tensors[n], physleg(ψ, n)); caches, gauge=false)
+    end
+    return ψ
 end
 
 function _single_charge_sector(C::ElementarySpace)
@@ -273,7 +367,12 @@ function _shift_space(V::S, q) where {S<:ElementarySpace}
     for s in sectors(V)
         push!(dims, _fuse_sector(s, q) => dim(V, s))
     end
-    return Vect[Q](dims...)
+    # `sectors`/`dim` report a dual space through its dual sectors, so the
+    # shifted labels are bent back before a dual space is rebuilt: the
+    # primal/dual orientation of a bond is part of the representation and a
+    # charged insertion must not silently flip it (§9.3).
+    isdual(V) || return Vect[Q](dims...)
+    return dual(Vect[Q]((dual(s) => d for (s, d) in dims)...))
 end
 
 function _fuse_sector(a, b)
@@ -333,13 +432,37 @@ function _shift_path_tensor(A::AbstractTensorMap{T,S}, slot::Int, newchild::S,
     childmap = _shift_index_map(oldchild, newchild, q)
     dommap = _shift_index_map(olddom, newdom, q)
 
+    # (T1) braid word for this node. Relabelling the sector of leg `slot`
+    # together with the domain bends the charge wire across that bond. When the
+    # bond is stored against the wire — `isdual` on the traversed edge — that
+    # bend implicitly crosses the wire with both the pre- and post-shift label
+    # of the leg, and `bend` undoes exactly that pair (it collapses to the
+    # ribbon twist θ_q of the charge wire for every fℤ₂×abelian grading). A
+    # primal bond carries no such twist. This is the same seam convention as
+    # `_pivotal_link` for QR link factors, and it is what makes the transport
+    # covariant under the orientation an evolver happens to leave on a bond:
+    # `move_center!` only ever hands a downward path dual bonds, while a
+    # two-site split leaves them primal. What remains is the wire's real
+    # crossing word: the codomain legs after `slot`.
+    codsectors = [_flat_sectors(V) for V in oldcods]
+    bend = [isdual(oldchild) ?
+            inv(_charge_braid(q, s)) * inv(_charge_braid(q, _fuse_sector(s, q))) :
+            one(_charge_braid(q, s))
+            for s in codsectors[slot]]
+    crossed = (slot + 1):length(oldcods)
+
     oldcod_ranges = ntuple(i -> 1:dim(oldcods[i]), length(oldcods))
     for I in CartesianIndices(oldcod_ranges), d in 1:dim(olddom)
         oldidx = Tuple(I)
         Aval = _tensor_entry(A, oldcodcoord, olddomcoord, oldidx, (d,), T)
         iszero(Aval) && continue
+        phase = bend[oldidx[slot]]
+        for j in crossed
+            phase *= _charge_braid(q, codsectors[j][oldidx[j]])
+        end
         newidx = Base.setindex(oldidx, childmap[oldidx[slot]], slot)
-        _add_tensor_entry!(Anew, newcodcoord, newdomcoord, newidx, (dommap[d],), Aval)
+        _add_tensor_entry!(Anew, newcodcoord, newdomcoord, newidx, (dommap[d],),
+                           phase * Aval)
     end
     return Anew
 end
