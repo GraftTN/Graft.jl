@@ -496,7 +496,7 @@ end
 
 """
     exact_thermal_correlator(Hd, Ad, Bd, beta, taus;
-                             threaded=Base.Threads.nthreads() > 1,
+                             threaded=false,
                              minbatch=max(2, Base.Threads.nthreads())) -> Vector
 
 Dense thermal correlator `C_AB(tau) = tr(exp(-(beta-tau)*Hd) * A * exp(-tau*Hd) * B) / Z`
@@ -504,7 +504,7 @@ for each `tau` in `taus`. Uses the stable β-τ preparation formula.
 """
 function exact_thermal_correlator(Hd::AbstractMatrix, Ad::AbstractMatrix,
                                   Bd::AbstractMatrix, beta::Real, taus;
-                                  threaded::Bool=Base.Threads.nthreads() > 1,
+                                  threaded::Bool=false,
                                   minbatch::Integer=max(2, Base.Threads.nthreads()))
     minbatch >= 1 || throw(ArgumentError("minbatch must be positive"))
     Z = exact_thermal_Z(Hd, beta)

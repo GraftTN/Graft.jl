@@ -7,7 +7,8 @@
             contraction_optimize=true,
             contraction_sector_aware=true,
             threaded_channels=false, channel_slices=2,
-            channel_minbatch=2, channel_memory_cap_bytes=nothing) -> ψ
+            channel_minbatch=2, channel_min_flops=0,
+            channel_memory_cap_bytes=nothing) -> ψ
 
 Shared bond-expansion primitive (§5a/§11.7). `edge` is `(child, parent)` or
 `child => parent` using node ids or indices. `scheme=:exact` forms the
@@ -29,6 +30,7 @@ function expand!(ψ::TTNS, H::TTNO, edge; scheme::Symbol=:exact,
                  contraction_sector_aware::Bool=true,
                  threaded_channels::Bool=false, channel_slices::Int=2,
                  channel_minbatch::Int=2,
+                 channel_min_flops::Real=0,
                  channel_memory_cap_bytes::Union{Nothing,Real}=nothing)
     scheme in (:exact, :rsvd) ||
         throw(ArgumentError("expand!: scheme must be :exact or :rsvd"))
@@ -52,6 +54,7 @@ function expand!(ψ::TTNS, H::TTNO, edge; scheme::Symbol=:exact,
                 optimize=contraction_optimize,
                 sector_aware=contraction_sector_aware,
                 threaded_channels, channel_slices, channel_minbatch,
+                channel_min_flops,
                 channel_memory_cap_bytes)
     PΘ = mixing * h2(Θ)
     P = _child_predictor_basis(ψ, PΘ, n, cap; scheme, rng,

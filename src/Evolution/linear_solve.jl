@@ -105,7 +105,8 @@ LogGaussLegendre(; stages::Int=4) = LogGaussLegendre(stages)
 Paper-style logarithmic imaginary-time grid. The first panel is
 `[0, tau_first]`; subsequent panel widths double until `tau_max`. Each panel is
 split into `nsteps_per_panel` uniform steps, as used for the trapezoid rule in
-arXiv:2606.02930. `tau_max / tau_first` must be a power of two.
+arXiv:2606.02930. If `tau_max` lies inside the next dyadic panel, that final
+panel is shortened while retaining the requested number of steps.
 """
 function logarithmic_time_grid(tau_first::Real, tau_max::Real;
                                nsteps_per_panel::Integer=1)
@@ -116,18 +117,17 @@ function logarithmic_time_grid(tau_first::Real, tau_max::Real;
         throw(ArgumentError("tau_max must be finite and at least tau_first"))
     nsteps_per_panel >= 1 ||
         throw(ArgumentError("nsteps_per_panel must be positive"))
-    ratio = τmax / τ0
-    isfinite(ratio) ||
-        throw(ArgumentError("tau_max / tau_first must be finite"))
-    npanels_after_first = round(Int, log2(ratio))
-    isapprox(ratio, exp2(npanels_after_first); rtol=64eps(Float64), atol=0.0) ||
-        throw(ArgumentError("tau_max / tau_first must be a power of two"))
     grid = Float64[0.0]
     left = 0.0
-    for panel in 0:npanels_after_first
-        right = ldexp(τ0, panel)
+    panel = 0
+    while left < τmax
+        dyadic_right = ldexp(τ0, panel)
+        isfinite(dyadic_right) ||
+            throw(ArgumentError("logarithmic grid panel endpoint overflowed"))
+        right = min(dyadic_right, τmax)
         append!(grid, range(left, right; length=Int(nsteps_per_panel) + 1)[2:end])
         left = right
+        panel += 1
     end
     grid[end] = τmax
     return grid
@@ -136,7 +136,7 @@ end
 """
     ImplicitLogTime(; scheme=LogTrapezoid(), krylovdim=30, maxiter=100,
                     tol=1e-10, fit_nsweeps=4, fit_tol=1e-10,
-                    normalize=false)
+                    normalize=false, energy_shift=false)
 
 A-stable implicit imaginary-time evolution on caller-supplied, possibly
 logarithmic steps `dz = -δτ <= 0`. The default is the paper's trapezoid rule,
@@ -149,7 +149,10 @@ behavior explicitly. TTNS bond spaces define the fixed variational manifold;
 operator actions and all linear solves reuse `fit!` and `linsolve!`. As in the
 paper, callers should shift a Hermitian Hamiltonian to nonnegative spectrum;
 the scalar shift must be tracked separately when absolute normalization or
-`logZ` is required.
+`logZ` is required. With `energy_shift=true`, every step replaces `H` by
+`H - <H>_psi I`, using the normalized Rayleigh quotient at the beginning of
+the step. This is the norm-drift control used by the logarithmic-time METTS
+calculation; `last_shift` records the applied scalar.
 """
 mutable struct ImplicitLogTime{S<:ImplicitLogScheme} <: Evolver
     scheme::S
@@ -160,16 +163,19 @@ mutable struct ImplicitLogTime{S<:ImplicitLogScheme} <: Evolver
     fit_tol::Float64
     fit_verbose::Bool
     normalize::Bool
+    energy_shift::Bool
     last_info::Union{Nothing,_LinInfo}
     last_stage_infos::Vector{_LinInfo}
     last_fit_error::Union{Nothing,Float64}
+    last_shift::Float64
 end
 
 function ImplicitLogTime(; scheme::ImplicitLogScheme=LogTrapezoid(),
                          krylovdim::Int=30, maxiter::Int=100,
                          tol::Float64=1e-10, fit_nsweeps::Int=4,
                          fit_tol::Float64=1e-10,
-                         fit_verbose::Bool=false, normalize::Bool=false)
+                         fit_verbose::Bool=false, normalize::Bool=false,
+                         energy_shift::Bool=false)
     krylovdim >= 2 || throw(ArgumentError("ImplicitLogTime krylovdim must be at least 2"))
     maxiter >= 1 || throw(ArgumentError("ImplicitLogTime maxiter must be positive"))
     tol > 0 || throw(ArgumentError("ImplicitLogTime tol must be positive"))
@@ -177,7 +183,8 @@ function ImplicitLogTime(; scheme::ImplicitLogScheme=LogTrapezoid(),
     fit_tol >= 0 || throw(ArgumentError("ImplicitLogTime fit_tol must be nonnegative"))
     return ImplicitLogTime{typeof(scheme)}(
         scheme, krylovdim, maxiter, tol, fit_nsweeps, fit_tol,
-        fit_verbose, normalize, nothing, _LinInfo[], nothing,
+        fit_verbose, normalize, energy_shift, nothing, _LinInfo[], nothing,
+        0.0,
     )
 end
 
@@ -198,19 +205,34 @@ function step!(ev::ImplicitLogTime, ψ::TTNS, H::TTNO, dz::Number)
         throw(ArgumentError("ImplicitLogTime: H and ψ have mismatched spacetype"))
     h = -δ
     if iszero(h)
+        ev.last_shift = 0.0
         info = _zero_lininfo()
         _record_implicit_info!(ev, _LinInfo[info], nothing)
         return ψ
     end
-    _implicit_step!(ev, ev.scheme, ψ, H, h)
+    shift = if ev.energy_shift
+        ishermitian(H) ||
+            throw(ArgumentError("ImplicitLogTime energy_shift requires a Hermitian TTNO"))
+        quotient = expect(ψ, H) / inner(ψ, ψ)
+        abs(imag(quotient)) <= sqrt(eps(Float64)) *
+            max(abs(real(quotient)), 1.0) ||
+            throw(ArgumentError(
+                "ImplicitLogTime energy shift has a non-real Rayleigh quotient: $quotient"))
+        Float64(real(quotient))
+    else
+        0.0
+    end
+    ev.last_shift = shift
+    _implicit_step!(ev, ev.scheme, ψ, H, h, shift)
     ev.normalize && normalize!(ψ)
     return ψ
 end
 
 function _implicit_step!(ev::ImplicitLogTime, ::LogBackwardEuler,
-                         ψ::TTNS, H::TTNO, h::Real)
+                         ψ::TTNS, H::TTNO, h::Real, shift::Real)
     rhs = copy(ψ)
-    _, info = linsolve!(ψ, H, rhs; a0=one(eltype(ψ)), a1=h,
+    _, info = linsolve!(ψ, H, rhs;
+                        a0=one(eltype(ψ)) - h * shift, a1=h,
                         krylovdim=ev.krylovdim, maxiter=ev.maxiter,
                         tol=ev.tol, fit_nsweeps=ev.fit_nsweeps,
                         fit_tol=ev.fit_tol, fit_verbose=ev.fit_verbose)
@@ -219,15 +241,16 @@ function _implicit_step!(ev::ImplicitLogTime, ::LogBackwardEuler,
 end
 
 function _implicit_step!(ev::ImplicitLogTime, ::LogTrapezoid,
-                         ψ::TTNS, H::TTNO, h::Real)
+                         ψ::TTNS, H::TTNO, h::Real, shift::Real)
     old = copy(ψ)
     rhs = copy(old)
     _, fit_errors = fit!(rhs, (old, old); Hs=(nothing, H),
-                         coeffs=(one(eltype(ψ)), -h / 2),
+                         coeffs=(one(eltype(ψ)) + h * shift / 2, -h / 2),
                          nsweeps=ev.fit_nsweeps, tol=ev.fit_tol,
                          normalize=false, verbose=ev.fit_verbose)
     _replace_state!(ψ, rhs) # paper: use the right-hand side as initial guess
-    _, info = linsolve!(ψ, H, rhs; a0=one(eltype(ψ)), a1=h / 2,
+    _, info = linsolve!(ψ, H, rhs;
+                        a0=one(eltype(ψ)) - h * shift / 2, a1=h / 2,
                         krylovdim=ev.krylovdim, maxiter=ev.maxiter,
                         tol=ev.tol, fit_nsweeps=ev.fit_nsweeps,
                         fit_tol=ev.fit_tol, fit_verbose=ev.fit_verbose)
@@ -236,7 +259,7 @@ function _implicit_step!(ev::ImplicitLogTime, ::LogTrapezoid,
 end
 
 function _implicit_step!(ev::ImplicitLogTime, scheme::LogGaussLegendre,
-                         ψ::TTNS, H::TTNO, h::Real)
+                         ψ::TTNS, H::TTNO, h::Real, shift::Real)
     eltype(ψ) <: Complex ||
         throw(ArgumentError("LogGaussLegendre requires a complex-eltype TTNS for its conjugate-paired shifted solves"))
     A, b, _ = _gauss_legendre_tableau(scheme.stages)
@@ -252,7 +275,8 @@ function _implicit_step!(ev::ImplicitLogTime, scheme::LogGaussLegendre,
     for i in 1:scheme.stages
         rhs = _scaled_copy(old, q[i])
         stage = copy(rhs)
-        _, info = linsolve!(stage, H, rhs; a0=one(eltype(ψ)),
+        _, info = linsolve!(stage, H, rhs;
+                            a0=one(eltype(ψ)) - h * F.values[i] * shift,
                             a1=h * F.values[i],
                             krylovdim=ev.krylovdim, maxiter=ev.maxiter,
                             tol=ev.tol, fit_nsweeps=ev.fit_nsweeps,
@@ -260,10 +284,15 @@ function _implicit_step!(ev::ImplicitLogTime, scheme::LogGaussLegendre,
         stages[i] = stage
         infos[i] = info
     end
-    sources = (old, stages...)
-    operators = (nothing, ntuple(_ -> H, scheme.stages)...)
-    coefficients = (one(eltype(ψ)),
-                    (convert(eltype(ψ), -h * w) for w in endpoint_weights)...)
+    sources = (old, stages..., stages...)
+    operators = (
+        nothing,
+        ntuple(_ -> nothing, scheme.stages)...,
+        ntuple(_ -> H, scheme.stages)...)
+    coefficients = (
+        one(eltype(ψ)),
+        (convert(eltype(ψ), h * shift * w) for w in endpoint_weights)...,
+        (convert(eltype(ψ), -h * w) for w in endpoint_weights)...)
     _, fit_errors = fit!(ψ, sources; Hs=operators, coeffs=coefficients,
                          nsweeps=ev.fit_nsweeps, tol=ev.fit_tol,
                          normalize=false, verbose=ev.fit_verbose)

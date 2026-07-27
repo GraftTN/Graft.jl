@@ -63,6 +63,20 @@ mutable struct _ChannelSlicedWorkspaceMap{F<:ChannelSlicedEffectiveMap}
     closed::Bool
 end
 
+struct _SerialChannelSlicedWorkspaceMap{W<:Tuple}
+    workspaces::W
+end
+
+function (f::_SerialChannelSlicedWorkspaceMap)(x::AbstractTensorMap)
+    y = first(f.workspaces)(x)
+    for workspace in Iterators.drop(f.workspaces, 1)
+        axpy!(1, workspace(x), y)
+    end
+    return y
+end
+
+Base.close(::_SerialChannelSlicedWorkspaceMap) = nothing
+
 function _channel_worker(map_::EffectiveMap, request::Channel{Any},
                          response::Channel{Any})
     workspace = Planning.workspace_map(map_)
@@ -80,6 +94,10 @@ function _channel_worker(map_::EffectiveMap, request::Channel{Any},
 end
 
 function _channel_workspace_map(effective::ChannelSlicedEffectiveMap)
+    if length(effective.maps) < effective.minbatch
+        workspaces = map(Planning.workspace_map, effective.maps)
+        return _SerialChannelSlicedWorkspaceMap(workspaces)
+    end
     requests = [Channel{Any}(1) for _ in effective.maps]
     responses = [Channel{Any}(1) for _ in effective.maps]
     tasks = map(eachindex(effective.maps)) do i
@@ -250,11 +268,18 @@ function _concurrent_slice_bytes(maps)
     return ceil(Int, sum(map_ -> _slice_live_bytes(map_.plan), maps))
 end
 
+function _channel_plan_flops(plan::ContractionPlan)
+    isfinite(plan.sector_flops) && return plan.sector_flops
+    isfinite(plan.flops) && return plan.flops
+    return Inf
+end
+
 function _channel_sliced_h1!(cache::EnvCache, full::EffectiveMap,
                              spec::ContractionSpec, statics::Tuple, protos,
                              ψ::TTNS, n::Int;
                              channel_slices::Int,
                              channel_minbatch::Int,
+                             channel_min_flops::Real,
                              channel_memory_cap_bytes::Union{Nothing,Real},
                              optimize::Bool, memory_weight::Real,
                              sector_aware::Bool,
@@ -262,6 +287,10 @@ function _channel_sliced_h1!(cache::EnvCache, full::EffectiveMap,
     channel_slices >= 2 || throw(ArgumentError("channel_slices must be at least 2"))
     channel_minbatch >= 1 || throw(ArgumentError("channel_minbatch must be positive"))
     Threads.nthreads() > 1 || return full
+    min_flops = Float64(channel_min_flops)
+    isfinite(min_flops) && min_flops >= 0 || throw(ArgumentError(
+        "channel_min_flops must be a finite nonnegative number"))
+    _channel_plan_flops(full.plan) >= min_flops || return full
     channel_memory_cap_bytes === nothing && throw(ArgumentError(
         "threaded_channels=true requires an explicit channel_memory_cap_bytes"))
     cap = Float64(channel_memory_cap_bytes)
@@ -336,6 +365,7 @@ function _channel_sliced_h2!(cache::EnvCache, full::EffectiveMap,
                              ψ::TTNS, n::Int, m::Int;
                              channel_slices::Int,
                              channel_minbatch::Int,
+                             channel_min_flops::Real,
                              channel_memory_cap_bytes::Union{Nothing,Real},
                              optimize::Bool, memory_weight::Real,
                              sector_aware::Bool,
@@ -343,6 +373,10 @@ function _channel_sliced_h2!(cache::EnvCache, full::EffectiveMap,
     channel_slices >= 2 || throw(ArgumentError("channel_slices must be at least 2"))
     channel_minbatch >= 1 || throw(ArgumentError("channel_minbatch must be positive"))
     Threads.nthreads() > 1 || return full
+    min_flops = Float64(channel_min_flops)
+    isfinite(min_flops) && min_flops >= 0 || throw(ArgumentError(
+        "channel_min_flops must be a finite nonnegative number"))
+    _channel_plan_flops(full.plan) >= min_flops || return full
     channel_memory_cap_bytes === nothing && throw(ArgumentError(
         "threaded_channels=true requires an explicit channel_memory_cap_bytes"))
     cap = Float64(channel_memory_cap_bytes)
@@ -467,16 +501,17 @@ outside the current regular TensorOperations backend surface.
 
 `threaded_channels=true` enables the experimental Tier-3 split of the largest
 TTNO virtual leg into `channel_slices` exact subspaces. It is off by
-default, requires more than one Julia thread and an explicit
-`channel_memory_cap_bytes`, and currently benefits only sufficiently large
-branch-node maps. Slice outputs are accumulated serially in fixed order.
+default and requires more than one Julia thread. Maps below
+`channel_min_flops` return the ordinary unsliced map; maps that pass the gate
+require an explicit `channel_memory_cap_bytes`. Slice outputs are accumulated
+serially in fixed order.
 """
 function eff_h1(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int;
                 optimize::Bool=true, memory_weight::Real=1,
                 sector_aware::Bool=true,
                 memory_cap_bytes::Union{Nothing,Real}=nothing,
                 threaded_channels::Bool=false, channel_slices::Int=2,
-                channel_minbatch::Int=2,
+                channel_minbatch::Int=2, channel_min_flops::Real=0,
                 channel_memory_cap_bytes::Union{Nothing,Real}=nothing)
     spec, statics, protos = _h1_spec(cache, ψ, H, n)
     full = _effective_map!(cache, :h1, spec, protos, statics,
@@ -487,7 +522,7 @@ function eff_h1(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int;
                            output_twists=_euclidean_output_legs(ψ, n))
     threaded_channels || return full
     return _channel_sliced_h1!(cache, full, spec, statics, protos, ψ, n;
-                               channel_slices, channel_minbatch,
+                               channel_slices, channel_minbatch, channel_min_flops,
                                channel_memory_cap_bytes, optimize, memory_weight,
                                sector_aware, memory_cap_bytes)
 end
@@ -751,7 +786,7 @@ function eff_h2(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int, m::Int;
                 sector_aware::Bool=true,
                 memory_cap_bytes::Union{Nothing,Real}=nothing,
                 threaded_channels::Bool=false, channel_slices::Int=2,
-                channel_minbatch::Int=2,
+                channel_minbatch::Int=2, channel_min_flops::Real=0,
                 channel_memory_cap_bytes::Union{Nothing,Real}=nothing)
     spec, statics, protos = _h2_spec(cache, ψ, H, n, m)
     t = ψ.topo
@@ -789,7 +824,7 @@ function eff_h2(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int, m::Int;
                            output_twists=Tuple(twists))
     threaded_channels || return full
     return _channel_sliced_h2!(cache, full, spec, statics, protos, ψ, n, m;
-                               channel_slices, channel_minbatch,
+                               channel_slices, channel_minbatch, channel_min_flops,
                                channel_memory_cap_bytes, optimize, memory_weight,
                                sector_aware, memory_cap_bytes)
 end

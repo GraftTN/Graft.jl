@@ -35,6 +35,7 @@ Base.@kwdef mutable struct TDVP1 <: Evolver
     threaded_channels::Bool = false
     channel_slices::Int = 2
     channel_minbatch::Int = 2
+    channel_min_flops::Real = 1_000_000
     channel_memory_cap_bytes::Union{Nothing,Real} = nothing
     verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
@@ -65,6 +66,7 @@ Base.@kwdef mutable struct TDVP2 <: Evolver
     threaded_channels::Bool = false
     channel_slices::Int = 2
     channel_minbatch::Int = 2
+    channel_min_flops::Real = 1_000_000
     channel_memory_cap_bytes::Union{Nothing,Real} = nothing
     verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
@@ -95,6 +97,7 @@ Base.@kwdef mutable struct TDVP1_CBE <: Evolver
     threaded_channels::Bool = false
     channel_slices::Int = 2
     channel_minbatch::Int = 2
+    channel_min_flops::Real = 1_000_000
     channel_memory_cap_bytes::Union{Nothing,Real} = nothing
     verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
@@ -216,6 +219,7 @@ function _tdvp1_sweep!(ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO, dz::Number
                     threaded_channels=ev.threaded_channels,
                     channel_slices=ev.channel_slices,
                     channel_minbatch=ev.channel_minbatch,
+                    channel_min_flops=ev.channel_min_flops,
                     channel_memory_cap_bytes=ev.channel_memory_cap_bytes)
         A, _ = Contractions._with_workspace_map(h1) do h1map
             exponentiate(h1map, dz, ψ.tensors[n];
@@ -366,6 +370,7 @@ Base.@noinline function _bond_forward!(
                 threaded_channels=ev.threaded_channels,
                 channel_slices=ev.channel_slices,
                 channel_minbatch=ev.channel_minbatch,
+                channel_min_flops=ev.channel_min_flops,
                 channel_memory_cap_bytes=ev.channel_memory_cap_bytes)
     Θ, _ = Contractions._with_workspace_map(h2) do h2map
         exponentiate(h2map, dz, Θ;
@@ -388,12 +393,14 @@ Base.@noinline function _site_backward!(
                threaded_channels=ev.threaded_channels,
                channel_slices=ev.channel_slices,
                channel_minbatch=ev.channel_minbatch,
+               channel_min_flops=ev.channel_min_flops,
                channel_memory_cap_bytes=ev.channel_memory_cap_bytes)
     else
         eff_h1(cache, ψ, H, m;
                threaded_channels=ev.threaded_channels,
                channel_slices=ev.channel_slices,
                channel_minbatch=ev.channel_minbatch,
+               channel_min_flops=ev.channel_min_flops,
                channel_memory_cap_bytes=ev.channel_memory_cap_bytes)
     end
     A, _ = Contractions._with_workspace_map(h1) do h1map
@@ -459,6 +466,7 @@ function _cbe_predictor(ev::TDVP1_CBE, ψ::TTNS, H::TTNO, u::Int, v::Int, dz::Nu
                 threaded_channels=ev.threaded_channels,
                 channel_slices=ev.channel_slices,
                 channel_minbatch=ev.channel_minbatch,
+                channel_min_flops=ev.channel_min_flops,
                 channel_memory_cap_bytes=ev.channel_memory_cap_bytes)
     Θ, _ = Contractions._with_workspace_map(h2) do h2map
         exponentiate(h2map, dz, Θ;

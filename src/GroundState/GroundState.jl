@@ -35,6 +35,7 @@ function dmrg1!(ψ::TTNS, H::TTNO; nsweeps::Int=10, tol::Float64=1e-10,
                 krylovdim::Int=20, verbose::Bool=true,
                 threaded_channels::Bool=false, channel_slices::Int=2,
                 channel_minbatch::Int=2,
+                channel_min_flops::Real=1_000_000,
                 channel_memory_cap_bytes::Union{Nothing,Real}=nothing)
     ishermitian(H) || throw(ArgumentError("dmrg1!: DMRG requires ishermitian(H) == true (§9.8)"))
     cache = EnvCache(ψ.topo)
@@ -48,7 +49,8 @@ function dmrg1!(ψ::TTNS, H::TTNO; nsweeps::Int=10, tol::Float64=1e-10,
         for n in Iterators.flatten((order, Iterators.reverse(order)))
             move_center!(ψ, n; cache)
             h1 = eff_h1(cache, ψ, H, n; threaded_channels, channel_slices,
-                        channel_minbatch, channel_memory_cap_bytes)
+                        channel_minbatch, channel_min_flops,
+                        channel_memory_cap_bytes)
             vals, vecs, _ = Contractions._with_workspace_map(h1) do h1map
                 eigsolve(h1map, ψ.tensors[n], 1, :SR;
                          ishermitian=true, krylovdim)
@@ -85,6 +87,7 @@ function dmrg2!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(),
                 nsweeps::Int=10, tol::Float64=1e-10, krylovdim::Int=20,
                 threaded_channels::Bool=false, channel_slices::Int=2,
                 channel_minbatch::Int=2,
+                channel_min_flops::Real=1_000_000,
                 channel_memory_cap_bytes::Union{Nothing,Real}=nothing,
                 verbose::Bool=true)
     ishermitian(H) || throw(ArgumentError("dmrg2!: DMRG requires ishermitian(H) == true (§9.8)"))
@@ -105,7 +108,8 @@ function dmrg2!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(),
             move_center!(ψ, n; cache)
             Θ = two_site_tensor(ψ, n, m)
             h2 = eff_h2(cache, ψ, H, n, m; threaded_channels, channel_slices,
-                        channel_minbatch, channel_memory_cap_bytes)
+                        channel_minbatch, channel_min_flops,
+                        channel_memory_cap_bytes)
             vals, vecs, _ = Contractions._with_workspace_map(h2) do h2map
                 eigsolve(h2map, Θ, 1, :SR; ishermitian=true, krylovdim)
             end
@@ -144,6 +148,7 @@ function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(;
                    rsvd_minbatch::Int=max(2, Base.Threads.nthreads()),
                    threaded_channels::Bool=false, channel_slices::Int=2,
                    channel_minbatch::Int=2,
+                   channel_min_flops::Real=1_000_000,
                    channel_memory_cap_bytes::Union{Nothing,Real}=nothing,
                    enr_rtol::Float64=1e-10, enr_atol::Float64=1e-12,
                    verbose::Bool=true)
@@ -164,7 +169,8 @@ function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(;
         for n in Iterators.flatten((order, Iterators.reverse(order)))
             move_center!(ψ, n; cache)
             h1 = eff_h1(cache, ψ, H, n; threaded_channels, channel_slices,
-                        channel_minbatch, channel_memory_cap_bytes)
+                        channel_minbatch, channel_min_flops,
+                        channel_memory_cap_bytes)
             vals, vecs, _ = Contractions._with_workspace_map(h1) do h1map
                 eigsolve(h1map, ψ.tensors[n], 1, :SR;
                          ishermitian=true, krylovdim)
@@ -181,6 +187,7 @@ function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(;
                         rsvd_oversample, rsvd_poweriter,
                         rsvd_threaded, rsvd_minbatch, threaded_channels,
                         channel_slices, channel_minbatch,
+                        channel_min_flops,
                         channel_memory_cap_bytes)
             end
             Contractions._bootstrap_physless_root!(ψ, cache, root_targets)

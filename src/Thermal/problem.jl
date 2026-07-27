@@ -121,7 +121,10 @@ function purification_problem(K::OpSum, topo::TreeTopology, phys;
         end
     end
 
-    # Lift K to doubled topology as TTNO
+    # Keep both representations: METTS evolves product states on the original
+    # topology, while purification evolves on the doubled topology.
+    K_orig = ttno_from_opsum(K, topo, phys_typed;
+                             hermitian=hermitian, elt=elt)
     K_ttno = ttno_from_opsum(K, doubled_topo, phys_doubled;
                              hermitian=hermitian, elt=elt)
 
@@ -134,7 +137,7 @@ function purification_problem(K::OpSum, topo::TreeTopology, phys;
     return PurificationProblem{S}(
         topo, doubled_topo, phys_typed, phys_doubled,
         ancilla_of, physical_of, pp_ancilla_of, thermal_ancilla_of,
-        logical_groups, K_ttno, log_dim, hermitian, elt, metadata,
+        logical_groups, K, K_orig, K_ttno, log_dim, hermitian, elt, metadata,
     )
 end
 
@@ -147,8 +150,11 @@ on physical sites; ancilla sites carry identities via ordinary TTNO
 construction.
 """
 function physical_ttno(problem::PurificationProblem, O::OpSum;
-                      hermitian::Bool=false, elt::Type{<:Number}=problem.elt)
-    return ttno_from_opsum(O, problem.topo_doubled, problem.phys_doubled;
+                      hermitian::Bool=false, elt::Type{<:Number}=problem.elt,
+                      doubled::Bool=true)
+    topo = doubled ? problem.topo_doubled : problem.topo_orig
+    phys = doubled ? problem.phys_doubled : problem.phys_orig
+    return ttno_from_opsum(O, topo, phys;
                           hermitian=hermitian, elt=elt)
 end
 

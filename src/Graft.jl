@@ -17,7 +17,7 @@ the include order below only reflects that `Contractions` operates on the
     TTNOBuild      L4b  symbolic Hamiltonian → TTNO assembly
     GroundState    L5a  DMRG family
     Evolution      L5b  complex-step Evolver family (TDVP1 …)
-    Thermal        L5c  finite-T representations (TODO, M2)
+    Thermal        L5c  purification, METTS, correlators, benchmarks
     FreqDomain     L5d  TaSK resolvent kernel (TODO, M6)
     Checkpoints    ✕    JLD2 checkpoint/restart
     Parallel       ✕    threading/MPI roll-out (TODO)
@@ -42,6 +42,7 @@ include("Symbolic/Symbolic.jl")
 include("TTNOBuild/TTNOBuild.jl")
 include("GroundState/GroundState.jl")
 include("Evolution/Evolution.jl")
+include("Spectral/Spectral.jl")
 include("Thermal/Thermal.jl")
 include("FreqDomain/FreqDomain.jl")
 include("IO/Checkpoints.jl")
@@ -55,6 +56,7 @@ using .Symbolic
 using .TTNOBuild
 using .GroundState
 using .Evolution
+using .Spectral
 using .Thermal
 using .FreqDomain
 using .Checkpoints
@@ -88,11 +90,29 @@ export dmrg1!, dmrg2!, dmrg1_3s!, expand!,
     TDVP1, TDVP2, TDVP1_CBE, GlobalKrylov, GSE_TDVP, LSE_TDVP,
     TEBD, BUG, ImplicitLogScheme, LogBackwardEuler, LogTrapezoid,
     LogGaussLegendre, ImplicitLogTime, logarithmic_time_grid, linsolve!,
-    ThermalRep, Purified, METTS, thermalize,
+    ExponentialSum, evaluate, rank_from_svals, esprit,
+    LinearPredictionResult, linear_prediction, predict, exponential_sum,
+    ComplexTimeKrylovResult, complex_time_krylov,
+    ThermalRep, Purified, METTS, HybridMETTS, thermalize,
     PurificationProblem, purification_problem, physical_ttno,
     PurifiedState, PurificationTrajectory, ScaledTTNS,
+    METTSSample, METTSTrajectory, METTSStatistics, metts_statistics,
+    MatsubaraSeries, matsubara_transform,
+    KondoScalingResult, fit_kondo_scaling,
+    SemicircularBathReport, semicircular_hybridization,
+    gauss_semicircular_bath, discrete_bath_hybridization,
+    validate_semicircular_bath, read_bath_csv,
+    FiniteModeAction, finite_mode_hash, fermionic_frequency,
+    bosonic_frequency, hybridization_iw, retarded_interaction_iv,
+    CTSEGMetadata, CTSEGDatum, CTSEGArtifact, CTSEGReadinessReport,
+    assess_ctseg_readiness, certify_ctseg,
+    ThermalBenchmarkDatum, CTSEGComparison, compare_ctseg,
+    write_ctseg_input_csv, write_ctseg_results_csv, read_ctseg_results_csv,
+    FiniteModeBenchmarkCell, BosonCutoffReport, assess_boson_cutoff,
+    RepresentationComparison, compare_representations,
+    write_finite_mode_benchmark_csv,
     infinite_temperature_state, thermal_expect, thermal_correlator,
-    state_at
+    thermal_realtime_correlator, state_at
 # cross-cutting
 export checkpoint!, resume, with_checkpoint, threaded_foreach,
     configure_parallel_runtime!

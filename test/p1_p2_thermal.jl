@@ -257,13 +257,19 @@ const QUIET = (verbose=false,)
         end
     end
 
-    @testset "P2: aux_evolution != :none rejected" begin
+    @testset "P2: auxiliary mode is inert during equilibrium preparation" begin
         S = spin_ops()
         topo = mps_topology(1)
         phys = Dict(:site1 => S.P)
         H = OpSum() + Term(0.5, SiteOp(:site1, :Z, S.Z))
         prob = purification_problem(H, topo, phys; hermitian=true)
-        @test_throws ArgumentError thermalize(Purified(aux_evolution=:backward),
+        plain = thermalize(Purified(), prob, 1.0;
+            evolver=TDVP2(; QUIET...), nsteps=10)
+        backward = thermalize(Purified(aux_evolution=:backward), prob, 1.0;
+            evolver=TDVP2(; QUIET...), nsteps=10)
+        @test backward.final.logZ == plain.final.logZ
+        @test inner(backward.final.psi, plain.final.psi) ≈ 1 atol=1e-12
+        @test_throws ArgumentError thermalize(Purified(aux_evolution=:invalid),
             prob, 1.0; evolver=TDVP2(; QUIET...), nsteps=10)
     end
 end

@@ -31,8 +31,7 @@ are rejected with `ArgumentError`.
 function thermalize(rep::Purified, problem::PurificationProblem, beta::Real;
                     evolver::Evolver, tau_grid=:uniform, nsteps=nothing,
                     save_betas=Float64[])
-    rep.aux_evolution === :none ||
-        throw(ArgumentError("only aux_evolution=:none is supported in v1; :backward and :custom belong to the future finite-T real-time driver"))
+    _validate_aux_evolution(rep.aux_evolution)
     _check_evolver_no_normalize(evolver)
     beta >= 0 || throw(ArgumentError("beta must be nonnegative"))
 
@@ -106,6 +105,137 @@ function thermalize(rep::Purified, problem::PurificationProblem, beta::Real;
 end
 
 """
+    thermal_realtime_correlator(rep, problem, A, B, times;
+        evolver, trajectory, aux_hamiltonian=nothing,
+        aux_evolver=evolver, metadata=(;)) -> CorrelatorSeries
+
+Compute `tr(rho * A(t) * B) / Z` by evolving both the thermal reference and
+`B|Psi_beta>` with the physical Hamiltonian. For
+`Purified(aux_evolution=:backward)`, both states additionally evolve with
+`+im * H_aux * dt` on ancillas. This common ancilla unitary leaves the
+correlator invariant and implements the Karrasch-Barthel gauge evolution.
+
+Neutral generators get `H_aux = transpose(H)` automatically. Generators with
+charged local factors require an explicit `aux_hamiltonian`, because a
+factorwise transpose is not sufficient to certify fermionic braiding signs.
+Passing a TTNO directly as `rep.aux_evolution` is the custom-Hamiltonian form.
+"""
+function thermal_realtime_correlator(
+        rep::Purified, problem::PurificationProblem, A, B, times;
+        evolver::Evolver,
+        trajectory::PurificationTrajectory,
+        aux_hamiltonian=nothing,
+        aux_evolver::Evolver=evolver,
+        metadata::NamedTuple=(;))
+    _validate_trajectory(trajectory, problem, trajectory.final.beta, evolver)
+    eltype(trajectory.final.psi) <: Complex ||
+        throw(ArgumentError("finite-temperature real-time evolution requires a complex-eltype state"))
+    Asite, Aop = _local_insertion_thermal(A)
+    Bsite, Bop = _local_insertion_thermal(B)
+    values_t = collect(times)
+    all(t -> isreal(t) && real(t) >= 0, values_t) ||
+        throw(ArgumentError("real-time points must be real and nonnegative"))
+    all(diff(real.(values_t)) .>= 0) ||
+        throw(ArgumentError("real-time points must be nondecreasing"))
+
+    reference = copy(trajectory.final.psi)
+    inserted = apply_local(trajectory.final.psi, Bop, Bsite)
+    physical_ev_ref = _fresh_evolver_thermal(evolver)
+    physical_ev_inserted = _fresh_evolver_thermal(evolver)
+    Haux = _resolve_aux_hamiltonian(rep, problem, aux_hamiltonian)
+    aux_ev_ref = Haux === nothing ? nothing : _fresh_evolver_thermal(aux_evolver)
+    aux_ev_inserted = Haux === nothing ? nothing : _fresh_evolver_thermal(aux_evolver)
+
+    vals = Vector{ComplexF64}(undef, length(values_t))
+    previous = 0.0
+    for i in eachindex(values_t)
+        current = Float64(real(values_t[i]))
+        dt = current - previous
+        if !iszero(dt)
+            step!(physical_ev_ref, reference, problem.K, -im * dt)
+            step!(physical_ev_inserted, inserted, problem.K, -im * dt)
+            if Haux !== nothing
+                step!(aux_ev_ref, reference, Haux, +im * dt)
+                step!(aux_ev_inserted, inserted, Haux, +im * dt)
+            end
+        end
+        acted = apply_local(inserted, Aop, Asite)
+        vals[i] = inner(reference, acted)
+        previous = current
+    end
+    meta = merge(metadata, (;
+        beta=trajectory.final.beta,
+        Asite,
+        Bsite,
+        aux_evolution=Haux === nothing ? :none : :backward,
+        evolver_type=typeof(evolver),
+        aux_evolver_type=Haux === nothing ? Nothing : typeof(aux_evolver),
+    ))
+    return CorrelatorSeries(Float64.(real.(values_t)), vals, meta)
+end
+
+function _validate_aux_evolution(mode)
+    mode === :none && return :none
+    mode === :backward && return :backward
+    mode isa TTNO && return :custom
+    throw(ArgumentError(
+        "aux_evolution must be :none, :backward, or a custom auxiliary TTNO"))
+end
+
+function _resolve_aux_hamiltonian(rep::Purified,
+                                  problem::PurificationProblem,
+                                  supplied)
+    mode = _validate_aux_evolution(rep.aux_evolution)
+    if mode === :none
+        supplied === nothing || throw(ArgumentError(
+            "aux_hamiltonian was supplied but aux_evolution=:none"))
+        return nothing
+    elseif mode === :custom
+        supplied === nothing || throw(ArgumentError(
+            "custom auxiliary Hamiltonian was supplied twice"))
+        Haux = rep.aux_evolution
+    elseif supplied !== nothing
+        Haux = supplied
+    else
+        Haux = _automatic_aux_hamiltonian(problem)
+    end
+    Haux isa TTNO ||
+        throw(ArgumentError("auxiliary Hamiltonian must be a TTNO"))
+    topology(Haux) == problem.topo_doubled ||
+        throw(ArgumentError("auxiliary Hamiltonian has the wrong topology"))
+    return Haux
+end
+
+function _automatic_aux_hamiltonian(problem::PurificationProblem)
+    auxiliary = OpSum()
+    for term in problem.generator
+        mapped = SiteOp[]
+        for factor in term.ops
+            numin(factor.op) == 1 || throw(ArgumentError(
+                "automatic aux_evolution=:backward supports only neutral local factors; " *
+                "pass aux_hamiltonian explicitly for charged/fermionic generators"))
+            ancilla = get(problem.ancilla_of, factor.site, nothing)
+            ancilla === nothing && throw(ArgumentError(
+                "no thermal ancilla is associated with $(factor.site)"))
+            Paux = problem.phys_doubled[ancilla]
+            matrix = collect(transpose(convert(Array, factor.op)))
+            auxop = try
+                TensorMap(matrix, Paux ← Paux)
+            catch err
+                throw(ArgumentError(
+                    "cannot transpose local factor $(factor.name) onto ancilla $ancilla; " *
+                    "pass aux_hamiltonian explicitly (cause: $(sprint(showerror, err)))"))
+            end
+            push!(mapped, SiteOp(ancilla, Symbol(factor.name, :_auxT), auxop))
+        end
+        auxiliary += Term(term.coeff, mapped)
+    end
+    return ttno_from_opsum(
+        auxiliary, problem.topo_doubled, problem.phys_doubled;
+        hermitian=problem.hermitian, elt=problem.elt)
+end
+
+"""
     thermal_expect(state::PurifiedState, O::TTNO) -> Number
 
 Thermal expectation `⟨O⟩_β = ⟨Ψ_β|O|Ψ_β⟩ / ⟨Ψ_β|Ψ_β⟩`. Since `state.psi` is
@@ -125,7 +255,7 @@ thermal_expect(traj::PurificationTrajectory, O::TTNO) = thermal_expect(traj.fina
                        evolver, prep_grid=:uniform, prep_nsteps=nothing,
                        prop_grid=:uniform, prop_nsteps=nothing,
                        trajectory=nothing, connected=false,
-                       metadata=(;), threaded=Base.Threads.nthreads() > 1,
+                       metadata=(;), threaded=false,
                        minbatch=2) -> CorrelatorSeries
 
 Thermal correlator `C_AB(τ) = tr(e^{-(β-τ)K} A e^{-τK} B) / Z` using the stable
@@ -157,7 +287,7 @@ function thermal_correlator(rep::Purified, problem::PurificationProblem,
                            trajectory=nothing,
                            connected::Bool=false,
                            metadata::NamedTuple=(;),
-                           threaded::Bool=Base.Threads.nthreads() > 1,
+                           threaded::Bool=false,
                            minbatch::Integer=2)
     minbatch >= 1 || throw(ArgumentError("minbatch must be positive"))
     beta_value = Float64(beta)
