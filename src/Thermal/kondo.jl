@@ -52,6 +52,8 @@ end
 Analytic Stieltjes transform of
 `rho(epsilon)=2*sqrt(D^2-epsilon^2)/(pi*D^2)` on `[-D,D]`.
 The square-root branch is selected so the result behaves as `1/z`.
+On the real axis inside the band the retarded (`+i0`) prescription is
+returned, so `Im G < 0` for both signs of `Re z`.
 """
 function semicircular_hybridization(z::Number; half_bandwidth::Real=1)
     D = Float64(half_bandwidth)
@@ -61,6 +63,8 @@ function semicircular_hybridization(z::Number; half_bandwidth::Real=1)
     root = sqrt(value^2 - D^2)
     if !iszero(imag(value))
         signbit(imag(root)) == signbit(imag(value)) || (root = -root)
+    elseif abs(real(value)) < D
+        signbit(imag(root)) && (root = -root)
     elseif !iszero(real(value))
         signbit(real(root)) == signbit(real(value)) || (root = -root)
     end

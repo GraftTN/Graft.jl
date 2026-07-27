@@ -18,6 +18,18 @@
         interactions, temperatures, curves, ground; low_points=1)
 end
 
+@graft_testset "M1 semicircular retarded branch" begin
+    for x in (-0.9, -0.4, -0.05, 0.0, 0.05, 0.4, 0.9)
+        G = semicircular_hybridization(x)
+        @test real(G) ≈ 2x atol=1e-12
+        @test imag(G) ≈ -2 * sqrt(1 - x^2) atol=1e-12
+    end
+    @test semicircular_hybridization(2.0) ≈ 2 * (2 - sqrt(3))
+    @test semicircular_hybridization(-2.0) ≈ 2 * (-2 + sqrt(3))
+    @test semicircular_hybridization(1.0) ≈ 2
+    @test semicircular_hybridization(-1.0) ≈ -2
+end
+
 @graft_testset "M1 Kondo semicircular bath validation" begin
     @test semicircular_hybridization(100im) ≈ inv(100im) rtol=1e-4
     @test semicircular_hybridization(-100im) ≈ inv(-100im) rtol=1e-4

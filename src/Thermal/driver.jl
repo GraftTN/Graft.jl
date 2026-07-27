@@ -211,7 +211,7 @@ function _automatic_aux_hamiltonian(problem::PurificationProblem)
     for term in problem.generator
         mapped = SiteOp[]
         for factor in term.ops
-            numin(factor.op) == 1 || throw(ArgumentError(
+            (numin(factor.op) == 1 && numout(factor.op) == 1) || throw(ArgumentError(
                 "automatic aux_evolution=:backward supports only neutral local factors; " *
                 "pass aux_hamiltonian explicitly for charged/fermionic generators"))
             ancilla = get(problem.ancilla_of, factor.site, nothing)

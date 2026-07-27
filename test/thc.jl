@@ -1,3 +1,6 @@
+using Graft
+using LinearAlgebra: norm
+
 function _grid_interaction(orbitals, kernel)
     density = Matrix{promote_type(eltype(orbitals), eltype(kernel))}(
         undef, size(orbitals, 1), size(orbitals, 2)^2)

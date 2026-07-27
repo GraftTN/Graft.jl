@@ -125,4 +125,16 @@ isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
     Cd1 = kron(reshape(convert(Array, F.Cd), 2, 2), identity2)
     reference = exact_thermal_correlator(Hd, C1, Cd1, beta, taus)
     @test maximum(abs.(series.values .- reference)) < 1e-7
+
+    @testset "charged generator requires explicit aux_hamiltonian" begin
+        @test_throws ArgumentError Graft.Thermal._automatic_aux_hamiltonian(prob)
+        traj = thermalize(Purified(), prob, 0.1;
+            evolver=TDVP2(trunc=TruncationScheme(maxdim=8), verbose=false),
+            nsteps=2)
+        @test_throws ArgumentError thermal_realtime_correlator(
+            Purified(aux_evolution=:backward), prob,
+            :site1 => F.N, :site1 => F.N, [0.0];
+            evolver=TDVP2(trunc=TruncationScheme(maxdim=8), verbose=false),
+            trajectory=traj)
+    end
 end
