@@ -94,7 +94,7 @@ function _apply_node_spec(O::TTNO{S}, ψ::TTNS{S}, n::Int,
     ps, po = fresh(), fresh()
     aidx[end] = ps
     widx[end] = po
-    push!(operands, adjoint(parent_fusion))
+    push!(operands, adjoint(_bent_edge_fusion(parent_fusion)))
     push!(labels, [ps, po, open()])
     push!(conjs, false)
     parent_slot = length(labels)
@@ -184,7 +184,8 @@ function _apply_node_tensor_ncon_reference(O::TTNO{S}, ψ::TTNS{S}, n::Int,
     po = fresh()
     aidx[end] = ps
     widx[end] = po
-    push!(tensors, adjoint(parent_fusion)); push!(indices, [ps, po, open()]); push!(conjs, false)
+    push!(tensors, adjoint(_bent_edge_fusion(parent_fusion)))
+    push!(indices, [ps, po, open()]); push!(conjs, false)
     y = ncon(tensors, indices, conjs)
     return repartition(y, outleg[] - 1, 1)
 end
@@ -194,6 +195,28 @@ function _edge_fusion(::Type{T}, ψ::TTNS, O::TTNO, child::Int) where {T<:Number
     VO = domain(O.tensors[child])[numin(O.tensors[child])]
     return unitary(T, fuse(Vψ ⊗ VO), Vψ ⊗ VO)
 end
+
+"""
+    _bent_edge_fusion(F) -> F′
+
+`fuse` always hands back a primal edge, so a state bond stored dual bends
+across the edge isomorphism and carries the ribbon pivotal twist of whatever
+sector it holds — the same seam convention as [`_pivotal_link`](@ref) for QR
+link factors. Three details are load-bearing:
+
+  * the bend belongs to exactly one end of the edge, the child end that turns
+    the stored parent leg into the new fused parent leg; twisting the shared
+    map would cancel against its own adjoint and change nothing;
+  * it applies to the *state* sub-wire only. A dual TTNO virtual bond is
+    already carried by the operator's own link convention (`_pivotal_link` in
+    the compression pipeline), and twisting it here would make the measured
+    action depend on whether the TTNO had been compressed;
+  * without it, `apply` silently flips every odd-parity block reached through
+    a dual state bond — the gauge a two-site split or a downward
+    `move_center!` leaves behind.
+"""
+_bent_edge_fusion(F::AbstractTensorMap) =
+    isdual(domain(F)[1]) ? twist(F, 2) : F
 
 function _canonicalize_apply!(ψ::TTNS, target::Int)
     t = ψ.topo
