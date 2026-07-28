@@ -211,6 +211,9 @@ does not imply that every variant in the paper is implemented.
 
    **Provenance:** Algorithmic basis for the planned projected-purification treatment of large bosonic local spaces.
 
+Additional annotated literature notes and working reference material live in the
+sibling `GraftHarness` checkout.
+
 ## License
 
 Graft.jl is licensed under the [Apache License 2.0](LICENSE).
