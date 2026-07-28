@@ -18,8 +18,22 @@ using ..Backend
 using ..Trees
 using ..Networks
 using ..Contractions
+using ..Parallel: AbstractDistributedContext, distributed_eigsolve
 
 export dmrg1!, dmrg2!, dmrg1_3s!, expand!
+
+function _effective_eigsolve(
+        distributed, effective, x; krylovdim)
+    if distributed === nothing
+        return Contractions._with_workspace_map(effective) do workspace
+            eigsolve(
+                workspace, x, 1, :SR; ishermitian=true, krylovdim)
+        end
+    end
+    return distributed_eigsolve(
+        distributed, effective, x, 1, :SR;
+        ishermitian=true, krylovdim)
+end
 
 """
     dmrg1!(ψ, H; nsweeps=10, tol=1e-10, krylovdim=20, verbose=false) -> (ψ, energies)
@@ -36,7 +50,8 @@ function dmrg1!(ψ::TTNS, H::TTNO; nsweeps::Int=10, tol::Float64=1e-10,
                 threaded_channels::Bool=false, channel_slices::Int=2,
                 channel_minbatch::Int=2,
                 channel_min_flops::Real=1_000_000,
-                channel_memory_cap_bytes::Union{Nothing,Real}=nothing)
+                channel_memory_cap_bytes::Union{Nothing,Real}=nothing,
+                distributed::Union{Nothing,AbstractDistributedContext}=nothing)
     ishermitian(H) || throw(ArgumentError("dmrg1!: DMRG requires ishermitian(H) == true (§9.8)"))
     cache = EnvCache(ψ.topo)
     energies = Float64[]
@@ -50,11 +65,9 @@ function dmrg1!(ψ::TTNS, H::TTNO; nsweeps::Int=10, tol::Float64=1e-10,
             move_center!(ψ, n; cache)
             h1 = eff_h1(cache, ψ, H, n; threaded_channels, channel_slices,
                         channel_minbatch, channel_min_flops,
-                        channel_memory_cap_bytes)
-            vals, vecs, _ = Contractions._with_workspace_map(h1) do h1map
-                eigsolve(h1map, ψ.tensors[n], 1, :SR;
-                         ishermitian=true, krylovdim)
-            end
+                        channel_memory_cap_bytes, distributed)
+            vals, vecs, _ = _effective_eigsolve(
+                distributed, h1, ψ.tensors[n]; krylovdim)
             E = real(vals[1])
             update_tensor!(ψ, n, vecs[1]; caches=(cache,))
         end
@@ -89,6 +102,7 @@ function dmrg2!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(),
                 channel_minbatch::Int=2,
                 channel_min_flops::Real=1_000_000,
                 channel_memory_cap_bytes::Union{Nothing,Real}=nothing,
+                distributed::Union{Nothing,AbstractDistributedContext}=nothing,
                 verbose::Bool=true)
     ishermitian(H) || throw(ArgumentError("dmrg2!: DMRG requires ishermitian(H) == true (§9.8)"))
     t = ψ.topo
@@ -109,10 +123,9 @@ function dmrg2!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(),
             Θ = two_site_tensor(ψ, n, m)
             h2 = eff_h2(cache, ψ, H, n, m; threaded_channels, channel_slices,
                         channel_minbatch, channel_min_flops,
-                        channel_memory_cap_bytes)
-            vals, vecs, _ = Contractions._with_workspace_map(h2) do h2map
-                eigsolve(h2map, Θ, 1, :SR; ishermitian=true, krylovdim)
-            end
+                        channel_memory_cap_bytes, distributed)
+            vals, vecs, _ = _effective_eigsolve(
+                distributed, h2, Θ; krylovdim)
             E = real(vals[1])
             invalidate_edge!(cache, n, m)
             split_two_site!(ψ, vecs[1], n, m; trunc, center_on)
@@ -150,6 +163,7 @@ function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(;
                    channel_minbatch::Int=2,
                    channel_min_flops::Real=1_000_000,
                    channel_memory_cap_bytes::Union{Nothing,Real}=nothing,
+                   distributed::Union{Nothing,AbstractDistributedContext}=nothing,
                    enr_rtol::Float64=1e-10, enr_atol::Float64=1e-12,
                    verbose::Bool=true)
     ishermitian(H) || throw(ArgumentError("dmrg1_3s!: DMRG requires ishermitian(H) == true (§9.8)"))
@@ -170,11 +184,9 @@ function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(;
             move_center!(ψ, n; cache)
             h1 = eff_h1(cache, ψ, H, n; threaded_channels, channel_slices,
                         channel_minbatch, channel_min_flops,
-                        channel_memory_cap_bytes)
-            vals, vecs, _ = Contractions._with_workspace_map(h1) do h1map
-                eigsolve(h1map, ψ.tensors[n], 1, :SR;
-                         ishermitian=true, krylovdim)
-            end
+                        channel_memory_cap_bytes, distributed)
+            vals, vecs, _ = _effective_eigsolve(
+                distributed, h1, ψ.tensors[n]; krylovdim)
             E = real(vals[1])
             update_tensor!(ψ, n, vecs[1]; caches=(cache,))
         end
@@ -188,7 +200,7 @@ function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(;
                         rsvd_threaded, rsvd_minbatch, threaded_channels,
                         channel_slices, channel_minbatch,
                         channel_min_flops,
-                        channel_memory_cap_bytes)
+                        channel_memory_cap_bytes, distributed)
             end
             Contractions._bootstrap_physless_root!(ψ, cache, root_targets)
         end

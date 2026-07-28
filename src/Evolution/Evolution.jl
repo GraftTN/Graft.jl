@@ -27,6 +27,7 @@ using ..Backend
 using ..Trees
 using ..Networks
 using ..Contractions
+using ..Parallel: AbstractDistributedContext, distributed_exponentiate
 
 export Evolver, step!, evolve!, CorrelatorSeries, correlator, correlator_series,
     supports_complex_step,
@@ -35,6 +36,17 @@ export Evolver, step!, evolve!, CorrelatorSeries, correlator, correlator_series,
     LogGaussLegendre, ImplicitLogTime, logarithmic_time_grid, linsolve!
 
 abstract type Evolver end
+
+function _effective_exponentiate(
+        distributed, effective, time, x; kwargs...)
+    if distributed === nothing
+        return Contractions._with_workspace_map(effective) do workspace
+            exponentiate(workspace, time, x; kwargs...)
+        end
+    end
+    return distributed_exponentiate(
+        distributed, effective, x, time; kwargs...)
+end
 
 """
     step!(ev::Evolver, ψ::TTNS, H::TTNO, dz::Number) -> ψ

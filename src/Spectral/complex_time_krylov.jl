@@ -83,8 +83,11 @@ Assemble the snapshot Gram matrices with tree contractions and solve the dense
 generalized Ritz problem. Each `H * snapshot[j]` is formed once and reused
 across all bra snapshots.
 """
-function complex_time_krylov(snapshots::AbstractVector{<:TTNS}, H::TTNO;
-                             optimize::Bool=true, kwargs...)
+function complex_time_krylov(
+        snapshots::AbstractVector{<:TTNS}, H::TTNO;
+        optimize::Bool=true,
+        distributed::Union{Nothing,AbstractDistributedContext}=nothing,
+        kwargs...)
     isempty(snapshots) && throw(ArgumentError("snapshots must be nonempty"))
     topo = topology(first(snapshots))
     topology(H) == topo ||
@@ -95,18 +98,31 @@ function complex_time_krylov(snapshots::AbstractVector{<:TTNS}, H::TTNO;
         throw(ArgumentError("all snapshots must have the same topology"))
 
     n = length(snapshots)
-    S = Matrix{ComplexF64}(undef, n, n)
-    HM = Matrix{ComplexF64}(undef, n, n)
-    acted = [apply(H, psi; center=center(psi), optimize) for psi in snapshots]
-    for j in 1:n, i in 1:j
+    S = zeros(ComplexF64, n, n)
+    HM = zeros(ComplexF64, n, n)
+    columns = if distributed === nothing
+        1:n
+    else
+        rank = distributed_rank(distributed)
+        size = distributed_size(distributed)
+        0 <= rank < size ||
+            throw(ArgumentError("distributed context returned an invalid rank"))
+        (rank + 1):size:n
+    end
+    for j in columns
+        acted = apply(H, snapshots[j]; center=center(snapshots[j]), optimize)
+        for i in 1:j
         S[i, j] = inner(snapshots[i], snapshots[j]; optimize)
-        S[j, i] = conj(S[i, j])
-        HM[i, j] = inner(snapshots[i], acted[j]; optimize)
-        if i == j
-            HM[j, i] = HM[i, j]
-        else
-            HM[j, i] = conj(HM[i, j])
+            HM[i, j] = inner(snapshots[i], acted; optimize)
         end
+    end
+    if distributed !== nothing
+        distributed_allreduce_sum!(distributed, S)
+        distributed_allreduce_sum!(distributed, HM)
+    end
+    for j in 1:n, i in 1:j
+        S[j, i] = conj(S[i, j])
+        HM[j, i] = i == j ? HM[i, j] : conj(HM[i, j])
     end
     return complex_time_krylov(S, HM; kwargs...)
 end

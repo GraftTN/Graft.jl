@@ -39,8 +39,10 @@ using ..Contractions
 using ..Symbolic
 using ..TTNOBuild
 using ..Evolution
-using ..Parallel: threaded_foreach
-using Random: AbstractRNG
+using ..Parallel: threaded_foreach, AbstractDistributedContext,
+    distributed_rank, distributed_size, distributed_allreduce_sum!,
+    distributed_allgather
+using Random: AbstractRNG, Xoshiro, rand
 
 using ..Backend: ℂ, ComplexSpace, ⊗, ←, dual, oneunit, dim, space, id,
     numind, numout, numin, codomain, domain, sectors, sectortype, spacetype,
@@ -67,7 +69,8 @@ using ..Evolution: Evolver, step!, supports_complex_step
 export ThermalRep, Purified, METTS, HybridMETTS, thermalize,
     PurificationProblem, purification_problem, physical_ttno,
     PurifiedState, PurificationTrajectory, ScaledTTNS,
-    METTSSample, METTSTrajectory, METTSStatistics, metts_statistics,
+    METTSSample, METTSTrajectory, DistributedMETTSTrajectory,
+    METTSStatistics, metts_statistics,
     infinite_temperature_state, thermal_expect, thermal_correlator,
     thermal_realtime_correlator, state_at, logZ
 

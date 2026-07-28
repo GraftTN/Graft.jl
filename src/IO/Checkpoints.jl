@@ -18,7 +18,13 @@ module Checkpoints
 
 using JLD2
 
-export checkpoint!, resume, with_checkpoint
+export checkpoint!, resume, with_checkpoint, checkpoint_mpi!, resume_mpi
+
+"""Write a distributed checkpoint. Methods are supplied by MPI extensions."""
+function checkpoint_mpi! end
+
+"""Resume a distributed checkpoint with an explicit communicator."""
+function resume_mpi end
 
 """
     checkpoint!(state, path; keep=3, metadata=NamedTuple())

@@ -37,11 +37,14 @@ using Random: AbstractRNG, Xoshiro, rand, randn!
 using ..Backend
 using ..Trees
 using ..Networks
-using ..Parallel: threaded_foreach
+using ..Parallel: threaded_foreach, AbstractDistributedContext,
+    distributed_rank, distributed_size, distributed_allreduce_sum!,
+    distributed_broadcast!
 import ..Networks: invalidate_node!, invalidate_edge!
 
 export EnvCache, env!, build_env, invalidate_node!, invalidate_edge!,
-    EffectiveMap, ChannelSlicedEffectiveMap, ContractionPlan, ContractionSpec,
+    EffectiveMap, ChannelSlicedEffectiveMap, DistributedChannelEffectiveMap,
+    ContractionPlan, ContractionSpec,
     PlanKey, plan_cache_stats,
     env_cache_stats,
     PlanWorkspace, workspace_map, workspace_stats, inner, expect, eff_h1,

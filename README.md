@@ -120,6 +120,84 @@ star benchmarks, one-site maps cross break-even near χ=32 and reach about
 external TTNO edges; the 3×1 star is 0.63–0.67× at χ=16 but 1.22–1.53× at χ=64.
 Keep BLAS and Strided at one thread when this outer fan-out is active.
 
+### MPI extension
+
+MPI support is loaded only when MPI.jl is present in the application
+environment. Construct one explicit context and pass it to the operation that
+should be distributed; Graft does not consult a global communicator:
+
+```julia
+using Graft, MPI
+
+context = mpi_context() # COMM_WORLD; also sets BLAS/Strided threads to 1
+
+ev = TDVP1(
+    distributed=context,
+    channel_slices=24,
+    channel_min_flops=1_000_000,
+    channel_memory_cap_bytes=2_000_000_000,
+)
+result = complex_time_krylov(snapshots, H; distributed=context)
+```
+
+`eff_h1` and `eff_h2` replicate the state, assign TTNO-channel slices across
+ranks and Julia threads, and sum partial TensorMaps block by block. DMRG and
+TDVP use a root-driven Krylov protocol: rank zero owns adaptive solver control,
+while every matvec broadcasts its input and all ranks evaluate their assigned
+channels. This avoids collective-order divergence when local floating-point
+convergence decisions differ.
+
+METTS and HybridMETTS distribute independent Markov chains:
+
+```julia
+trajectory = thermalize(
+    METTS(; rng, nsamples=600), problem, beta;
+    evolver, distributed=context,
+)
+checkpoint!(trajectory, "metts-mpi.jld2")
+trajectory = resume_mpi("metts-mpi.jld2", context).state
+```
+
+The global sample count must provide at least one sample per rank. RNG streams
+are deterministically separated by rank. Checkpoints contain one atomic shard
+per rank plus a root-written manifest that validates rank count, sample count,
+and chain step before resume.
+
+Launch Julia with the MPI implementation selected by MPI.jl and four Julia
+threads per rank, for example:
+
+```bash
+mpiexecjl -n 6 julia --project=/path/to/app --threads=4 mpi_job.jl
+```
+
+The repository keeps functional, adaptive-solver, and performance checks
+separate:
+
+```bash
+mpiexecjl -n 6 julia --project=/path/to/mpi-test-env --threads=4 test/mpi_smoke.jl
+mpiexecjl -n 6 julia --project=/path/to/mpi-test-env --threads=4 test/mpi_solver_smoke.jl
+mpiexecjl -n 6 julia --project=/path/to/mpi-test-env --threads=4 test/mpi_speedup.jl
+```
+
+On the current 6-rank, 4-threads-per-rank test host, the warmed
+ComplexTimeKrylov benchmark reports 0.274 s serial versus 0.059 s MPI, or
+4.646x. `GRAFT_MPI_MIN_SPEEDUP`, `GRAFT_MPI_BENCH_SAMPLES`,
+`GRAFT_MPI_BENCH_SNAPSHOTS`, and `GRAFT_MPI_BENCH_BOND_DIM` control the
+acceptance workload.
+
+The larger single-node SLURM benchmark in `benchmark/mpi_slurm_large.jl` uses
+ten tree nodes, 36 snapshots, and bond dimension 12. On the `h3c` partition's
+48-core `h10` node (job 71949), three warmed samples gave 2.70044 s with one
+MPI rank and four BLAS threads versus 0.289441 s with 12 MPI ranks and four
+BLAS threads per rank. This is a 9.3298x speedup and 77.75% parallel
+efficiency. Both configurations produced identical overlap and Hamiltonian
+norms, energy sums, retained rank, and maximum residual. Reproduce both
+configurations in one exclusive-node allocation with:
+
+```bash
+sbatch benchmark/run_mpi_slurm_h3c.sh
+```
+
 ## Algorithmic References and Provenance
 
 References are grouped by the Graft functionality they inform. Each entry states
