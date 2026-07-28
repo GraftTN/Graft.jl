@@ -37,6 +37,7 @@ include("Contractions/Contractions.jl")
 # `apply` and `fit!` use the generic complete-tuple planner. Load their methods
 # after the lower-level Networks data types and Contractions.Planning exist.
 Base.include(Networks, joinpath(@__DIR__, "Networks", "apply.jl"))
+Base.include(Networks, joinpath(@__DIR__, "Networks", "linear_combination.jl"))
 Base.include(Networks, joinpath(@__DIR__, "Networks", "fit.jl"))
 include("Symbolic/Symbolic.jl")
 include("TTNOBuild/TTNOBuild.jl")
@@ -72,9 +73,9 @@ export TreeTopology, nnodes, nodeid, nodeindex, isleaf, leaves, neighbors,
     is_t3ns
 # L2/L3
 export TTNS, TTNO, TTNDO, topology, center, move_center!, update_tensor!,
-    normalize!, check_arrows, physspace, virtualspace, apply, fit!, apply_local,
-    compress!, TTNOCompressionSectorReport, TTNOCompressionEdgeReport,
-    TTNOCompressionReport,
+    normalize!, check_arrows, physspace, virtualspace, apply, fit!,
+    exact_linear_combination, apply_local, compress!,
+    TTNOCompressionSectorReport, TTNOCompressionEdgeReport, TTNOCompressionReport,
     EnvCache, EffectiveMap, ChannelSlicedEffectiveMap,
     DistributedChannelEffectiveMap, PlanWorkspace,
     workspace_map, workspace_stats,
@@ -89,8 +90,9 @@ export OpSum, Term, SiteOp, charge, spin_ops, spin_ops_u1,
 export dmrg1!, dmrg2!, dmrg1_3s!, expand!,
     Evolver, step!, evolve!, CorrelatorSeries, correlator, correlator_series,
     supports_complex_step,
-    TDVP1, TDVP2, TDVP1_CBE, GlobalKrylov, GSE_TDVP, LSE_TDVP,
-    TEBD, BUG, ImplicitLogScheme, LogBackwardEuler, LogTrapezoid,
+    TDVP1, TDVP2, TDVP1_CBE, GlobalKrylov, DirectKrylovBootstrap,
+    DirectKrylovInfo, GSE_TDVP, LSE_TDVP, TEBD, BUG,
+    ImplicitLogScheme, LogBackwardEuler, LogTrapezoid,
     LogGaussLegendre, ImplicitLogTime, logarithmic_time_grid, linsolve!,
     ExponentialSum, evaluate, rank_from_svals, esprit,
     LinearPredictionResult, linear_prediction, predict, exponential_sum,

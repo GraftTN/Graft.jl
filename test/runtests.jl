@@ -153,6 +153,7 @@ include("thc.jl")
 include("spectral.jl")
 include("metts.jl")
 include("p4_pp_lbo_thermal.jl")
+include("direct_krylov_bootstrap.jl")
 
 @graft_testset "Parallel helpers" begin
     out = zeros(Int, 8)

@@ -34,7 +34,7 @@ using TensorOperations: TensorOperations, @tensor, ncon
 # spaces & sectors
 export ℂ, ComplexSpace, GradedSpace, ElementarySpace, ProductSpace, Vect,
     U1Space, Z2Space, U1Irrep, ZNIrrep, SU2Irrep, FermionParity, Trivial,
-    ⊠, ⊗, ←, dual, oneunit, fuse, dim, space, sectortype, spacetype, sectors,
+    ⊠, ⊕, ⊗, ←, dual, oneunit, fuse, dim, space, sectortype, spacetype, sectors,
     isdual
 # tensors
 export AbstractTensorMap, TensorMap, DiagonalTensorMap, id, isometry, unitary,

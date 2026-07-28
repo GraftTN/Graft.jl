@@ -31,8 +31,9 @@ using ..Parallel: AbstractDistributedContext, distributed_exponentiate
 
 export Evolver, step!, evolve!, CorrelatorSeries, correlator, correlator_series,
     supports_complex_step,
-    TDVP1, TDVP2, TDVP1_CBE, GlobalKrylov, GSE_TDVP, LSE_TDVP, TEBD, BUG,
-    FixedBUG, ImplicitLogScheme, LogBackwardEuler, LogTrapezoid,
+    TDVP1, TDVP2, TDVP1_CBE, GlobalKrylov, DirectKrylovBootstrap,
+    DirectKrylovInfo, GSE_TDVP, LSE_TDVP, TEBD, BUG, FixedBUG,
+    ImplicitLogScheme, LogBackwardEuler, LogTrapezoid,
     LogGaussLegendre, ImplicitLogTime, logarithmic_time_grid, linsolve!
 
 abstract type Evolver end
@@ -179,6 +180,7 @@ supports_complex_step(::Type{<:Evolver}) = true
 
 include("tdvp.jl")
 include("global_krylov.jl")
+include("direct_krylov.jl")
 include("linear_solve.jl")
 include("subspace_expansion.jl")
 
