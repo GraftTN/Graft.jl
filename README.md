@@ -176,6 +176,7 @@ separate:
 ```bash
 mpiexecjl -n 6 julia --project=/path/to/mpi-test-env --threads=4 test/mpi_smoke.jl
 mpiexecjl -n 6 julia --project=/path/to/mpi-test-env --threads=4 test/mpi_solver_smoke.jl
+mpiexecjl -n 6 julia --project=/path/to/mpi-test-env --threads=4 test/mpi_tdvp.jl
 mpiexecjl -n 6 julia --project=/path/to/mpi-test-env --threads=4 test/mpi_speedup.jl
 ```
 

@@ -73,9 +73,30 @@ function _sum_local_channel_maps(maps, indices, x, minbatch)
     return y
 end
 
+function _distributed_local_call(body, context::AbstractDistributedContext)
+    local_result = try
+        (; ok=true, value=body(), message="")
+    catch err
+        (; ok=false, value=nothing, message=sprint(showerror, err))
+    end
+    failures = [local_result.ok ? 0 : 1]
+    distributed_allreduce_sum!(context, failures)
+    if !iszero(only(failures))
+        messages = distributed_allgather(context, local_result.message)
+        details = join(
+            ("rank $(rank - 1): $message"
+             for (rank, message) in enumerate(messages) if !isempty(message)),
+            "; ")
+        error("distributed channel evaluation failed: $details")
+    end
+    return local_result.value
+end
+
 function (f::DistributedChannelEffectiveMap)(x::AbstractTensorMap)
-    y = _sum_local_channel_maps(
-        f.effective.maps, f.local_indices, x, f.effective.minbatch)
+    y = _distributed_local_call(f.context) do
+        _sum_local_channel_maps(
+            f.effective.maps, f.local_indices, x, f.effective.minbatch)
+    end
     distributed_allreduce_sum!(f.context, y)
     return distributed_broadcast!(f.context, y)
 end
@@ -143,7 +164,9 @@ struct _DistributedChannelWorkspaceMap{C,W}
 end
 
 function (f::_DistributedChannelWorkspaceMap)(x::AbstractTensorMap)
-    y = f.workspace === nothing ? zero(x) : f.workspace(x)
+    y = _distributed_local_call(f.context) do
+        f.workspace === nothing ? zero(x) : f.workspace(x)
+    end
     distributed_allreduce_sum!(f.context, y)
     return distributed_broadcast!(f.context, y)
 end

@@ -109,12 +109,31 @@ struct _RootDrivenMap{C,W}
     workspace::W
 end
 
+function _collective_workspace_call(context::MPIContext, workspace, input)
+    local_result = try
+        (; ok=true, value=workspace(input), message="")
+    catch err
+        (; ok=false, value=nothing, message=sprint(showerror, err))
+    end
+    failures = [local_result.ok ? 0 : 1]
+    MPI.Allreduce!(failures, MPI.SUM, context.comm)
+    if !iszero(only(failures))
+        messages = distributed_allgather(context, local_result.message)
+        details = join(
+            ("rank $(rank - 1): $message"
+             for (rank, message) in enumerate(messages) if !isempty(message)),
+            "; ")
+        error("distributed map evaluation failed: $details")
+    end
+    return local_result.value
+end
+
 function (map::_RootDrivenMap)(x::AbstractTensorMap)
     command = Int[1]
     distributed_broadcast!(map.context, command)
     input = MPI.bcast(
         x, distributed_root(map.context), map.context.comm)
-    return map.workspace(input)
+    return _collective_workspace_call(map.context, map.workspace, input)
 end
 
 function _root_driven_solver(solver, context::MPIContext, effective, x)
@@ -138,7 +157,13 @@ function _root_driven_solver(solver, context::MPIContext, effective, x)
                 only(command) == 1 ||
                     error("invalid root-driven solver command")
                 input = MPI.bcast(nothing, root, context.comm)
-                workspace(input)
+                try
+                    _collective_workspace_call(context, workspace, input)
+                catch
+                    # The root sees the same collective failure, terminates the
+                    # adaptive solve, and sends the stop command and payload.
+                    # Workers must remain in the command loop to receive them.
+                end
             end
             nothing
         end
