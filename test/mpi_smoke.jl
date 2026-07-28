@@ -5,7 +5,7 @@ using LinearAlgebra: BLAS
 using Graft.Backend: ℂ, ←, blocks
 using Graft.TestUtils: random_ttns
 using LinearAlgebra: norm
-using Random: MersenneTwister, Xoshiro
+using Random: MersenneTwister, Xoshiro, rand
 
 context = mpi_context()
 rank = distributed_rank(context)
@@ -72,12 +72,9 @@ end
     @test stats.nsamples == 2size
     @test thermal_expect(trajectory, observable) ≈ stats.mean
 
-    local_outcomes = [
-        sample.outcomes[:site1]
-        for sample in trajectory.local_chain.samples
-    ]
-    rank_outcomes = distributed_allgather(context, local_outcomes)
-    @test length(unique(rank_outcomes)) > 1
+    rng_probe = rand(copy(trajectory.local_chain.rng), UInt64)
+    rank_rng_probes = distributed_allgather(context, rng_probe)
+    @test length(unique(rank_rng_probes)) == size
 
     checkpoint_path = MPI.bcast(
         rank == distributed_root(context) ? tempname() : "",
