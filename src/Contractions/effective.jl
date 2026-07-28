@@ -29,6 +29,65 @@ struct ChannelSlicedEffectiveMap{M<:Tuple}
     concurrent_live_bytes::Int
 end
 
+"""
+Distributed-memory counterpart of [`ChannelSlicedEffectiveMap`](@ref).
+All ranks retain the input state, while each rank evaluates only its
+deterministic subset of operator-channel slices. The partial TensorMaps are
+summed collectively block by block by the active distributed extension.
+"""
+struct DistributedChannelEffectiveMap{
+        M<:ChannelSlicedEffectiveMap,C<:AbstractDistributedContext}
+    effective::M
+    context::C
+    local_indices::Vector{Int}
+    concurrent_live_bytes::Int
+end
+
+function DistributedChannelEffectiveMap(
+        effective::ChannelSlicedEffectiveMap,
+        context::AbstractDistributedContext)
+    rank = distributed_rank(context)
+    size = distributed_size(context)
+    0 <= rank < size ||
+        throw(ArgumentError("distributed context returned an invalid rank"))
+    size >= 2 ||
+        throw(ArgumentError("distributed channel maps require at least two ranks"))
+    indices = collect((rank + 1):size:length(effective.maps))
+    bytes = ceil(Int, sum(
+        _slice_live_bytes(effective.maps[i].plan) for i in indices;
+        init=0.0))
+    return DistributedChannelEffectiveMap(
+        effective, context, indices, bytes)
+end
+
+function _sum_local_channel_maps(maps, indices, x, minbatch)
+    isempty(indices) && return zero(x)
+    partials = Vector{Any}(undef, length(indices))
+    threaded_foreach(eachindex(indices); threaded=true, minbatch) do local_i
+        partials[local_i] = maps[indices[local_i]](x)
+    end
+    y = partials[1]::AbstractTensorMap
+    for i in 2:length(partials)
+        axpy!(1, partials[i]::AbstractTensorMap, y)
+    end
+    return y
+end
+
+function (f::DistributedChannelEffectiveMap)(x::AbstractTensorMap)
+    y = _sum_local_channel_maps(
+        f.effective.maps, f.local_indices, x, f.effective.minbatch)
+    distributed_allreduce_sum!(f.context, y)
+    return distributed_broadcast!(f.context, y)
+end
+
+function Base.show(io::IO, f::DistributedChannelEffectiveMap)
+    print(io, "DistributedChannelEffectiveMap(rank=",
+          distributed_rank(f.context), "/", distributed_size(f.context),
+          ", local_slices=", length(f.local_indices),
+          ", total_slices=", length(f.effective.maps),
+          ", concurrent_live≈", f.concurrent_live_bytes, " B)")
+end
+
 function (f::ChannelSlicedEffectiveMap)(x::AbstractTensorMap)
     partials = Vector{Any}(undef, length(f.maps))
     threaded_foreach(eachindex(f.maps); threaded=true, minbatch=f.minbatch) do i
@@ -52,6 +111,7 @@ end
 # Internal Krylov call sites use `_with_workspace_map` below to scope a
 # persistent worker pool and close it deterministically after each solve.
 Planning.workspace_map(f::ChannelSlicedEffectiveMap) = f
+Planning.workspace_map(f::DistributedChannelEffectiveMap) = f
 
 mutable struct _ChannelSlicedWorkspaceMap{F<:ChannelSlicedEffectiveMap}
     effective::F
@@ -76,6 +136,22 @@ function (f::_SerialChannelSlicedWorkspaceMap)(x::AbstractTensorMap)
 end
 
 Base.close(::_SerialChannelSlicedWorkspaceMap) = nothing
+
+struct _DistributedChannelWorkspaceMap{C,W}
+    context::C
+    workspace::W
+end
+
+function (f::_DistributedChannelWorkspaceMap)(x::AbstractTensorMap)
+    y = f.workspace === nothing ? zero(x) : f.workspace(x)
+    distributed_allreduce_sum!(f.context, y)
+    return distributed_broadcast!(f.context, y)
+end
+
+function Base.close(f::_DistributedChannelWorkspaceMap)
+    f.workspace === nothing || close(f.workspace)
+    return nothing
+end
 
 function _channel_worker(map_::EffectiveMap, request::Channel{Any},
                          response::Channel{Any})
@@ -105,6 +181,20 @@ function _channel_workspace_map(effective::ChannelSlicedEffectiveMap)
     end
     return _ChannelSlicedWorkspaceMap(effective, requests, responses, tasks,
                                       nothing, false, false)
+end
+
+function _channel_workspace_map(effective::DistributedChannelEffectiveMap)
+    indices = effective.local_indices
+    workspace = if isempty(indices)
+        nothing
+    else
+        maps = Tuple(effective.effective.maps[i] for i in indices)
+        local_effective = ChannelSlicedEffectiveMap(
+            maps, effective.effective.minbatch,
+            effective.concurrent_live_bytes)
+        _channel_workspace_map(local_effective)
+    end
+    return _DistributedChannelWorkspaceMap(effective.context, workspace)
 end
 
 function (f::_ChannelSlicedWorkspaceMap)(x::AbstractTensorMap)
@@ -143,6 +233,14 @@ end
 
 _with_workspace_map(body, effective) = body(Planning.workspace_map(effective))
 function _with_workspace_map(body, effective::ChannelSlicedEffectiveMap)
+    workspace = _channel_workspace_map(effective)
+    try
+        return body(workspace)
+    finally
+        close(workspace)
+    end
+end
+function _with_workspace_map(body, effective::DistributedChannelEffectiveMap)
     workspace = _channel_workspace_map(effective)
     try
         return body(workspace)
@@ -281,12 +379,13 @@ function _channel_sliced_h1!(cache::EnvCache, full::EffectiveMap,
                              channel_minbatch::Int,
                              channel_min_flops::Real,
                              channel_memory_cap_bytes::Union{Nothing,Real},
+                             distributed::Union{Nothing,AbstractDistributedContext},
                              optimize::Bool, memory_weight::Real,
                              sector_aware::Bool,
                              memory_cap_bytes::Union{Nothing,Real})
     channel_slices >= 2 || throw(ArgumentError("channel_slices must be at least 2"))
     channel_minbatch >= 1 || throw(ArgumentError("channel_minbatch must be positive"))
-    Threads.nthreads() > 1 || return full
+    Threads.nthreads() > 1 || distributed !== nothing || return full
     min_flops = Float64(channel_min_flops)
     isfinite(min_flops) && min_flops >= 0 || throw(ArgumentError(
         "channel_min_flops must be a finite nonnegative number"))
@@ -310,7 +409,10 @@ function _channel_sliced_h1!(cache::EnvCache, full::EffectiveMap,
     env_static_slot = 1 + edge_index
     targets = ((1, operator_leg, false), (env_static_slot, 2, true))
 
-    groups = _channel_groups(space(W, operator_leg), channel_slices,
+    requested_slices = distributed === nothing ? channel_slices :
+        max(channel_slices,
+            distributed_size(distributed) * max(Threads.nthreads(), 1))
+    groups = _channel_groups(space(W, operator_leg), requested_slices,
                              full.plan, protos, statics, targets)
     maps = map(enumerate(groups)) do (slice, selected)
         sliced_statics = _restrict_channel_statics(statics, targets, selected)
@@ -323,12 +425,15 @@ function _channel_sliced_h1!(cache::EnvCache, full::EffectiveMap,
                         output_twists=full.output_twists)
     end
     map_tuple = Tuple(maps)
-    concurrent_live_bytes = _concurrent_slice_bytes(map_tuple)
+    sliced = ChannelSlicedEffectiveMap(
+        map_tuple, channel_minbatch, _concurrent_slice_bytes(map_tuple))
+    result = distributed === nothing ? sliced :
+        DistributedChannelEffectiveMap(sliced, distributed)
+    concurrent_live_bytes = result.concurrent_live_bytes
     concurrent_live_bytes <= cap || throw(ArgumentError(
         "channel-sliced h1 requires approximately $concurrent_live_bytes live bytes, " *
         "exceeding channel_memory_cap_bytes=$channel_memory_cap_bytes"))
-    return ChannelSlicedEffectiveMap(map_tuple, channel_minbatch,
-                                     concurrent_live_bytes)
+    return result
 end
 
 function _h2_channel_candidates(ψ::TTNS, n::Int, m::Int, statics::Tuple)
@@ -367,12 +472,13 @@ function _channel_sliced_h2!(cache::EnvCache, full::EffectiveMap,
                              channel_minbatch::Int,
                              channel_min_flops::Real,
                              channel_memory_cap_bytes::Union{Nothing,Real},
+                             distributed::Union{Nothing,AbstractDistributedContext},
                              optimize::Bool, memory_weight::Real,
                              sector_aware::Bool,
                              memory_cap_bytes::Union{Nothing,Real})
     channel_slices >= 2 || throw(ArgumentError("channel_slices must be at least 2"))
     channel_minbatch >= 1 || throw(ArgumentError("channel_minbatch must be positive"))
-    Threads.nthreads() > 1 || return full
+    Threads.nthreads() > 1 || distributed !== nothing || return full
     min_flops = Float64(channel_min_flops)
     isfinite(min_flops) && min_flops >= 0 || throw(ArgumentError(
         "channel_min_flops must be a finite nonnegative number"))
@@ -386,7 +492,10 @@ function _channel_sliced_h2!(cache::EnvCache, full::EffectiveMap,
     candidates = _h2_channel_candidates(ψ, n, m, statics)
     partitions = map(enumerate(candidates)) do (edge_index, candidate)
         dim(candidate.space) >= 2 || return nothing
-        groups = _channel_groups(candidate.space, channel_slices, full.plan,
+        requested_slices = distributed === nothing ? channel_slices :
+            max(channel_slices,
+                distributed_size(distributed) * max(Threads.nthreads(), 1))
+        groups = _channel_groups(candidate.space, requested_slices, full.plan,
                                  protos, statics, candidate.targets)
         costs = _channel_group_flops(groups, full.plan, protos, statics,
                                      candidate.targets)
@@ -411,12 +520,15 @@ function _channel_sliced_h2!(cache::EnvCache, full::EffectiveMap,
                         output_twists=full.output_twists)
     end
     map_tuple = Tuple(maps)
-    concurrent_live_bytes = _concurrent_slice_bytes(map_tuple)
+    sliced = ChannelSlicedEffectiveMap(
+        map_tuple, channel_minbatch, _concurrent_slice_bytes(map_tuple))
+    result = distributed === nothing ? sliced :
+        DistributedChannelEffectiveMap(sliced, distributed)
+    concurrent_live_bytes = result.concurrent_live_bytes
     concurrent_live_bytes <= cap || throw(ArgumentError(
         "channel-sliced h2 requires approximately $concurrent_live_bytes live bytes, " *
         "exceeding channel_memory_cap_bytes=$channel_memory_cap_bytes"))
-    return ChannelSlicedEffectiveMap(map_tuple, channel_minbatch,
-                                     concurrent_live_bytes)
+    return result
 end
 
 function _ncon_effective_reference(spec::ContractionSpec, x::AbstractTensorMap,
@@ -512,7 +624,8 @@ function eff_h1(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int;
                 memory_cap_bytes::Union{Nothing,Real}=nothing,
                 threaded_channels::Bool=false, channel_slices::Int=2,
                 channel_minbatch::Int=2, channel_min_flops::Real=0,
-                channel_memory_cap_bytes::Union{Nothing,Real}=nothing)
+                channel_memory_cap_bytes::Union{Nothing,Real}=nothing,
+                distributed::Union{Nothing,AbstractDistributedContext}=nothing)
     spec, statics, protos = _h1_spec(cache, ψ, H, n)
     full = _effective_map!(cache, :h1, spec, protos, statics,
                            scalartype(ψ.tensors[n]);
@@ -520,10 +633,11 @@ function eff_h1(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int;
                            sector_aware=sector_aware,
                            memory_cap_bytes=memory_cap_bytes,
                            output_twists=_euclidean_output_legs(ψ, n))
-    threaded_channels || return full
+    threaded_channels || distributed !== nothing || return full
     return _channel_sliced_h1!(cache, full, spec, statics, protos, ψ, n;
                                channel_slices, channel_minbatch, channel_min_flops,
-                               channel_memory_cap_bytes, optimize, memory_weight,
+                               channel_memory_cap_bytes, distributed,
+                               optimize, memory_weight,
                                sector_aware, memory_cap_bytes)
 end
 
@@ -787,7 +901,8 @@ function eff_h2(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int, m::Int;
                 memory_cap_bytes::Union{Nothing,Real}=nothing,
                 threaded_channels::Bool=false, channel_slices::Int=2,
                 channel_minbatch::Int=2, channel_min_flops::Real=0,
-                channel_memory_cap_bytes::Union{Nothing,Real}=nothing)
+                channel_memory_cap_bytes::Union{Nothing,Real}=nothing,
+                distributed::Union{Nothing,AbstractDistributedContext}=nothing)
     spec, statics, protos = _h2_spec(cache, ψ, H, n, m)
     t = ψ.topo
     Kn, Km = nchildren(t, n), nchildren(t, m)
@@ -822,9 +937,10 @@ function eff_h2(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int, m::Int;
                            sector_aware=sector_aware,
                            memory_cap_bytes=memory_cap_bytes,
                            output_twists=Tuple(twists))
-    threaded_channels || return full
+    threaded_channels || distributed !== nothing || return full
     return _channel_sliced_h2!(cache, full, spec, statics, protos, ψ, n, m;
                                channel_slices, channel_minbatch, channel_min_flops,
-                               channel_memory_cap_bytes, optimize, memory_weight,
+                               channel_memory_cap_bytes, distributed,
+                               optimize, memory_weight,
                                sector_aware, memory_cap_bytes)
 end

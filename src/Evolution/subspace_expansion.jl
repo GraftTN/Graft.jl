@@ -32,6 +32,7 @@ Base.@kwdef mutable struct GSE_TDVP <: Evolver
     channel_minbatch::Int = 2
     channel_min_flops::Real = 1_000_000
     channel_memory_cap_bytes::Union{Nothing,Real} = nothing
+    distributed::Union{Nothing,AbstractDistributedContext} = nothing
     verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
 end
@@ -67,6 +68,7 @@ Base.@kwdef mutable struct LSE_TDVP <: Evolver
     channel_minbatch::Int = 2
     channel_min_flops::Real = 1_000_000
     channel_memory_cap_bytes::Union{Nothing,Real} = nothing
+    distributed::Union{Nothing,AbstractDistributedContext} = nothing
     verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
 end
@@ -87,6 +89,7 @@ function step!(ev::GSE_TDVP, ψ::TTNS, H::TTNO, dz::Number)
                  channel_minbatch=ev.channel_minbatch,
                  channel_min_flops=ev.channel_min_flops,
                  channel_memory_cap_bytes=ev.channel_memory_cap_bytes,
+                 distributed=ev.distributed,
                  verbose=false, cache)
     step!(base, ψ, H, dz)
     ev.cache = base.cache
@@ -105,6 +108,7 @@ function step!(ev::LSE_TDVP, ψ::TTNS, H::TTNO, dz::Number)
                  channel_minbatch=ev.channel_minbatch,
                  channel_min_flops=ev.channel_min_flops,
                  channel_memory_cap_bytes=ev.channel_memory_cap_bytes,
+                 distributed=ev.distributed,
                  verbose=false, cache)
     if ev.order == 1
         maxbond_before = ev.verbose ? _tdvp_max_bond_dim(ψ) : 0
@@ -214,7 +218,8 @@ function _expand_all_bonds!(ev, ψ::TTNS, H::TTNO, cache::EnvCache; rev::Bool)
                 channel_slices=ev.channel_slices,
                 channel_minbatch=ev.channel_minbatch,
                 channel_min_flops=ev.channel_min_flops,
-                channel_memory_cap_bytes=ev.channel_memory_cap_bytes)
+                channel_memory_cap_bytes=ev.channel_memory_cap_bytes,
+                distributed=ev.distributed)
     end
     return ψ
 end

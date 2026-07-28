@@ -37,6 +37,7 @@ Base.@kwdef mutable struct TDVP1 <: Evolver
     channel_minbatch::Int = 2
     channel_min_flops::Real = 1_000_000
     channel_memory_cap_bytes::Union{Nothing,Real} = nothing
+    distributed::Union{Nothing,AbstractDistributedContext} = nothing
     verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
 end
@@ -68,6 +69,7 @@ Base.@kwdef mutable struct TDVP2 <: Evolver
     channel_minbatch::Int = 2
     channel_min_flops::Real = 1_000_000
     channel_memory_cap_bytes::Union{Nothing,Real} = nothing
+    distributed::Union{Nothing,AbstractDistributedContext} = nothing
     verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
 end
@@ -99,6 +101,7 @@ Base.@kwdef mutable struct TDVP1_CBE <: Evolver
     channel_minbatch::Int = 2
     channel_min_flops::Real = 1_000_000
     channel_memory_cap_bytes::Union{Nothing,Real} = nothing
+    distributed::Union{Nothing,AbstractDistributedContext} = nothing
     verbose::Bool = true
     cache::Union{Nothing,EnvCache} = nothing
 end
@@ -220,11 +223,11 @@ function _tdvp1_sweep!(ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO, dz::Number
                     channel_slices=ev.channel_slices,
                     channel_minbatch=ev.channel_minbatch,
                     channel_min_flops=ev.channel_min_flops,
-                    channel_memory_cap_bytes=ev.channel_memory_cap_bytes)
-        A, _ = Contractions._with_workspace_map(h1) do h1map
-            exponentiate(h1map, dz, ψ.tensors[n];
-                         ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
-        end
+                    channel_memory_cap_bytes=ev.channel_memory_cap_bytes,
+                    distributed=ev.distributed)
+        A, _ = _effective_exponentiate(
+            ev.distributed, h1, dz, ψ.tensors[n];
+            ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
         update_tensor!(ψ, n, A; caches=(cache,))
         # walk to the next update site, backward-evolving the links that the
         # splitting assigns to this sweep direction
@@ -371,11 +374,11 @@ Base.@noinline function _bond_forward!(
                 channel_slices=ev.channel_slices,
                 channel_minbatch=ev.channel_minbatch,
                 channel_min_flops=ev.channel_min_flops,
-                channel_memory_cap_bytes=ev.channel_memory_cap_bytes)
-    Θ, _ = Contractions._with_workspace_map(h2) do h2map
-        exponentiate(h2map, dz, Θ;
-                     ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
-    end
+                channel_memory_cap_bytes=ev.channel_memory_cap_bytes,
+                distributed=ev.distributed)
+    Θ, _ = _effective_exponentiate(
+        ev.distributed, h2, dz, Θ;
+        ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
     invalidate_edge!(cache, n, m)
     split_two_site!(ψ, Θ, n, m; trunc=ev.trunc, center_on)
     return ψ
@@ -394,19 +397,20 @@ Base.@noinline function _site_backward!(
                channel_slices=ev.channel_slices,
                channel_minbatch=ev.channel_minbatch,
                channel_min_flops=ev.channel_min_flops,
-               channel_memory_cap_bytes=ev.channel_memory_cap_bytes)
+               channel_memory_cap_bytes=ev.channel_memory_cap_bytes,
+               distributed=ev.distributed)
     else
         eff_h1(cache, ψ, H, m;
                threaded_channels=ev.threaded_channels,
                channel_slices=ev.channel_slices,
                channel_minbatch=ev.channel_minbatch,
                channel_min_flops=ev.channel_min_flops,
-               channel_memory_cap_bytes=ev.channel_memory_cap_bytes)
+               channel_memory_cap_bytes=ev.channel_memory_cap_bytes,
+               distributed=ev.distributed)
     end
-    A, _ = Contractions._with_workspace_map(h1) do h1map
-        exponentiate(h1map, -dz, ψ.tensors[m];
-                     ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
-    end
+    A, _ = _effective_exponentiate(
+        ev.distributed, h1, -dz, ψ.tensors[m];
+        ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
     update_tensor!(ψ, m, A; caches=(cache,))
     return ψ
 end
@@ -467,12 +471,12 @@ function _cbe_predictor(ev::TDVP1_CBE, ψ::TTNS, H::TTNO, u::Int, v::Int, dz::Nu
                 channel_slices=ev.channel_slices,
                 channel_minbatch=ev.channel_minbatch,
                 channel_min_flops=ev.channel_min_flops,
-                channel_memory_cap_bytes=ev.channel_memory_cap_bytes)
-    Θ, _ = Contractions._with_workspace_map(h2) do h2map
-        exponentiate(h2map, dz, Θ;
-                    ishermitian=ishermitian(H), krylovdim=ev.krylovdim,
-                    tol=ev.tol)
-    end
+                channel_memory_cap_bytes=ev.channel_memory_cap_bytes,
+                distributed=ev.distributed)
+    Θ, _ = _effective_exponentiate(
+        ev.distributed, h2, dz, Θ;
+        ishermitian=ishermitian(H), krylovdim=ev.krylovdim,
+        tol=ev.tol)
     pn = numout(ψ.tensors[n])
     NΘ = numind(Θ)
     Θs = permute(Θ, (ntuple(identity, pn), ntuple(j -> pn + j, NΘ - pn)))

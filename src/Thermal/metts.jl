@@ -33,6 +33,22 @@ struct METTSTrajectory{S<:ElementarySpace,T<:Number,R<:AbstractRNG}
     metadata::NamedTuple
 end
 
+"""
+    DistributedMETTSTrajectory
+
+One independently seeded METTS chain per rank. `local_chain` contains only this
+rank's samples; observables and statistics perform explicit collectives
+through `context`.
+"""
+struct DistributedMETTSTrajectory{L<:METTSTrajectory,
+                                  C<:AbstractDistributedContext}
+    local_chain::L
+    context::C
+    global_nsamples::Int
+    samples_per_rank::Vector{Int}
+    metadata::NamedTuple
+end
+
 """Autocorrelation-aware scalar statistics for a METTS observable."""
 struct METTSStatistics{T<:Number}
     mean::T
@@ -95,7 +111,12 @@ function thermalize(rep::METTS, problem::PurificationProblem, beta::Real;
                     initial_state=nothing,
                     collapse_initial::Bool=false,
                     resume_from=nothing,
-                    state_transform=identity)
+                    state_transform=identity,
+                    distributed::Union{Nothing,AbstractDistributedContext}=nothing)
+    distributed === nothing || return _distributed_metts(
+        rep, problem, beta, distributed;
+        evolver, tau_grid, nsteps, initial_state, collapse_initial,
+        resume_from, state_transform)
     beta >= 0 || throw(ArgumentError("beta must be nonnegative"))
     _check_evolver_no_normalize(evolver)
     isempty(problem.pp_ancilla_of) || throw(ArgumentError(
@@ -180,7 +201,11 @@ function thermalize(rep::HybridMETTS, problem::PurificationProblem, beta::Real;
                     tau_grid=:uniform,
                     nsteps=nothing,
                     resume_from=nothing,
-                    state_transform=identity)
+                    state_transform=identity,
+                    distributed::Union{Nothing,AbstractDistributedContext}=nothing)
+    distributed === nothing || return _distributed_metts(
+        rep, problem, beta, distributed;
+        evolver, tau_grid, nsteps, resume_from, state_transform)
     beta >= 0 || throw(ArgumentError("beta must be nonnegative"))
     _check_evolver_no_normalize(evolver)
     basis_kind = _check_collapse_basis(rep.collapse_basis)
@@ -283,6 +308,135 @@ function metts_statistics(traj::METTSTrajectory, O::TTNO; kwargs...)
         throw(ArgumentError("METTS observable has the wrong topology"))
     return metts_statistics([expect(sample.state, O) for sample in traj.samples];
                             kwargs...)
+end
+
+function _distributed_sample_counts(nsamples::Int, size::Int)
+    nsamples >= size || throw(ArgumentError(
+        "distributed METTS needs at least one sample per rank"))
+    quotient, remainder = divrem(nsamples, size)
+    return [quotient + (rank <= remainder ? 1 : 0) for rank in 1:size]
+end
+
+function _rank_rng(rng::AbstractRNG, rank::Int)
+    base = rand(copy(rng), UInt64)
+    stream = base ⊻ (UInt64(rank + 1) * 0x9e3779b97f4a7c15)
+    return Xoshiro(stream)
+end
+
+function _distributed_metts(
+        rep::METTS, problem, beta, context;
+        evolver, tau_grid, nsteps, initial_state, collapse_initial,
+        resume_from, state_transform)
+    rank = distributed_rank(context)
+    size = distributed_size(context)
+    counts = _distributed_sample_counts(rep.nsamples, size)
+    local_resume = resume_from === nothing ? nothing : begin
+        resume_from isa DistributedMETTSTrajectory || throw(ArgumentError(
+            "distributed METTS can only resume a distributed trajectory"))
+        distributed_size(resume_from.context) == size || throw(ArgumentError(
+            "distributed METTS checkpoint has a different rank count"))
+        resume_from.local_chain
+    end
+    local_rep = METTS(
+        _rank_rng(rep.rng, rank), rep.collapse_basis, rep.burnin,
+        counts[rank + 1], rep.thin)
+    chain = thermalize(
+        local_rep, problem, beta;
+        evolver, tau_grid, nsteps, initial_state, collapse_initial,
+        resume_from=local_resume, state_transform)
+    return _distributed_trajectory(chain, context)
+end
+
+function _distributed_metts(
+        rep::HybridMETTS, problem, beta, context;
+        evolver, tau_grid, nsteps, resume_from, state_transform)
+    rank = distributed_rank(context)
+    size = distributed_size(context)
+    counts = _distributed_sample_counts(rep.nsamples, size)
+    local_resume = resume_from === nothing ? nothing : begin
+        resume_from isa DistributedMETTSTrajectory || throw(ArgumentError(
+            "distributed HybridMETTS can only resume a distributed trajectory"))
+        distributed_size(resume_from.context) == size || throw(ArgumentError(
+            "distributed HybridMETTS checkpoint has a different rank count"))
+        resume_from.local_chain
+    end
+    local_rep = HybridMETTS(
+        _rank_rng(rep.rng, rank), rep.sampled_sites, rep.collapse_basis,
+        rep.burnin, counts[rank + 1], rep.thin)
+    chain = thermalize(
+        local_rep, problem, beta;
+        evolver, tau_grid, nsteps, resume_from=local_resume, state_transform)
+    return _distributed_trajectory(chain, context)
+end
+
+function _distributed_trajectory(chain::METTSTrajectory, context)
+    rank = distributed_rank(context)
+    size = distributed_size(context)
+    counts = zeros(Int, size)
+    counts[rank + 1] = length(chain.samples)
+    distributed_allreduce_sum!(context, counts)
+    metadata = merge(chain.metadata, (;
+        distributed=true,
+        nranks=size,
+        samples_per_rank=copy(counts),
+    ))
+    return DistributedMETTSTrajectory(
+        chain, context, sum(counts), counts, metadata)
+end
+
+function thermal_expect(traj::DistributedMETTSTrajectory, O::TTNO)
+    local_values = [
+        expect(sample.state, O) for sample in traj.local_chain.samples]
+    buffer = ComplexF64[sum(local_values), length(local_values)]
+    distributed_allreduce_sum!(traj.context, buffer)
+    real(buffer[2]) > 0 ||
+        throw(ArgumentError("distributed METTS trajectory has no samples"))
+    return buffer[1] / real(buffer[2])
+end
+
+function metts_statistics(
+        traj::DistributedMETTSTrajectory, O::TTNO; maxlag=nothing)
+    local_values = [
+        expect(sample.state, O) for sample in traj.local_chain.samples]
+    chains = distributed_allgather(traj.context, local_values)
+    return _metts_statistics_chains(chains; maxlag)
+end
+
+function _metts_statistics_chains(chains; maxlag=nothing)
+    n = sum(length, chains)
+    n >= 2 || throw(ArgumentError(
+        "distributed METTS statistics require at least two samples"))
+    max_chain = maximum(length, chains)
+    limit = maxlag === nothing ?
+        min(max_chain - 1, max(1, floor(Int, sqrt(n)))) : Int(maxlag)
+    0 <= limit < max_chain || throw(ArgumentError(
+        "maxlag must lie in 0:$(max_chain - 1) for independent chains"))
+    mu = sum(sum, chains) / n
+    variance_sum = sum(
+        sum(abs2(value - mu) for value in chain) for chain in chains)
+    variance = Float64(variance_sum / (n - 1))
+    iszero(variance) &&
+        return METTSStatistics(mu, 0.0, 0.0, 0.5, Float64(n), n)
+    covariance0 = variance_sum / n
+    tau = 0.5
+    for lag in 1:limit
+        covariance_sum = zero(real(mu))
+        pairs = 0
+        for chain in chains
+            for i in 1:(length(chain) - lag)
+                covariance_sum += real(
+                    conj(chain[i] - mu) * (chain[i + lag] - mu))
+                pairs += 1
+            end
+        end
+        pairs == 0 && break
+        rho = covariance_sum / pairs / covariance0
+        rho > 0 || break
+        tau += rho
+    end
+    neff = clamp(n / (2tau), 1.0, Float64(n))
+    return METTSStatistics(
+        mu, variance, sqrt(variance / neff), tau, neff, n)
 end
 
 function _prepare_metts(product::TTNS, K::TTNO, beta::Float64,

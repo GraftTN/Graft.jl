@@ -20,7 +20,7 @@ the include order below only reflects that `Contractions` operates on the
     Thermal        L5c  purification, METTS, correlators, benchmarks
     FreqDomain     L5d  TaSK resolvent kernel (TODO, M6)
     Checkpoints    ✕    JLD2 checkpoint/restart
-    Parallel       ✕    threading/MPI roll-out (TODO)
+    Parallel       ✕    threading + optional MPI.jl extension
     TestUtils      ✕    random states, dense/ED references
 
 Dependency direction is monotone (§9.10): L(n) only uses L(<n); companion
@@ -75,7 +75,8 @@ export TTNS, TTNO, TTNDO, topology, center, move_center!, update_tensor!,
     normalize!, check_arrows, physspace, virtualspace, apply, fit!, apply_local,
     compress!, TTNOCompressionSectorReport, TTNOCompressionEdgeReport,
     TTNOCompressionReport,
-    EnvCache, EffectiveMap, ChannelSlicedEffectiveMap, PlanWorkspace,
+    EnvCache, EffectiveMap, ChannelSlicedEffectiveMap,
+    DistributedChannelEffectiveMap, PlanWorkspace,
     workspace_map, workspace_stats,
     env_cache_stats, inner, expect, eff_h1, eff_h0, eff_h2
 # L4
@@ -97,12 +98,21 @@ export dmrg1!, dmrg2!, dmrg1_3s!, expand!,
     ThermalRep, Purified, METTS, HybridMETTS, thermalize,
     PurificationProblem, purification_problem, physical_ttno,
     PurifiedState, PurificationTrajectory, ScaledTTNS,
-    METTSSample, METTSTrajectory, METTSStatistics, metts_statistics,
+    METTSSample, METTSTrajectory, DistributedMETTSTrajectory,
+    METTSStatistics, metts_statistics,
     infinite_temperature_state, thermal_expect, thermal_correlator,
     thermal_realtime_correlator, state_at
 # cross-cutting
-export checkpoint!, resume, with_checkpoint, threaded_foreach,
-    configure_parallel_runtime!
+export checkpoint!, resume, with_checkpoint, checkpoint_mpi!, resume_mpi,
+    threaded_foreach,
+    configure_parallel_runtime!,
+    AbstractDistributedContext, mpi_context, distributed_rank,
+    distributed_size, distributed_root, distributed_isroot,
+    distributed_barrier, distributed_allreduce_sum!,
+    distributed_broadcast!, distributed_allgather,
+    distributed_eigsolve, distributed_exponentiate,
+    SubtreeOwnership, subtree_owner,
+    local_nodes, boundary_edges
 
 include("precompile.jl")
 

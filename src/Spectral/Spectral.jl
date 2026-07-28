@@ -10,6 +10,8 @@ using LinearAlgebra
 using ..Networks
 using ..Contractions
 using ..Evolution: CorrelatorSeries
+using ..Parallel: AbstractDistributedContext, distributed_rank,
+    distributed_size, distributed_allreduce_sum!
 
 export ExponentialSum, evaluate, rank_from_svals, esprit,
     LinearPredictionResult, linear_prediction, predict,
