@@ -259,11 +259,7 @@ function realize_ttno(input::TTNOBuildInput{S,C}, plan::AbstractTTNOMergePlan;
     plan.provenance == input.provenance || throw(ArgumentError(
         "merge plan provenance $(provenance_hex(plan.provenance)) does not " *
         "match the build input $(provenance_hex(input.provenance))"))
-    if plan isa StateDiagram && !isempty(plan.proofs)
-        throw(ArgumentError(
-            "merge-proof replay validation lands with SD3; only zero-merge " *
-            "StateDiagram plans are realizable at SD2"))
-    end
+    plan isa StateDiagram && validate_merge_plan(input, plan)
     plan_view = realization_view(plan)
     t = input.topology
     N = nnodes(t)
