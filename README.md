@@ -67,10 +67,16 @@ package.
 
 ## Spectral and thermal analysis
 
-`esprit`, `linear_prediction`, and `complex_time_krylov` provide the M1
-spectral post-processing layer. Scalar and matrix-valued ESPRIT use shared-pole
-block Hankel fits; complex-time Krylov accepts either dense Gram matrices or
-TTNS snapshots plus a Hermitian TTNO.
+`HankelDMD` (the matrix-pencil family), right-subspace `ESPRIT`,
+`ARLeastSquares`/`linear_prediction`,
+`DescendingRankSearch`, and `complex_time_krylov` provide the M1 spectral
+post-processing layer. Scalar and array-valued exponential fits use explicit
+rank, zero, channel-reduction, pruning, and mode policies; fit diagnostics are
+kept separate from the pure `ExponentialSum` value. Complex-time Krylov accepts
+either dense Gram matrices or TTNS snapshots plus a Hermitian TTNO.
+`LeftSubspaceESPRIT` is an explicit time-major compatibility backend for
+consumers with demonstrated noisy-parity requirements; it is not the default
+`ESPRIT`.
 
 The M2 layer includes deterministic purification, `METTS`, `HybridMETTS`,
 and real-time purification with auxiliary `:backward`/custom evolution.
