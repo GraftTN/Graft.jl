@@ -32,7 +32,7 @@ export ttno_from_opsum, THCFactorization, THCReport, isdf_thc, fit_thc,
 # compiler and explicit oracle until the SD7 promotion is approved.
 export compile_ttno, AbelianScalarLowering, DirectSumMerge, StateDiagramMerge,
     StructuralOptimizer, GammaCoverOptimizer, SGEOptimizer,
-    TTNOBuildReport, TTNOBuildEdgeReport
+    TTNOBuildReport, TTNOBuildEdgeReport, compiler_exact_provenance
 
 include("thc.jl")
 include("statediagram.jl")
@@ -46,6 +46,7 @@ include("structural_merge.jl")
 include("sge.jl")
 include("gamma_cover.jl")
 include("facade.jl")
+include("compression_provenance.jl")
 include("ir_serialization.jl")
 
 end # module TTNOBuild

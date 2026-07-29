@@ -93,7 +93,7 @@ export OpSum, Term, SiteOp, charge, spin_ops, spin_ops_u1,
     Lindbladian, ppdress, ttno_from_opsum,
     compile_ttno, AbelianScalarLowering, DirectSumMerge, StateDiagramMerge,
     StructuralOptimizer, GammaCoverOptimizer, SGEOptimizer,
-    TTNOBuildReport, TTNOBuildEdgeReport,
+    TTNOBuildReport, TTNOBuildEdgeReport, compiler_exact_provenance,
     THCFactorization, THCReport, isdf_thc, fit_thc, reconstruct_thc
 # L5
 export dmrg1!, dmrg2!, dmrg1_3s!, expand!,

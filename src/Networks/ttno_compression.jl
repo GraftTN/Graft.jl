@@ -471,6 +471,14 @@ function _require_compression_options(mode::Symbol, compression_atol::Real,
     return atol
 end
 
+# Category capability negotiation (CP1d contract for later CAT milestones):
+# the generic pipeline never branches on a named symmetry. The supported
+# profile factorizes block-locally over Abelian coupled sectors; a later
+# category adapter must declare which route, fusion-multiplicity,
+# channel-copy-degeneracy, and frame blocks may participate in QR or SVD,
+# and unsupported profiles fail closed here — before any stage mutates —
+# without a dense fallback. Unfreezing a non-Abelian backend therefore
+# extends this predicate and the block enumeration, not the stage logic.
 function _require_supported_compression_sectors(O::TTNO, sector_aware::Bool)
     for A in O.tensors
         S = spacetype(A)
