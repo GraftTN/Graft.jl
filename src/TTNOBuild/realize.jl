@@ -250,6 +250,7 @@ end
 # ---------------------------------------------------------------------------
 
 _slot_value(::CoeffTable, ::ExactUnitSlot) = 1
+_slot_value(::CoeffTable, slot::ExactScalarSlot) = slot.value
 _slot_value(table::CoeffTable, slot::CoeffAtomSlot) =
     coefficient_value(table, slot.atom) * slot.scale
 

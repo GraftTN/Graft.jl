@@ -238,14 +238,32 @@ function unmerge_expansions(plan::StateDiagram{Q,C}) where {Q,C}
     plan_proof_edge = Ref(0)
     for proof in reverse(plan.proofs)
         plan_proof_edge[] = proof.edge
-        if proof.witness isa GammaCoverWitness
-            witness = proof.witness::GammaCoverWitness
+        if proof.witness isa GammaCoverWitness ||
+           proof.witness isa EliminationCoverWitness
+            witness = proof.witness isa GammaCoverWitness ?
+                proof.witness::GammaCoverWitness :
+                (proof.witness::EliminationCoverWitness).raw
             for (ordinal, label) in witness.previous
                 restore_label!(ordinal, label)
             end
             for (ordinal, from, to) in reverse(witness.moved_atoms)
                 i = by_ordinal[ordinal]
                 restored[i] = _move_atom(restored[i], to, from)
+            end
+            if proof.witness isa EliminationCoverWitness
+                for (ordinal, node, λ, old_scale) in
+                    reverse(proof.witness.slot_rewrites)
+                    i = by_ordinal[ordinal]
+                    exp = restored[i]
+                    exp.hyperedges[node].coeff isa ExactScalarSlot ||
+                        throw(ArgumentError(
+                            "elimination reversal expects an exact scalar slot at node $node"))
+                    exp = _replace_slot(exp, node, ExactUnitSlot())
+                    aslot = exp.hyperedges[exp.anchor_node].coeff::CoeffAtomSlot
+                    exp = _replace_slot(exp, exp.anchor_node,
+                                        CoeffAtomSlot(aslot.atom, old_scale))
+                    restored[i] = exp
+                end
             end
         else
             for label in proof.removed
@@ -298,6 +316,20 @@ function validate_merge_plan(input::TTNOBuildInput,
             length(witness.cover_rows) + length(witness.cover_cols) <
                 length(witness.rows) || throw(ArgumentError(
                     "gamma cover proof on edge $(proof.edge) does not reduce the block"))
+        elseif proof.witness isa EliminationCoverWitness
+            witness = proof.witness::EliminationCoverWitness
+            witness.raw.edge == proof.edge || throw(ArgumentError(
+                "elimination cover witness edge does not match its proof edge"))
+            witness.eliminated_cover_size < witness.raw_cover_size ||
+                throw(ArgumentError(
+                    "eliminated cover on edge $(proof.edge) was selected " *
+                    "without being strictly smaller than the raw cover"))
+            all(op isa SGERowElimination || op isa SGEColElimination
+                for op in witness.operations) || throw(ArgumentError(
+                    "elimination cover proof carries an unknown operation"))
+            all(_sge_exact_factor(op.factor) for op in witness.operations) ||
+                throw(ArgumentError(
+                    "elimination cover proof uses a non-exact factor"))
         else
             throw(ArgumentError(
                 "merge proof on edge $(proof.edge) carries an unknown witness kind"))

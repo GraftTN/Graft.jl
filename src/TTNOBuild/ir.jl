@@ -352,7 +352,8 @@ end
 
 for T in (:CategorySemantics, :MissingCategoryCapability,
           :CategoryCapabilityReport, :CoeffAtom, :CoeffTable, :ExactUnitSlot,
-          :CoeffAtomSlot, :FusionRoute, :MultiplicityLabels, :ChannelSpan,
+          :CoeffAtomSlot, :ExactScalarSlot, :FusionRoute, :MultiplicityLabels,
+          :ChannelSpan,
           :DegeneracyLabel, :ChannelOrientation, :AbelianFrameCertificate,
           :ChannelIdentity, :RootBoundary, :OmittedIdentityTransition,
           :ExplicitLocalTransition, :LocalMorphismCertificate, :TermHyperedge,

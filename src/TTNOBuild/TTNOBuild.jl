@@ -39,6 +39,7 @@ include("merge_plans.jl")
 include("lowering.jl")
 include("realize.jl")
 include("structural_merge.jl")
+include("sge.jl")
 include("gamma_cover.jl")
 include("ir_serialization.jl")
 

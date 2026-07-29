@@ -117,6 +117,19 @@ struct CoeffAtomSlot{C<:Number} <: AbstractCoeffSlot
     scale::C
 end
 
+"""
+    ExactScalarSlot(value)
+
+An exact nonzero scalar introduced by a restricted exact elimination step
+(never by lowering): the value is compiler bookkeeping from the ±1 exact
+scalar domain, not a Hamiltonian coefficient. Carried by a hyperedge whose
+term was rewired through an exactly proportional row so the shared partner
+structure stays byte-identical.
+"""
+struct ExactScalarSlot{C<:Number} <: AbstractCoeffSlot
+    value::C
+end
+
 is_anchor_slot(::AbstractCoeffSlot) = false
 is_anchor_slot(::CoeffAtomSlot) = true
 

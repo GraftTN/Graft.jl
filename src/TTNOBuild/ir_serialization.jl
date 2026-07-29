@@ -80,7 +80,8 @@ function _ir_ser_struct(io::IO, x)
 end
 
 for T in (:CategorySemantics, :MissingCategoryCapability, :CoeffAtom,
-          :CoeffTable, :ExactUnitSlot, :CoeffAtomSlot, :LocalOpKey,
+          :CoeffTable, :ExactUnitSlot, :CoeffAtomSlot, :ExactScalarSlot,
+          :LocalOpKey,
           :BuildInputProvenance, :FusionRoute, :MultiplicityLabels,
           :ChannelSpan, :DegeneracyLabel, :ChannelOrientation,
           :AbelianFrameCertificate, :ChannelIdentity, :RootBoundary,
@@ -88,7 +89,9 @@ for T in (:CategorySemantics, :MissingCategoryCapability, :CoeffAtom,
           :LocalMorphismCertificate, :TermHyperedge, :LoweringProvenance,
           :TermTTNOExpansion, :BoundarySignature, :MixingBlockKey,
           :IdentitySpanRelation, :NoKnownSpanRelation,
-          :StructuralIdentityWitness, :GammaCoverWitness, :MergeProofStep,
+          :StructuralIdentityWitness, :GammaCoverWitness,
+          :EliminationCoverWitness, :SGERowElimination, :SGEColElimination,
+          :GammaExpr, :SpanBasisTransport, :MergeProofStep,
           :OptimizerLogEntry, :OptimizerLog, :NormalizedTerm)
     @eval _ir_ser(io::IO, x::$T) = _ir_ser_struct(io, x)
 end
