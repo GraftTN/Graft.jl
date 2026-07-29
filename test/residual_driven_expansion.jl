@@ -1,10 +1,11 @@
 # Focused tests for the production Residual Driven Expansion path.
 using Test
 using Random: Xoshiro
-using LinearAlgebra: norm
+using LinearAlgebra: norm, rank
 using Graft
-using Graft.TestUtils: product_ttns, random_ttns, to_dense
-using Graft.Backend: ℂ, dim, domain
+using Graft.TestUtils:
+    categorical_coordinates, product_ttns, random_ttns, to_dense
+using Graft.Backend: FermionParity, oneunit, ℂ, dim, domain
 using Graft.Trees: edges
 
 const _RDE_TEST_RNG = Xoshiro(0x20260730)
@@ -28,6 +29,39 @@ _rde_bond_ranks(ψ) = [
     dim(domain(ψ.tensors[child])[1])
     for (child, _) in edges(topology(ψ))
 ]
+
+function _rde_parity_schmidt_ranks(
+        coordinates::AbstractVector{<:Number}, nsites::Int)
+    return map(1:(nsites - 1)) do cut
+        coefficients = reshape(
+            coordinates, 2^cut, 2^(nsites - cut))
+        left_even = [
+            index for index in axes(coefficients, 1)
+            if iseven(count_ones(index - 1))
+        ]
+        left_odd = [
+            index for index in axes(coefficients, 1)
+            if isodd(count_ones(index - 1))
+        ]
+        right_even = [
+            index for index in axes(coefficients, 2)
+            if iseven(count_ones(index - 1))
+        ]
+        right_odd = [
+            index for index in axes(coefficients, 2)
+            if isodd(count_ones(index - 1))
+        ]
+        return (
+            even=rank(
+                coefficients[left_even, right_odd];
+                atol=1e-12, rtol=0),
+            odd=rank(
+                coefficients[left_odd, right_even];
+                atol=1e-12, rtol=0),
+            total=rank(coefficients; atol=1e-12, rtol=0),
+        )
+    end
+end
 
 @testset "residual-driven policy and exact residual" begin
     @test_throws ArgumentError _RDE.ResidualDrivenExpansion(max_add=-1)
@@ -188,66 +222,161 @@ end
     @test check_arrows(ψ)
 end
 
-@testset "residual-driven adjacent edges rescore within one round" begin
-    topo = mps_topology(3)
-    ψ = product_ttns(
+@testset "graded matching expansion advances in a two-round wavefront" begin
+    fermion = fermion_ops_z2()
+    topo = mps_topology(4)
+    phys = Dict(
+        nodeid(topo, n) => fermion.P for n in 1:nnodes(topo))
+    product(bits) = product_ttns(
         ComplexF64,
         topo,
+        phys,
         Dict(
-            :site1 => ComplexF64[1, 0],
-            :site2 => ComplexF64[1, 0],
-            :site3 => ComplexF64[1, 0],
+            Symbol(:site, site) => FermionParity(bit)
+            for (site, bit) in enumerate(bits)
         ),
     )
-    residual = product_ttns(
-        ComplexF64,
-        topo,
-        Dict(
-            :site1 => ComplexF64[0, 1],
-            :site2 => ComplexF64[0, 1],
-            :site3 => ComplexF64[1, 0],
-        ),
+    ψ = product((1, 0, 0, 0))
+    edge_components = (
+        product((0, 1, 0, 0)),
+        product((1, 1, 1, 0)),
+        product((1, 0, 1, 1)),
+        product((0, 1, 1, 1)),
     )
+    rhs = exact_linear_combination(
+        [ψ, edge_components...],
+        ComplexF64[1, 0.05, -0.04, 0.03, 0.0015],
+    )
+    rhs_schmidt_ranks = _rde_parity_schmidt_ranks(
+        categorical_coordinates(rhs), 4)
+    @test rhs_schmidt_ranks == fill(
+        (even=1, odd=1, total=2), 3)
+    @test domain(ψ.tensors[topo.root])[1] ==
+        domain(rhs.tensors[topo.root])[1]
+    @test domain(ψ.tensors[topo.root])[1] !=
+        oneunit(typeof(fermion.P))
+    hamiltonian = OpSum() +
+        Term(0.3, SiteOp(:site1, :N, fermion.N))
+    operator = ttno_from_opsum(
+        hamiltonian, topo, phys; hermitian=true)
+    residual, _ = _RDE.linear_residual(
+        ψ, operator, rhs; a0=1, a1=0)
     policy = _RDE.ResidualDrivenExpansion(
         trunc=TruncationScheme(maxdim=2),
         max_add=1,
-        max_total_add=2,
-        max_edges=2,
-        max_rounds=1,
+        max_total_add=3,
+        max_edges=3,
+        max_rounds=2,
         weight_atol=1e-13,
         weight_rtol=0,
         enrichment_atol=1e-13,
         enrichment_rtol=0,
     )
 
-    initial_candidates = _RDE._rde_score_edges!(
-        copy(ψ), residual, policy)
-    initial_by_child = Dict(
-        nodeid(topo, candidate.child) => candidate
-        for candidate in initial_candidates
+    before = categorical_coordinates(ψ)
+    residual_before = norm(
+        categorical_coordinates(rhs) - before)
+    _, first_expansion = _RDE.residual_expand!(ψ, residual, policy)
+    first_grown_edges = Set(
+        edge.edge.first
+        for edge in first_expansion.edges
+        if edge.added_rank > 0
     )
-    @test initial_by_child[:site1].possible_add == 1
-    @test initial_by_child[:site2].possible_add == 0
-    @test initial_by_child[:site2].weight <= policy.weight_atol
 
-    before = to_dense(ψ)
-    before_center = center(ψ)
-    _, report = _RDE.residual_expand!(ψ, residual, policy)
-    edge_reports = Dict(edge.edge.first => edge for edge in report.edges)
+    @test first_expansion.stop_reason == :expanded
+    @test first_expansion.selected_edges == 2
+    @test first_expansion.selected_edges <= policy.max_edges
+    @test first_expansion.total_added == 2
+    @test first_expansion.remaining_add == 1
+    @test first_grown_edges == Set((:site1, :site3))
+    @test all(
+        edge.added_rank <= policy.max_add
+        for edge in first_expansion.edges
+    )
+    @test all(
+        edge.rank_after <= policy.trunc.maxdim
+        for edge in first_expansion.edges
+    )
+    @test sum(edge.added_rank for edge in first_expansion.edges) ==
+        first_expansion.total_added
+    @test categorical_coordinates(ψ) ≈ before atol=2e-12
+    @test first_expansion.embedding_error <= 1e-12
+    @test center(ψ) == topo.root
+    @test check_arrows(ψ)
 
-    @test report.stop_reason == :expanded
-    @test report.selected_edges == 2
-    @test report.total_added == 2
-    @test edge_reports[:site1].added_rank == 1
-    @test edge_reports[:site2].added_rank == 1
-    @test edge_reports[:site1].requested_rank == 1
-    @test edge_reports[:site2].requested_rank == 1
-    @test edge_reports[:site2].uncovered_weight > policy.weight_atol
-    @test all(edge.added_rank <= policy.max_add for edge in report.edges)
-    @test all(edge.rank_after <= policy.trunc.maxdim for edge in report.edges)
-    @test norm(to_dense(ψ) - before) <= 1e-12
-    @test report.embedding_error <= 1e-12
-    @test center(ψ) == before_center
+    _, first_solve = _RDE.linsolve!(
+        ψ,
+        operator,
+        rhs;
+        a0=1,
+        a1=0,
+        krylovdim=6,
+        maxiter=4,
+        tol=1e-12,
+        fit_nsweeps=2,
+        fit_tol=0.0,
+        _root_first=true,
+    )
+    first_difference =
+        categorical_coordinates(rhs) - categorical_coordinates(ψ)
+    expected_middle =
+        -0.04 * categorical_coordinates(edge_components[2])
+    @test first_difference ≈ expected_middle atol=2e-10
+    @test norm(first_difference) < residual_before
+    @test norm(first_difference) > 1e-10
+    @test first_solve.normres ≈ norm(first_difference) atol=2e-10
+    @test center(ψ) == topo.root
+    @test check_arrows(ψ)
+
+    middle_residual, _ = _RDE.linear_residual(
+        ψ, operator, rhs; a0=1, a1=0)
+    before_middle_expansion = categorical_coordinates(ψ)
+    _, second_expansion = _RDE.residual_expand!(
+        ψ,
+        middle_residual,
+        policy;
+        remaining_add=first_expansion.remaining_add,
+    )
+    second_grown_edges = Set(
+        edge.edge.first
+        for edge in second_expansion.edges
+        if edge.added_rank > 0
+    )
+
+    @test second_expansion.stop_reason == :expanded
+    @test second_expansion.selected_edges == 1
+    @test second_expansion.selected_edges <= policy.max_edges
+    @test second_expansion.total_added == 1
+    @test second_expansion.remaining_add == 0
+    @test second_grown_edges == Set((:site2,))
+    @test categorical_coordinates(ψ) ≈
+        before_middle_expansion atol=2e-12
+    @test second_expansion.embedding_error <= 1e-12
+    @test center(ψ) == topo.root
+    @test check_arrows(ψ)
+
+    _, second_solve = _RDE.linsolve!(
+        ψ,
+        operator,
+        rhs;
+        a0=1,
+        a1=0,
+        krylovdim=6,
+        maxiter=4,
+        tol=1e-12,
+        fit_nsweeps=2,
+        fit_tol=0.0,
+        _root_first=true,
+    )
+    final_difference =
+        categorical_coordinates(rhs) - categorical_coordinates(ψ)
+    final_schmidt_ranks = _rde_parity_schmidt_ranks(
+        categorical_coordinates(ψ), 4)
+    @test norm(final_difference) <= 1e-10
+    @test second_solve.normres <= 1e-10
+    @test final_schmidt_ranks == fill(
+        (even=1, odd=1, total=2), 3)
+    @test center(ψ) == topo.root
     @test check_arrows(ψ)
 end
 

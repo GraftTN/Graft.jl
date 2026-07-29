@@ -240,10 +240,13 @@ Run Residual Driven Expansion and the two-site diagnostic from identical
 copies of `psi`. The truncation policy, total sweep ceiling, Krylov dimension,
 iteration limit, local tolerance, and authoritative physical-residual
 tolerance must match. Residual Driven Expansion's rank-growth controls must
-also be nonbinding relative to the shared hard rank cap, so both paths can
-reach the same per-edge variational space. All budgets and both linear systems
-are validated before either scratch solve starts. The caller's `psi` is never
-mutated.
+also be nonbinding relative to the shared hard rank cap. In particular, its
+round budget must cover every deterministic growable edge-color class and its
+per-round edge budget must cover the widest such matching. With nonbinding
+per-edge and total rank budgets, each selected class reaches the cap and
+disappears, so every nominally growable class is covered. All budgets and both
+linear systems are validated before either scratch solve starts. The caller's
+`psi` is never mutated.
 """
 function paired_linear_diagnostic(
         psi::TTNS,
@@ -521,10 +524,11 @@ function _check_paired_linear_diagnostic(
     _rde_check_state_rank_cap(psi, residual_policy)
     rank_requirements =
         _paired_rank_growth_requirements(psi, residual_policy.trunc.maxdim)
-    residual_policy.max_rounds >= Int(!iszero(rank_requirements.edges)) ||
+    residual_policy.max_rounds >= rank_requirements.matching_rounds ||
         throw(ArgumentError(
-            "paired_linear_diagnostic: at least one expansion round is " *
-            "required to reach the shared rank cap"))
+            "paired_linear_diagnostic: Residual Driven Expansion max_rounds " *
+            "must cover every deterministic growable matching color class " *
+            "(required $(rank_requirements.matching_rounds))"))
     residual_policy.max_add >= rank_requirements.per_edge ||
         throw(ArgumentError(
             "paired_linear_diagnostic: Residual Driven Expansion max_add " *
@@ -535,11 +539,11 @@ function _check_paired_linear_diagnostic(
             "paired_linear_diagnostic: Residual Driven Expansion " *
             "max_total_add must not bind before the shared rank cap " *
             "(required $(rank_requirements.total))"))
-    residual_policy.max_edges >= rank_requirements.edges ||
+    residual_policy.max_edges >= rank_requirements.matching_width ||
         throw(ArgumentError(
             "paired_linear_diagnostic: Residual Driven Expansion max_edges " *
-            "must cover every growable edge under the shared rank cap " *
-            "(required $(rank_requirements.edges))"))
+            "must cover the widest deterministic growable matching color " *
+            "class (required $(rank_requirements.matching_width))"))
     _check_two_site_linsolve_args(
         psi,
         H,
@@ -555,10 +559,17 @@ function _paired_rank_growth_requirements(
         psi::TTNS, maxdim::Int)
     capacities = Int[]
     topo = topology(psi)
+    colors = _rde_tree_edge_colors(topo)
+    growable_color_widths = Dict{Int,Int}()
     for child in 1:nnodes(topo)
         topo.parent[child] == 0 && continue
         rank = dim(virtualspace(psi, child))
-        push!(capacities, maxdim - rank)
+        capacity = maxdim - rank
+        push!(capacities, capacity)
+        capacity > 0 || continue
+        color = colors[child]
+        growable_color_widths[color] =
+            get(growable_color_widths, color, 0) + 1
     end
     total = try
         foldl(Base.checked_add, capacities; init=0)
@@ -571,6 +582,8 @@ function _paired_rank_growth_requirements(
         per_edge=maximum(capacities; init=0),
         total,
         edges=count(>(0), capacities),
+        matching_rounds=length(growable_color_widths),
+        matching_width=maximum(values(growable_color_widths); init=0),
     )
 end
 

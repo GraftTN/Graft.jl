@@ -593,6 +593,38 @@ function _fit_project_plan(c::_FitCache, φ::TTNS, ψ::TTNS, n::Int)
     return plan, operands
 end
 
+"""
+    _fit_local_normal_map(φ, n)
+
+Freeze the exact self-fit environments outside node `n` and return the linear
+one-site normal map in the same pivotal coordinates as `_fit_local_tensor`.
+The active source tensor is deliberately removed from the retained operands:
+each call supplies an arbitrary local tensor as contraction slot 1, while the
+prebuilt environments, root cap, plan, and output twists remain fixed for the
+duration of that local solve.
+
+Callers must rebuild this map after moving the orthogonality center or updating
+the state, because its value environments are a snapshot of `φ` at node `n`.
+"""
+function _fit_local_normal_map(φ::TTNS, n::Int)
+    c = _FitCache(φ.topo, nothing)
+    for w in neighbors(φ.topo, n)
+        _fit_env!(c, φ, φ, w, n)
+    end
+    spec, operands = _fit_project_spec(c, φ, φ, n)
+    preferred = Int[slot for slot in spec.preferred_slots if slot != 1]
+    dynamic_spec = Planning.ContractionSpec(
+        spec.labels, spec.conjs, spec.nopen, spec.out_partition, 1;
+        preferred_slots=preferred,
+    )
+    plan, _ = Planning.get_or_plan!(
+        c.plans, :fit_local_normal, dynamic_spec, operands,
+        _fit_scalar_type(c, φ, φ),
+    )
+    return Planning.EffectiveMap(
+        plan, Base.tail(operands), _fit_output_legs(φ, n))
+end
+
 function _fit_project_tensor(c::_FitCache, φ::TTNS, ψ::TTNS, n::Int)
     plan, operands = _fit_project_plan(c, φ, ψ, n)
     y = Planning.execute(plan, operands)

@@ -27,6 +27,65 @@ end
 _two_site_linear_phys(topo) =
     Dict(nodeid(topo, node) => spin_ops().P for node in 1:nnodes(topo))
 
+@graft_testset "residual-driven deterministic tree matching schedule" begin
+    topo = mps_topology(4; prefix=:matching)
+    colors = Graft.Evolution._rde_tree_edge_colors(topo)
+    edge_colors = Dict(
+        child => colors[child] for (child, _) in edges(topo))
+
+    @test Set(values(edge_colors)) == Set((1, 2))
+    @test colors[topo.root] == 0
+    @test all(
+        child -> length(unique((
+            colors[topo.parent[child]], colors[child],
+        ))) == 2,
+        keys(edge_colors),
+    )
+    @test all(1 <= color <= 2 for color in values(edge_colors))
+
+    candidates = Graft.Evolution._RDECandidate[
+        Graft.Evolution._RDECandidate(
+            child, parent, 1, 1, 1,
+            child == minimum(keys(edge_colors)) ? 3.0 : 2.0,
+        )
+        for (child, parent) in edges(topo)
+    ]
+    policy = ResidualDrivenExpansion(
+        trunc=TruncationScheme(maxdim=2),
+        max_add=1,
+        max_total_add=3,
+        max_edges=3,
+        max_rounds=2,
+        weight_atol=0,
+        weight_rtol=0,
+    )
+    requested, _ = Graft.Evolution._rde_select_candidates(
+        candidates, topo, policy, policy.max_total_add)
+    selected_color = colors[minimum(keys(edge_colors))]
+    @test Set(keys(requested)) == Set(
+        child for child in keys(edge_colors)
+        if colors[child] == selected_color)
+
+    branch = TreeTopology(
+        :root,
+        [
+            :root => :branch,
+            :branch => :leaf_a,
+            :branch => :leaf_b,
+        ],
+    )
+    branch_colors = Graft.Evolution._rde_tree_edge_colors(branch)
+    for node in 1:nnodes(branch)
+        incident_colors = Int[
+            branch_colors[child] for child in branch.children[node]
+        ]
+        branch.parent[node] == 0 ||
+            push!(incident_colors, branch_colors[node])
+        @test length(unique(incident_colors)) == length(incident_colors)
+    end
+    @test maximum(branch_colors) == 3
+end
+
 @graft_testset "two-site linear solve: dense two-node oracle and reports" begin
     topo = mps_topology(2)
     phys = _two_site_linear_phys(topo)
@@ -493,7 +552,7 @@ end
         ),
     )
 
-    multi_topology = mps_topology(3; prefix=:paired_budget)
+    multi_topology = mps_topology(4; prefix=:paired_budget)
     multi_phys = _two_site_linear_phys(multi_topology)
     multi_hamiltonian = _two_site_linear_hamiltonian(multi_topology)
     multi_operator =
@@ -508,17 +567,23 @@ end
     multi_before = to_dense(multi_initial)
     requirements = Graft.Evolution._paired_rank_growth_requirements(
         multi_initial, 2)
-    @test requirements == (per_edge=1, total=2, edges=2)
+    @test requirements == (
+        per_edge=1,
+        total=3,
+        edges=3,
+        matching_rounds=2,
+        matching_width=2,
+    )
     insufficient_growth = ResidualDrivenExpansion(
         trunc=TruncationScheme(maxdim=2),
         max_add=1,
-        max_total_add=1,
+        max_total_add=2,
         max_edges=2,
-        max_rounds=1,
+        max_rounds=2,
     )
     multi_two_site = TwoSiteLinearPolicy(
         trunc=TruncationScheme(maxdim=2),
-        sweeps=2,
+        sweeps=3,
         krylovdim=4,
         maxiter=2,
         local_tol=1e-10,
@@ -538,5 +603,90 @@ end
         fit_nsweeps=1,
         fit_tol=0.0,
     )
+    @test to_dense(multi_initial) == multi_before
+
+    insufficient_width = ResidualDrivenExpansion(
+        trunc=TruncationScheme(maxdim=2),
+        max_add=1,
+        max_total_add=3,
+        max_edges=1,
+        max_rounds=2,
+    )
+    @test_throws ArgumentError paired_linear_diagnostic(
+        multi_initial,
+        multi_operator,
+        multi_rhs,
+        insufficient_width,
+        multi_two_site;
+        a0=1.0,
+        a1=0.0,
+        krylovdim=4,
+        maxiter=2,
+        tol=1e-10,
+        fit_nsweeps=1,
+        fit_tol=0.0,
+    )
+    @test to_dense(multi_initial) == multi_before
+
+    insufficient_rounds = ResidualDrivenExpansion(
+        trunc=TruncationScheme(maxdim=2),
+        max_add=1,
+        max_total_add=3,
+        max_edges=2,
+        max_rounds=1,
+    )
+    two_round_sweep_ceiling = TwoSiteLinearPolicy(
+        trunc=TruncationScheme(maxdim=2),
+        sweeps=2,
+        krylovdim=4,
+        maxiter=2,
+        local_tol=1e-10,
+        residual_tol=1e-10,
+    )
+    @test_throws ArgumentError paired_linear_diagnostic(
+        multi_initial,
+        multi_operator,
+        multi_rhs,
+        insufficient_rounds,
+        two_round_sweep_ceiling;
+        a0=1.0,
+        a1=0.0,
+        krylovdim=4,
+        maxiter=2,
+        tol=1e-10,
+        fit_nsweeps=1,
+        fit_tol=0.0,
+    )
+    @test to_dense(multi_initial) == multi_before
+
+    matched_growth = ResidualDrivenExpansion(
+        trunc=TruncationScheme(maxdim=2),
+        max_add=1,
+        max_total_add=3,
+        max_edges=2,
+        max_rounds=2,
+    )
+    matched_three_sweep_ceiling = TwoSiteLinearPolicy(
+        trunc=TruncationScheme(maxdim=2),
+        sweeps=3,
+        krylovdim=4,
+        maxiter=2,
+        local_tol=1e-10,
+        residual_tol=1e-10,
+    )
+    @test isnothing(Graft.Evolution._check_paired_linear_diagnostic(
+        multi_initial,
+        multi_operator,
+        multi_rhs,
+        matched_growth,
+        matched_three_sweep_ceiling,
+        1.0,
+        0.0,
+        4,
+        2,
+        1e-10,
+        1,
+        0.0,
+    ))
     @test to_dense(multi_initial) == multi_before
 end

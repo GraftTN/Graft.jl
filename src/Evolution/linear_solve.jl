@@ -24,6 +24,24 @@ function Base.showerror(io::IO, failure::_LocalLinearSolveFailure)
 end
 
 """
+Local projected linear operator in the pivotal coordinates of the fit
+projection. `normal` is the self-fit overlap map and `effective` is the
+one-site Hamiltonian map, so this callable represents `a0*N + a1*Heff`.
+"""
+struct _LocalNormalEquationMap{N,H,C<:Number}
+    normal::N
+    effective::H
+    a0::C
+    a1::C
+end
+
+function (map::_LocalNormalEquationMap)(x::AbstractTensorMap)
+    iszero(map.a0) && return map.a1 * map.effective(x)
+    iszero(map.a1) && return map.a0 * map.normal(x)
+    return map.a0 * map.normal(x) + map.a1 * map.effective(x)
+end
+
+"""
     linsolve!(ψ, H, rhs; a0=1, a1=1, krylovdim=30, maxiter=100,
               tol=1e-10, fit_nsweeps=4, fit_tol=1e-10) -> (ψ, info)
 
@@ -40,7 +58,8 @@ function linsolve!(ψ::TTNS, H::TTNO, rhs::TTNS;
                    krylovdim::Int=30, maxiter::Int=100, tol::Float64=1e-10,
                    fit_nsweeps::Int=4, fit_tol::Float64=1e-10,
                    fit_verbose::Bool=false,
-                   _fail_on_local::Bool=false)
+                   _fail_on_local::Bool=false,
+                   _root_first::Bool=false)
     _check_linsolve_args(ψ, H, rhs, a0, a1, krylovdim, maxiter, tol,
                          fit_nsweeps, fit_tol)
     T = eltype(ψ)
@@ -51,17 +70,35 @@ function linsolve!(ψ::TTNS, H::TTNO, rhs::TTNS;
     total_operations = 0
     residual = Inf
     for sweep in 1:fit_nsweeps
-        for n in Iterators.flatten((order, Iterators.reverse(order)))
+        directions = _root_first ?
+            (Iterators.reverse(order), order) :
+            (order, Iterators.reverse(order))
+        for n in Iterators.flatten(directions)
             move_center!(ψ, n; cache)
             effective = eff_h1(cache, ψ, H, n)
             rhs_cache = Networks._FitCache(topology(ψ), nothing)
             local_rhs = Networks._fit_local_tensor(
                 [rhs_cache], ψ, (rhs,), T[one(T)], n)
-            local_solution, local_info = KrylovKit.linsolve(
-                effective, local_rhs, ψ.tensors[n], a0T, a1T;
-                krylovdim, maxiter, tol,
-                ishermitian=_shifted_ishermitian(H, a0T, a1T),
-                isposdef=false)
+            local_solution, local_info = if _root_first
+                # A root-first sweep can encounter a nontrivial pivotal
+                # self-overlap before any leaf update transports that
+                # coordinate change. Build a fresh normal map from the current
+                # state at every node and solve the full projected equation.
+                normal = Networks._fit_local_normal_map(ψ, n)
+                combined = _LocalNormalEquationMap(
+                    normal, effective, a0T, a1T)
+                KrylovKit.linsolve(
+                    combined, local_rhs, ψ.tensors[n], zero(T), one(T);
+                    krylovdim, maxiter, tol,
+                    ishermitian=_shifted_ishermitian(H, a0T, a1T),
+                    isposdef=false)
+            else
+                KrylovKit.linsolve(
+                    effective, local_rhs, ψ.tensors[n], a0T, a1T;
+                    krylovdim, maxiter, tol,
+                    ishermitian=_shifted_ishermitian(H, a0T, a1T),
+                    isposdef=false)
+            end
             total_iterations += local_info.numiter
             total_operations += local_info.numops
             _fail_on_local && local_info.converged <= 0 &&
