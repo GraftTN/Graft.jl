@@ -54,7 +54,8 @@ export FermionSector, AbelianSector, TruncationScheme, truncspec, split_svd,
     split_svd_with_error, svd_factor_leg_with_error,
     absorb_on_leg, transform_leg, transform_leg_space,
     orth_factor_leg,
-    trivialspace, ones_tensor
+    trivialspace, ones_tensor,
+    sector_fusion_symbol, sector_braiding_symbol
 
 # ---------------------------------------------------------------------------
 # standard impurity sector types (§2)
@@ -68,6 +69,36 @@ const AbelianSector = FermionParity ⊠ U1Irrep ⊠ U1Irrep
 """The trivial (unit) space of the same kind as `V` — used as the root's parent leg."""
 trivialspace(V::ElementarySpace) = oneunit(V)
 trivialspace(::Type{S}) where {S<:ElementarySpace} = oneunit(S)
+
+"""
+    sector_fusion_symbol(::Type{Q}) -> Symbol
+
+TensorKit fusion structure of the sector type `Q`, reduced to the vocabulary
+upper layers may branch on: `:unique` (abelian, one fusion outcome),
+`:multiplicity_free` (non-abelian with trivial fusion multiplicities), or
+`:generic` (explicit fusion multiplicities). Upper layers never import
+TensorKit style types directly (§9.13); this adapter owns that coupling.
+"""
+function sector_fusion_symbol(::Type{Q}) where {Q<:TensorKit.Sector}
+    style = TensorKit.FusionStyle(Q)
+    style isa TensorKit.UniqueFusion && return :unique
+    style isa TensorKit.SimpleFusion && return :multiplicity_free
+    return :generic
+end
+
+"""
+    sector_braiding_symbol(::Type{Q}) -> Symbol
+
+TensorKit braiding structure of the sector type `Q`, reduced to `:symmetric`
+(bosonic or fermionic; the braiding squares to the identity), `:anyonic`, or
+`:none` (no braiding available). See [`sector_fusion_symbol`](@ref).
+"""
+function sector_braiding_symbol(::Type{Q}) where {Q<:TensorKit.Sector}
+    style = TensorKit.BraidingStyle(Q)
+    style isa TensorKit.SymmetricBraiding && return :symmetric
+    style isa TensorKit.Anyonic && return :anyonic
+    return :none
+end
 
 """
     ones_tensor(T, cod::ProductSpace) -> Tensor

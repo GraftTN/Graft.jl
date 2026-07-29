@@ -143,6 +143,7 @@ try
 end
 
 include("t3ns_geometry.jl")
+include("statediagram_ir.jl")
 include("ttno_compression.jl")
 include("graded_ttno_embedding.jl")
 include("graded_multimode_carrier.jl")
