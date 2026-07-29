@@ -21,6 +21,54 @@ function _ilt_tfi(topo; J=1.0, g=0.41)
     return H
 end
 
+@graft_testset "implicit trapezoid on a charged purification state" begin
+    F = fermion_ops_z2()
+    topo = mps_topology(2)
+    phys = Dict(:site1 => F.P, :site2 => F.P)
+    H = OpSum() +
+        Term(-0.5, SiteOp(:site1, :N, F.N)) +
+        Term(-1.0, SiteOp(:site1, :Cd, F.Cd),
+             SiteOp(:site2, :C, F.C)) +
+        Term(-1.0, SiteOp(:site1, :C, F.C),
+             SiteOp(:site2, :Cd, F.Cd))
+    problem = purification_problem(H, topo, phys; hermitian=true)
+    neutral = random_ttns(
+        Xoshiro(2606072901), ComplexF64, problem.topo_doubled,
+        problem.phys_doubled, F.P)
+    charged = apply_local(neutral, F.Cd, :site1)
+    Graft.normalize!(charged)
+
+    # Open a state-preserving fixed manifold using Hamiltonian-directed edge
+    # expansion.  The implicit solve itself must not change bond spaces.
+    initial = categorical_coordinates(charged)
+    for child in 1:nnodes(topology(charged))
+        parent = topology(charged).parent[child]
+        parent == 0 && continue
+        expand!(charged, problem.K, (child, parent); scheme=:exact,
+                trunc=TruncationScheme(maxdim=16), max_add=8)
+    end
+    @test norm(categorical_coordinates(charged) - initial) < 1e-11
+
+    h = 0.01
+    dense_k = to_dense(problem.K)
+    old = categorical_coordinates(charged)
+    shift = real(expect(charged, problem.K) / inner(charged, charged))
+    shifted_k = dense_k - shift * I
+    reference = (I + h * shifted_k / 2) \
+                ((I - h * shifted_k / 2) * old)
+
+    evolver = ImplicitLogTime(
+        scheme=LogTrapezoid(), krylovdim=32, maxiter=32, tol=1e-8,
+        fit_nsweeps=8, fit_tol=0.0, normalize=false, energy_shift=true)
+    step!(evolver, charged, problem.K, -h)
+    result = categorical_coordinates(charged)
+    relative_error = norm(result - reference) / norm(reference)
+
+    @test evolver.last_info.converged == 1
+    @test evolver.last_info.normres < 1e-8
+    @test relative_error < 1e-7
+end
+
 _ilt_normalized(v) = v / norm(v)
 _ilt_state_error(v, ref) = norm(_ilt_normalized(v) - _ilt_normalized(ref))
 
