@@ -16,7 +16,8 @@ export TTNS, TTNO, TTNDO, topology, center, hasphys, physleg, parentleg,
     normalize!, apply, fit!, exact_linear_combination,
     truncated_linear_combination, truncate_sweep!, apply_local, ishermitian,
     invalidate_node!, invalidate_edge!, compress!, TTNOCompressionSectorReport,
-    TTNOCompressionEdgeReport, TTNOCompressionReport
+    TTNOCompressionEdgeReport, TTNOCompressionReport,
+    TTNOExactChannelRelation, TTNOExactProvenance, TTNOExactWitness
 
 include("ttns.jl")
 include("ttno.jl")
