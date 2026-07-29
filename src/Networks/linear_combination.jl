@@ -46,7 +46,7 @@ function exact_linear_combination(
     end
     sources = map(inputs) do source
         aligned = copy(source)
-        center(aligned) == t.root || move_center!(aligned, t.root)
+        _canonicalize_apply!(aligned, t.root)
         return aligned
     end
     reference = first(sources)

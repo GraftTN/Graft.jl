@@ -1,4 +1,6 @@
-import ..Contractions: Planning, _euclidean_bra_tensor, _euclidean_output_legs
+import ..Contractions: Planning, _component_has_dual_physical,
+    _euclidean_bra_tensor, _euclidean_output_legs, two_site_space,
+    two_site_tensor
 
 # A fit projection leaves the center's physical ket leg genuinely open; unlike
 # an effective-Hamiltonian result, it does not close that leg through a local
@@ -201,6 +203,170 @@ function _fit_local_tensor(caches::Vector{_FitCache}, φ::TTNS, sources,
     twists = _fit_output_legs(φ, n)
     isempty(twists) || twist!(A, twists)
     return A
+end
+
+"""
+Open virtual legs that retain a Euclidean pivotal residue after projecting a
+child-parent two-site window.  The active physical legs come directly from the
+source tensor and therefore need no output correction.  Child-side transfer
+legs and the parent-side transfer follow the same categorical convention as
+the corresponding one-site fit environments.
+"""
+function _fit_two_site_output_legs(φ::TTNS, n::Int, m::Int)
+    t = φ.topo
+    t.parent[n] == m ||
+        throw(ArgumentError("two-site fit projection: m must be the parent of n"))
+    xspace = two_site_space(φ, n, m)
+    pn = numout(φ.tensors[n])
+    k = childslot(t, m, n)
+    mpos(j) = pn + (j < k ? j : j - 1)
+    twists = Int[]
+    for (j, child) in enumerate(t.children[n])
+        isdual(xspace[j]) &&
+            _component_has_dual_physical(φ, child, n) && push!(twists, j)
+    end
+    for (j, child) in enumerate(t.children[m])
+        child == n && continue
+        pos = mpos(j)
+        isdual(xspace[pos]) &&
+            _component_has_dual_physical(φ, child, m) && push!(twists, pos)
+    end
+    if t.parent[m] != 0
+        pos = mpos(parentleg(φ, m))
+        isdual(xspace[pos]) && push!(twists, pos)
+    end
+    return Tuple(twists)
+end
+
+"""
+Lower the exact mixed-transfer projection of `source` into the merged
+child-parent variational window of `target`.
+
+The source's internal `(n, m)` bond is contracted exactly by
+`two_site_tensor`; every other tree boundary is closed through one directed
+mixed transfer environment.  Negative labels follow the all-codomain order of
+`Contractions.two_site_tensor(target, n, m)`.
+"""
+function _fit_two_site_spec(c::_FitCache, target::TTNS, source::TTNS,
+                            n::Int, m::Int)
+    c.operator === nothing ||
+        throw(ArgumentError("two-site fit projection does not accept an operator cache"))
+    c.topo == target.topo == source.topo ||
+        throw(ArgumentError("two-site fit projection: topologies differ"))
+    target.hasphys == source.hasphys ||
+        throw(ArgumentError("two-site fit projection: physical-leg layouts differ"))
+    spacetype(target) == spacetype(source) ||
+        throw(ArgumentError("two-site fit projection: spacetype mismatch"))
+    target.topo.parent[n] == m ||
+        throw(ArgumentError("two-site fit projection: m must be the parent of n"))
+    center(target) in (n, m) ||
+        throw(ArgumentError(
+            "two-site fit projection: target orthogonality center must lie on the active edge"))
+
+    t = target.topo
+    Θ = two_site_tensor(source, n, m)
+    N = numind(Θ)
+    N == numind(two_site_space(target, n, m)) ||
+        throw(ArgumentError("two-site fit projection: source/target window ranks differ"))
+    θidx = zeros(Int, N)
+    operands = Any[Θ]
+    labels = Vector{Int}[θidx]
+    conjs = Bool[false]
+    envslots = Int[]
+    nxt = Ref(0)
+    fresh() = (nxt[] += 1; nxt[])
+
+    pn = numout(target.tensors[n])
+    k = childslot(t, m, n)
+    mpos(j) = pn + (j < k ? j : j - 1)
+
+    if hasphys(source, n)
+        p = physleg(source, n)
+        θidx[p] = -p
+    end
+    for w in neighbors(t, n)
+        w == m && continue
+        p = _fit_stateleg(t, hasphys(source, n), n, w)
+        E = _fit_env!(c, target, source, w, n)
+        ket = fresh()
+        θidx[p] = ket
+        push!(operands, E)
+        push!(labels, [ket, -p])
+        push!(conjs, false)
+        push!(envslots, length(labels))
+    end
+
+    if hasphys(source, m)
+        p = mpos(physleg(source, m))
+        θidx[p] = -p
+    end
+    for w in neighbors(t, m)
+        w == n && continue
+        localleg = _fit_stateleg(t, hasphys(source, m), m, w)
+        p = mpos(localleg)
+        E = _fit_env!(c, target, source, w, m)
+        ket = fresh()
+        θidx[p] = ket
+        push!(operands, E)
+        push!(labels, [ket, -p])
+        push!(conjs, false)
+        push!(envslots, length(labels))
+    end
+
+    caps = Int[]
+    if t.parent[m] == 0
+        p = mpos(parentleg(source, m))
+        ket = fresh()
+        θidx[p] = ket
+        T = _fit_scalar_type(target, source)
+        cap = _fit_root_cap!(
+            c, T,
+            dual(domain(target.tensors[m])[1]) ⊗ domain(source.tensors[m])[1],
+        )
+        push!(operands, cap)
+        push!(labels, [-p, ket])
+        push!(conjs, false)
+        push!(caps, length(labels))
+    end
+    all(x -> !iszero(x), θidx) ||
+        error("two-site fit projection left an unlabeled source-window leg")
+
+    preferred = Int[1]
+    append!(preferred, envslots)
+    append!(preferred, caps)
+    spec = Planning.ContractionSpec(
+        labels, conjs, N, (N, 0), nothing; preferred_slots=preferred)
+    return spec, Tuple(operands)
+end
+
+"""
+    _fit_two_site_tensor(c, target, source, n, m)
+
+Project `source` into `target`'s merged child-parent two-site variational
+window. `m` must be the parent of `n`, and `target` must be canonical with its
+orthogonality center on `n` or `m`. The result has the exact all-codomain leg
+order of `Contractions.two_site_tensor(target, n, m)`.
+"""
+function _fit_two_site_tensor(c::_FitCache, target::TTNS, source::TTNS,
+                              n::Int, m::Int)
+    spec, operands = _fit_two_site_spec(c, target, source, n, m)
+    y = _fit_planned_execute!(
+        c, :fit_two_site_project, spec, operands,
+        _fit_scalar_type(c, target, source),
+    )
+    twists = _fit_two_site_output_legs(target, n, m)
+    isempty(twists) || twist!(y, twists)
+    return y
+end
+
+"""Retained direct `ncon` execution of the exact two-site fit network."""
+function _fit_two_site_tensor_ncon_reference(c::_FitCache, target::TTNS,
+                                             source::TTNS, n::Int, m::Int)
+    spec, operands = _fit_two_site_spec(c, target, source, n, m)
+    y = Planning.ncon_reference(spec, operands)
+    twists = _fit_two_site_output_legs(target, n, m)
+    isempty(twists) || twist!(y, twists)
+    return y
 end
 
 """

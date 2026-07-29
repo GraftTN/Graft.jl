@@ -1023,8 +1023,13 @@ end
 end
 
 include("contraction_planning.jl")
+include("two_site_fit_projection.jl")
+include("residual_orientation.jl")
+include("residual_driven_expansion.jl")
+include("two_site_linear_solve.jl")
 include("p0_p1_memory_small.jl")
 include("implicit_log_time.jl")
+include("residual_driven_implicit.jl")
 include("p0_thermal.jl")
 include("p1_p2_thermal.jl")
 include("graded_env_tdvp_regression.jl")
