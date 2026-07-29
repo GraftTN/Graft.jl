@@ -18,10 +18,7 @@ function inner(φ::TTNS, ψ::TTNS;
         _fresh_env_cache_with_plans(plan_cache, ψ.topo)
     r = ψ.topo.root
     return _with_env_transaction(c) do
-        for w in neighbors(ψ.topo, r)
-            _env_impl!(c, ψ, nothing, φ, w, r; optimize)
-        end
-        _build_env_value(c, ψ, nothing, φ, r, 0; optimize)
+        _build_env_consistent(c, ψ, nothing, φ, r, 0; optimize)
     end
 end
 

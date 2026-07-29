@@ -39,7 +39,8 @@ using ..Contractions
 using ..Symbolic
 using ..TTNOBuild
 using ..Evolution
-using ..Parallel: threaded_foreach, AbstractDistributedContext,
+using ..Parallel: threaded_foreach, bounded_threaded_foreach,
+    BoundedFanoutDiagnostics, AbstractDistributedContext,
     distributed_rank, distributed_size, distributed_allreduce_sum!,
     distributed_allgather
 using Random: AbstractRNG, Xoshiro, rand

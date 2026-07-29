@@ -159,6 +159,9 @@ function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(;
                    rsvd_oversample::Int=8, rsvd_poweriter::Int=0,
                    rsvd_threaded::Bool=Base.Threads.nthreads() > 1,
                    rsvd_minbatch::Int=max(2, Base.Threads.nthreads()),
+                   rsvd_memory_cap_bytes::Union{Nothing,Int}=nothing,
+                   rsvd_task_workspace_bytes::Union{Nothing,Int}=nothing,
+                   rsvd_fanout_diagnostics::Union{Nothing,Base.RefValue}=nothing,
                    threaded_channels::Bool=false, channel_slices::Int=2,
                    channel_minbatch::Int=2,
                    channel_min_flops::Real=1_000_000,
@@ -177,6 +180,8 @@ function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(;
                                          trunc, expand_scheme, max_add,
                                          rsvd_oversample, rsvd_poweriter,
                                          rsvd_threaded, rsvd_minbatch,
+                                         rsvd_memory_cap_bytes,
+                                         rsvd_task_workspace_bytes,
                                          enr_rtol, enr_atol)
     for sweep in 1:nsweeps
         E = NaN
@@ -197,7 +202,10 @@ function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(;
                 expand!(ψ, H, (n, t.parent[n]); scheme=expand_scheme, cache,
                         rng, trunc, max_add, mixing=α, enr_rtol, enr_atol,
                         rsvd_oversample, rsvd_poweriter,
-                        rsvd_threaded, rsvd_minbatch, threaded_channels,
+                        rsvd_threaded, rsvd_minbatch,
+                        rsvd_memory_cap_bytes, rsvd_task_workspace_bytes,
+                        rsvd_fanout_diagnostics,
+                        threaded_channels,
                         channel_slices, channel_minbatch,
                         channel_min_flops,
                         channel_memory_cap_bytes, distributed)
@@ -269,7 +277,10 @@ function _log_dmrg_expansion_start(name::String, ψ::TTNS; nsweeps::Int, tol::Fl
                                    trunc::TruncationScheme, expand_scheme::Symbol,
                                    max_add::Int, rsvd_oversample::Int,
                                    rsvd_poweriter::Int, rsvd_threaded::Bool,
-                                   rsvd_minbatch::Int, enr_rtol::Float64,
+                                   rsvd_minbatch::Int,
+                                   rsvd_memory_cap_bytes::Union{Nothing,Int},
+                                   rsvd_task_workspace_bytes::Union{Nothing,Int},
+                                   enr_rtol::Float64,
                                    enr_atol::Float64)
     t = ψ.topo
     nodes = nnodes(t)
@@ -281,7 +292,7 @@ function _log_dmrg_expansion_start(name::String, ψ::TTNS; nsweeps::Int, tol::Fl
     trunc_atol = trunc.atol
     trunc_rtol = trunc.rtol
     trunc_discarded_weight = trunc.discarded_weight
-    @info "$name start" nodes physical_sites bonds center_site nsweeps tol krylovdim updates_per_sweep initial_maxbond trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight expand_scheme max_add rsvd_oversample rsvd_poweriter rsvd_threaded rsvd_minbatch enr_rtol enr_atol
+    @info "$name start" nodes physical_sites bonds center_site nsweeps tol krylovdim updates_per_sweep initial_maxbond trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight expand_scheme max_add rsvd_oversample rsvd_poweriter rsvd_threaded rsvd_minbatch rsvd_memory_cap_bytes rsvd_task_workspace_bytes enr_rtol enr_atol
     return nothing
 end
 

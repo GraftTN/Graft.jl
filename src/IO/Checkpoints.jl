@@ -18,7 +18,30 @@ module Checkpoints
 
 using JLD2
 
-export checkpoint!, resume, with_checkpoint, checkpoint_mpi!, resume_mpi
+export DistributedCheckpointError,
+    checkpoint!, resume, with_checkpoint, checkpoint_mpi!, resume_mpi
+
+"""
+    DistributedCheckpointError
+
+Collective checkpoint or resume failure. `stage` identifies the synchronized
+checkpoint stage and `failures` records every causal `(rank, message)` pair.
+Every rank receives the same diagnostic before any later collective begins.
+"""
+struct DistributedCheckpointError <: Exception
+    stage::Symbol
+    failures::Vector{Tuple{Int,String}}
+end
+
+function Base.showerror(io::IO, err::DistributedCheckpointError)
+    print(io, "distributed checkpoint ", err.stage, " failed")
+    isempty(err.failures) && return
+    print(io, ": ")
+    for (index, (rank, message)) in enumerate(err.failures)
+        index == 1 || print(io, "; ")
+        print(io, "rank ", rank, ": ", message)
+    end
+end
 
 """Write a distributed checkpoint. Methods are supplied by MPI extensions."""
 function checkpoint_mpi! end

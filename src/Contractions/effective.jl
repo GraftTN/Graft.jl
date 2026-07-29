@@ -43,6 +43,46 @@ struct DistributedChannelEffectiveMap{
     concurrent_live_bytes::Int
 end
 
+"""
+    DistributedChannelAdmissionError
+
+Typed admission failure raised before distributed slice-map construction when
+an MPI communicator has more ranks than exact nonempty operator-channel
+slices. Graft cannot shrink an explicit communicator or duplicate a slice
+without changing the collective sum, so the caller must relaunch with at most
+`nonempty_slices` ranks or select a non-distributed path.
+"""
+struct DistributedChannelAdmissionError <: Exception
+    reason::Symbol
+    ranks::Int
+    nonempty_slices::Int
+end
+
+function Base.showerror(io::IO, err::DistributedChannelAdmissionError)
+    print(
+        io,
+        "distributed operator-channel admission failed (",
+        err.reason,
+        "): communicator has ",
+        err.ranks,
+        " ranks but only ",
+        err.nonempty_slices,
+        " exact nonempty channel slices; relaunch with at most ",
+        err.nonempty_slices,
+        " ranks or omit the distributed context",
+    )
+end
+
+function _require_nonempty_distributed_ranks(
+        context::AbstractDistributedContext,
+        nonempty_slices::Integer)
+    ranks = distributed_size(context)
+    ranks <= nonempty_slices ||
+        throw(DistributedChannelAdmissionError(
+            :empty_rank, ranks, Int(nonempty_slices)))
+    return nothing
+end
+
 function DistributedChannelEffectiveMap(
         effective::ChannelSlicedEffectiveMap,
         context::AbstractDistributedContext)
@@ -52,6 +92,7 @@ function DistributedChannelEffectiveMap(
         throw(ArgumentError("distributed context returned an invalid rank"))
     size >= 2 ||
         throw(ArgumentError("distributed channel maps require at least two ranks"))
+    _require_nonempty_distributed_ranks(context, length(effective.maps))
     indices = collect((rank + 1):size:length(effective.maps))
     bytes = ceil(Int, sum(
         _slice_live_bytes(effective.maps[i].plan) for i in indices;
@@ -231,15 +272,17 @@ function (f::_ChannelSlicedWorkspaceMap)(x::AbstractTensorMap)
     f.busy && throw(ArgumentError("channel workspace map cannot be used reentrantly"))
     f.busy = true
     try
-        foreach(request -> put!(request, x), f.requests)
-        results = map(take!, f.responses)
-        failed = findfirst(result -> !result.ok, results)
-        failed === nothing || throw(results[failed].error)
-        y = results[1].value::AbstractTensorMap
-        for i in 2:length(results)
-            axpy!(1, results[i].value::AbstractTensorMap, y)
+        return _with_parallel_runtime_region() do
+            foreach(request -> put!(request, x), f.requests)
+            results = map(take!, f.responses)
+            failed = findfirst(result -> !result.ok, results)
+            failed === nothing || throw(results[failed].error)
+            y = results[1].value::AbstractTensorMap
+            for i in 2:length(results)
+                axpy!(1, results[i].value::AbstractTensorMap, y)
+            end
+            return y
         end
-        return y
     finally
         f.busy = false
     end
@@ -437,6 +480,8 @@ function _channel_sliced_h1!(cache::EnvCache, full::EffectiveMap,
             distributed_size(distributed) * max(Threads.nthreads(), 1))
     groups = _channel_groups(space(W, operator_leg), requested_slices,
                              full.plan, protos, statics, targets)
+    distributed === nothing ||
+        _require_nonempty_distributed_ranks(distributed, length(groups))
     maps = map(enumerate(groups)) do (slice, selected)
         sliced_statics = _restrict_channel_statics(statics, targets, selected)
         sliced_protos = (protos[1], sliced_statics...)
@@ -526,6 +571,22 @@ function _channel_sliced_h2!(cache::EnvCache, full::EffectiveMap,
     end
     filter!(!isnothing, partitions)
     isempty(partitions) && return full
+    if distributed !== nothing
+        ranks = distributed_size(distributed)
+        admissible = filter(
+            partition -> length(partition.groups) >= ranks,
+            partitions,
+        )
+        if isempty(admissible)
+            nonempty_slices = maximum(
+                partition -> length(partition.groups),
+                partitions,
+            )
+            throw(DistributedChannelAdmissionError(
+                :empty_rank, ranks, nonempty_slices))
+        end
+        partitions = admissible
+    end
     scores = map(p -> (maximum(p.costs), sum(p.costs), p.edge_index), partitions)
     partition = partitions[argmin(scores)]
     edge_index = partition.edge_index

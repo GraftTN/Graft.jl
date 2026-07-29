@@ -4,6 +4,9 @@
             rsvd_oversample=8, rsvd_poweriter=0,
             rsvd_threaded=Base.Threads.nthreads() > 1,
             rsvd_minbatch=max(2, Base.Threads.nthreads()),
+            rsvd_memory_cap_bytes=nothing,
+            rsvd_task_workspace_bytes=nothing,
+            rsvd_fanout_diagnostics=nothing,
             contraction_optimize=true,
             contraction_sector_aware=true,
             threaded_channels=false, channel_slices=2,
@@ -16,6 +19,11 @@ predictor basis with a deterministic SVD. `scheme=:rsvd` uses explicit-RNG
 blockwise randomized probes on the fused rest space and never touches global
 randomness. Probe-block RNG seeds are derived serially from `rng`, so
 `rsvd_threaded=true` is bitwise-equivalent to the serial probe generation.
+Actual threaded probe filling requires both `rsvd_memory_cap_bytes` and the
+measured conservative per-task scratch allowance
+`rsvd_task_workspace_bytes`; omission selects an observable deterministic
+serial fallback. `rsvd_fanout_diagnostics` may be a `Ref` used to inspect the
+admitted batches and memory model without changing `expand!`'s return value.
 """
 function expand!(ψ::TTNS, H::TTNO, edge; scheme::Symbol=:exact,
                  cache::Union{Nothing,EnvCache}=nothing,
@@ -26,6 +34,9 @@ function expand!(ψ::TTNS, H::TTNO, edge; scheme::Symbol=:exact,
                  rsvd_oversample::Int=8, rsvd_poweriter::Int=0,
                  rsvd_threaded::Bool=Base.Threads.nthreads() > 1,
                  rsvd_minbatch::Integer=max(2, Base.Threads.nthreads()),
+                 rsvd_memory_cap_bytes::Union{Nothing,Integer}=nothing,
+                 rsvd_task_workspace_bytes::Union{Nothing,Integer}=nothing,
+                 rsvd_fanout_diagnostics::Union{Nothing,Base.RefValue}=nothing,
                  contraction_optimize::Bool=true,
                  contraction_sector_aware::Bool=true,
                  threaded_channels::Bool=false, channel_slices::Int=2,
@@ -39,6 +50,12 @@ function expand!(ψ::TTNS, H::TTNO, edge; scheme::Symbol=:exact,
     rsvd_oversample >= 0 || throw(ArgumentError("expand!: rsvd_oversample must be nonnegative"))
     rsvd_poweriter >= 0 || throw(ArgumentError("expand!: rsvd_poweriter must be nonnegative"))
     rsvd_minbatch >= 1 || throw(ArgumentError("expand!: rsvd_minbatch must be positive"))
+    rsvd_memory_cap_bytes === nothing || rsvd_memory_cap_bytes >= 0 ||
+        throw(ArgumentError("expand!: rsvd_memory_cap_bytes must be nonnegative"))
+    rsvd_task_workspace_bytes === nothing ||
+        rsvd_task_workspace_bytes >= 0 ||
+        throw(ArgumentError(
+            "expand!: rsvd_task_workspace_bytes must be nonnegative"))
     scheme === :rsvd && rng === nothing &&
         throw(ArgumentError("expand!: scheme=:rsvd requires an explicit rng (§9.6)"))
     iszero(mixing) && return ψ
@@ -60,7 +77,10 @@ function expand!(ψ::TTNS, H::TTNO, edge; scheme::Symbol=:exact,
     PΘ = mixing * h2(Θ)
     P = _child_predictor_basis(ψ, PΘ, n, cap; scheme, rng,
                                rsvd_oversample, rsvd_poweriter,
-                               rsvd_threaded, rsvd_minbatch)
+                               rsvd_threaded, rsvd_minbatch,
+                               rsvd_memory_cap_bytes,
+                               rsvd_task_workspace_bytes,
+                               rsvd_fanout_diagnostics)
     U, R = _expand_enrich_split(ψ.tensors[n], P; maxdim=cap,
                                 max_add=cap - olddim,
                                 enr_rtol, enr_atol)
@@ -97,14 +117,21 @@ function _child_predictor_basis(ψ::TTNS, PΘ::AbstractTensorMap, n::Int, maxdim
                                 rsvd_oversample::Int=8,
                                 rsvd_poweriter::Int=0,
                                 rsvd_threaded::Bool=Base.Threads.nthreads() > 1,
-                                rsvd_minbatch::Integer=max(2, Base.Threads.nthreads()))
+                                rsvd_minbatch::Integer=max(2, Base.Threads.nthreads()),
+                                rsvd_memory_cap_bytes::Union{Nothing,Integer}=nothing,
+                                rsvd_task_workspace_bytes::Union{Nothing,Integer}=nothing,
+                                rsvd_fanout_diagnostics::Union{Nothing,Base.RefValue}=nothing)
     pn = numout(ψ.tensors[n])
     NP = numind(PΘ)
     Ps = permute(PΘ, (ntuple(identity, pn), ntuple(j -> pn + j, NP - pn)))
     if scheme === :rsvd
         return _rsvd_predictor_basis(Ps, maxdim; rng, rsvd_oversample,
                                      rsvd_poweriter, threaded=rsvd_threaded,
-                                     minbatch=rsvd_minbatch)
+                                     minbatch=rsvd_minbatch,
+                                     memory_cap_bytes=rsvd_memory_cap_bytes,
+                                     task_workspace_memory_bytes=
+                                         rsvd_task_workspace_bytes,
+                                     fanout_diagnostics=rsvd_fanout_diagnostics)
     end
     U, _, _ = split_svd(Ps, TruncationScheme(; maxdim))
     return U
@@ -115,12 +142,17 @@ function _rsvd_predictor_basis(Ps::AbstractTensorMap, maxdim::Int;
                                rsvd_oversample::Int,
                                rsvd_poweriter::Int,
                                threaded::Bool=Base.Threads.nthreads() > 1,
-                               minbatch::Integer=max(2, Base.Threads.nthreads()))
+                               minbatch::Integer=max(2, Base.Threads.nthreads()),
+                               memory_cap_bytes::Union{Nothing,Integer}=nothing,
+                               task_workspace_memory_bytes::Union{Nothing,Integer}=nothing,
+                               fanout_diagnostics::Union{Nothing,Base.RefValue}=nothing)
     Vrest = fuse(domain(Ps))
     budget = min(dim(Vrest), maxdim + rsvd_oversample)
     K = _rsvd_probe_space(Vrest, budget)
     Ω = _rsvd_random_probe(rng, scalartype(Ps), domain(Ps) ← K;
-                           threaded, minbatch)
+                           threaded, minbatch, memory_cap_bytes,
+                           task_workspace_memory_bytes,
+                           fanout_diagnostics)
     Y = Ps * Ω
     for _ in 1:rsvd_poweriter
         Y = Ps * (Ps' * Y)
@@ -131,16 +163,103 @@ end
 
 function _rsvd_random_probe(rng::AbstractRNG, ::Type{T}, target;
                             threaded::Bool=Base.Threads.nthreads() > 1,
-                            minbatch::Integer=max(2, Base.Threads.nthreads())) where {T<:Number}
+                            minbatch::Integer=max(2, Base.Threads.nthreads()),
+                            memory_cap_bytes::Union{Nothing,Integer}=nothing,
+                            task_workspace_memory_bytes::Union{Nothing,Integer}=nothing,
+                            fanout_diagnostics::Union{Nothing,Base.RefValue}=nothing,
+                            block_fill=(rng, block_, _) -> randn!(rng, block_)) where {T<:Number}
     minbatch >= 1 || throw(ArgumentError("RSVD probe minbatch must be positive"))
+    memory_cap_bytes === nothing || memory_cap_bytes >= 0 ||
+        throw(ArgumentError("RSVD probe memory cap must be nonnegative"))
+    task_workspace_memory_bytes === nothing ||
+        task_workspace_memory_bytes >= 0 ||
+        throw(ArgumentError(
+            "RSVD probe task workspace bytes must be nonnegative"))
     Ω = zeros(T, target)
     probe_blocks = collect(blocks(Ω))
-    seeds = rand(rng, UInt64, length(probe_blocks))
-    threaded_foreach(eachindex(probe_blocks); threaded, minbatch) do i
-        _, block_ = probe_blocks[i]
-        randn!(Xoshiro(seeds[i]), block_)
+    # TensorMap block storage does not promise a stable iteration order.
+    # Attach per-block seeds only after imposing a canonical sector order so
+    # the caller-visible RNG contract and generated probe are independent of
+    # allocation history and task scheduling.
+    sort!(probe_blocks; by=item -> repr(item[1]))
+    retained_memory_bytes = sum(
+        block_ -> _rsvd_block_payload_bytes(block_[2]),
+        probe_blocks;
+        init=0,
+    )
+    rng_bytes = Base.summarysize(Xoshiro(zero(UInt64)))
+    item_memory_bytes = [
+        _rsvd_block_payload_bytes(block_) + rng_bytes +
+            something(task_workspace_memory_bytes, 0)
+        for (_, block_) in probe_blocks
+    ]
+    if memory_cap_bytes !== nothing
+        cap = Int(memory_cap_bytes)
+        retained_memory_bytes <= cap ||
+            throw(BoundedFanoutAdmissionError(
+                0, :retained_probe, 0, retained_memory_bytes, cap))
+        for index in eachindex(probe_blocks)
+            item_memory_bytes[index] <= cap - retained_memory_bytes ||
+                throw(BoundedFanoutAdmissionError(
+                    index,
+                    (; probe_block_index=index,
+                       sector=probe_blocks[index][1]),
+                    item_memory_bytes[index],
+                    retained_memory_bytes,
+                    cap,
+                ))
+        end
     end
+    seeds = rand(rng, UInt64, length(probe_blocks))
+    probe_items = [
+        (index, sector, block_, seeds[index])
+        for (index, (sector, block_)) in enumerate(probe_blocks)
+    ]
+    missing_workspace_model = threaded &&
+        task_workspace_memory_bytes === nothing
+    diagnostics = bounded_threaded_foreach(
+        probe_items;
+        threaded=threaded && !missing_workspace_model,
+        minbatch,
+        retained_memory_bytes,
+        memory_cap_bytes,
+        item_memory_bytes=(_, item) -> item_memory_bytes[item[1]],
+        item_id=(_, item) -> (; probe_block_index=item[1],
+                              sector=item[2]),
+    ) do item
+        index, _, block_, seed = item
+        block_fill(Xoshiro(seed), block_, index)
+    end
+    missing_workspace_model &&
+        (diagnostics = _rsvd_fanout_fallback(
+            diagnostics, :missing_task_workspace_memory))
+    fanout_diagnostics === nothing || (fanout_diagnostics[] = diagnostics)
     return Ω
+end
+
+function _rsvd_fanout_fallback(
+    diagnostics::BoundedFanoutDiagnostics,
+    fallback::Symbol,
+)
+    return BoundedFanoutDiagnostics(
+        diagnostics.mode,
+        fallback,
+        diagnostics.item_count,
+        diagnostics.worker_limit,
+        diagnostics.batch_count,
+        diagnostics.max_batch_items,
+        diagnostics.retained_memory_bytes,
+        diagnostics.peak_admitted_bytes,
+        diagnostics.memory_cap_bytes,
+        diagnostics.completed_items,
+        diagnostics.cancelled_items,
+    )
+end
+
+function _rsvd_block_payload_bytes(block_)
+    T = eltype(block_)
+    return isbitstype(T) ? sizeof(T) * length(block_) :
+        Base.summarysize(block_)
 end
 
 function _rsvd_probe_space(::ComplexSpace, budget::Int)

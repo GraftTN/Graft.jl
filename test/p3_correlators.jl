@@ -56,7 +56,9 @@ const QUIET = (verbose=false,)
             :site1 => S.N, :site1 => S.N, beta, taus;
             evolver=TDVP2(trunc=TruncationScheme(maxdim=8); QUIET...),
             trajectory=traj, prop_nsteps=30, connected=true,
-            threaded=true, minbatch=1)
+            threaded=true, minbatch=1,
+            task_memory_cap_bytes=typemax(Int),
+            task_workspace_memory_bytes=16 * 1024^2)
         Nd = dense_hamiltonian(OpSum() + Term(1.0, SiteOp(:site1, :N, S.N)), topo, phys)
         ref = exact_thermal_correlator(Hd, Nd, Nd, beta, taus)
         nbar = real(exact_thermal_expect(Hd, Nd, beta))
@@ -64,7 +66,11 @@ const QUIET = (verbose=false,)
         @test maximum(abs.(series.values .- ref_c)) < 1e-9
         @test series_threaded.times == series.times
         @test maximum(abs.(series_threaded.values .- series.values)) < 1e-12
-        @test series_threaded.metadata == series.metadata
+        @test Base.structdiff(series_threaded.metadata, (; fanout=nothing)) ==
+              Base.structdiff(series.metadata, (; fanout=nothing))
+        @test series.metadata.fanout.mode == :serial
+        @test series_threaded.metadata.fanout.mode ==
+              (Base.Threads.nthreads() > 1 ? :threaded : :serial)
         @test series.metadata.centering == :thermal_mean_insertion
         @test series.metadata.Abar ≈ nbar atol = 1e-10
         @test series.metadata.Bbar ≈ nbar atol = 1e-10
@@ -144,11 +150,14 @@ const QUIET = (verbose=false,)
         s3 = thermal_correlator(Purified(), prob,
             :site1 => S.Z, :site1 => S.Z, beta, (tau for tau in taus);
             evolver=TDVP2(trunc=TruncationScheme(maxdim=4); QUIET...),
-            trajectory=traj, prop_nsteps=40, threaded=true, minbatch=1)
+            trajectory=traj, prop_nsteps=40, threaded=true, minbatch=1,
+            task_memory_cap_bytes=typemax(Int),
+            task_workspace_memory_bytes=16 * 1024^2)
         @test maximum(abs.(s1.values .- s2.values)) < 1e-10
         @test s3.times == s1.times
         @test maximum(abs.(s3.values .- s1.values)) < 1e-12
-        @test s3.metadata == s1.metadata
+        @test Base.structdiff(s3.metadata, (; fanout=nothing)) ==
+              Base.structdiff(s1.metadata, (; fanout=nothing))
     end
 
     @testset "trajectory mismatch rejected" begin

@@ -12,7 +12,7 @@ using Graft.Trees: edges
 using Graft.Contractions: two_site_tensor, two_site_space, split_two_site!,
     _rsvd_random_probe
 using Random
-using LinearAlgebra: I, dot, norm
+using LinearAlgebra: I, dot, norm, BLAS
 
 const RNG = Xoshiro(20260709)
 
@@ -170,12 +170,145 @@ include("direct_krylov_bootstrap.jl")
     @test out2 == [2 * i for i in 1:8]
     @test_throws ArgumentError threaded_foreach(identity, [1]; minbatch=0)
 
+    bounded_out = zeros(Int, 8)
+    bounded = bounded_threaded_foreach(
+        1:8;
+        threaded=true,
+        minbatch=1,
+        retained_memory_bytes=10,
+        item_memory_bytes=20,
+        memory_cap_bytes=50,
+    ) do i
+        bounded_out[i] = i
+    end
+    @test bounded_out == collect(1:8)
+    @test bounded.completed_items == 8
+    @test bounded.peak_admitted_bytes <= 50
+    @test bounded.mode ==
+          (Base.Threads.nthreads() > 1 ? :threaded : :serial)
+
+    fallback = bounded_threaded_foreach(
+        identity, 1:3; threaded=true, minbatch=1)
+    @test fallback.mode == :serial
+    @test fallback.fallback ==
+          (Base.Threads.nthreads() == 1 ? :single_thread :
+           :missing_memory_cap)
+
+    admitted = Int[]
+    admission_error = try
+        bounded_threaded_foreach(
+            1:3;
+            threaded=true,
+            minbatch=1,
+            retained_memory_bytes=10,
+            item_memory_bytes=20,
+            memory_cap_bytes=29,
+        ) do i
+            push!(admitted, i)
+        end
+        nothing
+    catch err
+        err
+    end
+    @test admission_error isa BoundedFanoutAdmissionError
+    @test isempty(admitted)
+    if admission_error isa BoundedFanoutAdmissionError
+        @test admission_error.item_index == 1
+        @test admission_error.item_id == 1
+        @test occursin("admission rejected item 1",
+                       sprint(showerror, admission_error))
+    end
+
+    item_error = try
+        bounded_threaded_foreach(
+            1:16;
+            threaded=true,
+            minbatch=1,
+            item_memory_bytes=1,
+            memory_cap_bytes=Base.Threads.nthreads(),
+            item_id=(index, item) -> Symbol(:item_, item),
+        ) do i
+            i in (2, 3) && error("injected item $i")
+        end
+        nothing
+    catch err
+        err
+    end
+    @test item_error isa BoundedFanoutItemError
+    if item_error isa BoundedFanoutItemError
+        @test item_error.item_index == 2
+        @test item_error.item_id == :item_2
+        @test item_error.cancelled_items ==
+              16 - (Base.Threads.nthreads() == 1 ? 2 :
+                    min(Base.Threads.nthreads(), 16))
+        @test occursin("injected item 2", sprint(showerror, item_error))
+    end
+    @test_throws ArgumentError bounded_threaded_foreach(
+        identity, [1]; minbatch=0)
+
     runtime = configure_parallel_runtime!()
+    @test runtime isa ParallelRuntimeConfig
     @test runtime.julia_threads == Base.Threads.nthreads()
     @test runtime.blas_threads == 1
     @test runtime.strided_threads == 1
+    @test runtime.configured
+    @test runtime.julia_version == VERSION
+    @test runtime.machine == Sys.MACHINE
+    @test runtime.blas_vendor == BLAS.vendor()
+    @test runtime.active_regions == 0
+    observed_runtime = parallel_runtime_config()
+    @test observed_runtime == runtime
+    repeated_runtime = configure_parallel_runtime!(
+        ; blas_threads=runtime.blas_threads,
+        strided_threads=runtime.strided_threads)
+    @test repeated_runtime.generation == runtime.generation
     @test_throws ArgumentError configure_parallel_runtime!(; blas_threads=0)
     @test_throws ArgumentError configure_parallel_runtime!(; strided_threads=0)
+
+    if Base.Threads.nthreads() > 1
+        entered = Channel{Nothing}(1)
+        release = Channel{Nothing}(1)
+        region = Base.Threads.@spawn threaded_foreach(
+                1:2; threaded=true, minbatch=1) do i
+            if i == 1
+                put!(entered, nothing)
+                take!(release)
+            end
+        end
+        take!(entered)
+        try
+            active_runtime = parallel_runtime_config()
+            @test active_runtime.active_regions == 1
+            same_runtime = configure_parallel_runtime!(
+                ; blas_threads=active_runtime.blas_threads,
+                strided_threads=active_runtime.strided_threads)
+            @test same_runtime.generation == active_runtime.generation
+            different_blas = active_runtime.blas_threads == 1 ? 2 : 1
+            config_error = try
+                configure_parallel_runtime!(
+                    ; blas_threads=different_blas,
+                    strided_threads=active_runtime.strided_threads)
+                nothing
+            catch err
+                err
+            end
+            @test config_error isa ParallelRuntimeConfigurationError
+            if config_error isa ParallelRuntimeConfigurationError
+                @test config_error.active_regions == 1
+                @test config_error.current.blas_threads ==
+                      active_runtime.blas_threads
+                @test config_error.requested.blas_threads == different_blas
+                @test occursin(
+                    "cannot change process-global parallel runtime",
+                    sprint(showerror, config_error),
+                )
+            end
+        finally
+            put!(release, nothing)
+            fetch(region)
+        end
+        @test parallel_runtime_config().active_regions == 0
+    end
 
     U = spin_ops_u1()
     probe_target = U.P ← U.P

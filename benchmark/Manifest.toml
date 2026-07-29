@@ -165,7 +165,7 @@ version = "1.20.0"
 uuid = "7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee"
 
 [[deps.Graft]]
-deps = ["JLD2", "KrylovKit", "LinearAlgebra", "PrecompileTools", "Random", "TensorKit", "TensorOperations"]
+deps = ["JLD2", "KrylovKit", "LinearAlgebra", "PrecompileTools", "Random", "SHA", "TensorKit", "TensorOperations"]
 path = ".."
 uuid = "917c9ffe-6c79-4950-b61c-1fe8fbfdf188"
 version = "0.1.0"

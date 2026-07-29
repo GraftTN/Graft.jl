@@ -364,6 +364,20 @@ end
         scalar_plan.sector_known_permutation_peak_bytes,
     )
     @test !legacy_layout.scalar_output
+    scalar_layout = _P0P1Planning.ContractionPlan(
+        scalar_plan.nslots, scalar_plan.output_slot, scalar_plan.steps,
+        scalar_plan.strategy, scalar_plan.flops, scalar_plan.peak_elements,
+        scalar_plan.sector_flops, scalar_plan.sector_peak_elements,
+        scalar_plan.sector_peak_block_elements, scalar_plan.scalar_bytes,
+        scalar_plan.operand_bytes, scalar_plan.live_peak_bytes,
+        scalar_plan.known_temporary_peak_bytes,
+        scalar_plan.known_permutation_peak_bytes,
+        scalar_plan.sector_operand_bytes, scalar_plan.sector_live_peak_bytes,
+        scalar_plan.sector_known_temporary_peak_bytes,
+        scalar_plan.sector_known_permutation_peak_bytes, true,
+    )
+    @test scalar_layout.scalar_output
+    @test isempty(scalar_layout.candidate_failures)
     root_scalar, _ = _p0p1_env_matches_ncon!(cH, ket, O, bra, root, 0)
     @test root_scalar isa Number
     @test only(values(cH.rootcaps)) === rootcap

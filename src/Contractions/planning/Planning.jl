@@ -12,9 +12,10 @@ using TensorOperations
 using ...Backend
 
 export ContractionSpec, PairStep, ContractionPlan, EffectiveMap, PlanWorkspace,
-    WorkspaceMap, PlanKey, execute, execute_accumulate!, workspace_map,
+    WorkspaceMap, PlanKey, PlannerCandidateFailure, PlannerDiagnostics,
+    execute, execute_accumulate!, workspace_map,
     workspace_stats, plan_contraction, plan_key, get_or_plan!, ncon_reference,
-    plan_metrics, dense_cost
+    plan_metrics, plan_diagnostics, dense_cost
 
 include("types.jl")
 include("cost.jl")

@@ -34,6 +34,17 @@ end
 
 Pure cache helper so `Planning` need not depend upward on `EnvCache`.
 """
+function _uncached_plan(spec::ContractionSpec, protos, T::DataType; kwargs...)
+    forwarded = (; kwargs...)
+    if haskey(forwarded, :scalar_type)
+        forwarded.scalar_type == T ||
+            throw(ArgumentError("get_or_plan!: scalar_type=$(forwarded.scalar_type) " *
+                                "does not match cache scalar type $T"))
+        forwarded = Base.structdiff(forwarded, (; scalar_type=nothing))
+    end
+    return plan_contraction(spec, protos; scalar_type=T, forwarded...)
+end
+
 function get_or_plan!(plans::Dict{PlanKey,ContractionPlan}, kind::Symbol,
                       spec::ContractionSpec, protos, T::DataType; kwargs...)
     optimize = get(kwargs, :optimize, true)
@@ -47,14 +58,7 @@ function get_or_plan!(plans::Dict{PlanKey,ContractionPlan}, kind::Symbol,
     if haskey(plans, key)
         return plans[key], true
     end
-    forwarded = (; kwargs...)
-    if haskey(forwarded, :scalar_type)
-        forwarded.scalar_type == T ||
-            throw(ArgumentError("get_or_plan!: scalar_type=$(forwarded.scalar_type) " *
-                                "does not match cache scalar type $T"))
-        forwarded = Base.structdiff(forwarded, (; scalar_type=nothing))
-    end
-    plan = plan_contraction(spec, protos; scalar_type=T, forwarded...)
+    plan = _uncached_plan(spec, protos, T; kwargs...)
     plans[key] = plan
     return plan, false
 end

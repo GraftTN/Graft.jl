@@ -1,6 +1,16 @@
 const _CP = Graft.Contractions
 const _Planning = Graft.Contractions.Planning
 
+struct _PlanningDistributedContext <: AbstractDistributedContext
+    rank::Int
+    size::Int
+end
+
+Graft.Parallel.distributed_rank(context::_PlanningDistributedContext) =
+    context.rank
+Graft.Parallel.distributed_size(context::_PlanningDistributedContext) =
+    context.size
+
 """
 Return every *ordered* binary tree for a very small label graph, including
 early outer products.  This deliberately does not call Phase 3's DP: it is a
@@ -226,6 +236,48 @@ end
         )
         @test sliced isa ChannelSlicedEffectiveMap
         @test workspace_map(sliced) === sliced
+        excess_context = _PlanningDistributedContext(
+            0, length(sliced.maps) + 1)
+        admission_error = try
+            DistributedChannelEffectiveMap(sliced, excess_context)
+            nothing
+        catch err
+            err
+        end
+        @test admission_error isa DistributedChannelAdmissionError
+        @test admission_error.reason == :empty_rank
+        @test admission_error.ranks == length(sliced.maps) + 1
+        @test admission_error.nonempty_slices == length(sliced.maps)
+        @test occursin(
+            "relaunch with at most $(length(sliced.maps)) ranks",
+            sprint(showerror, admission_error),
+        )
+
+        # Admission occurs after exact grouping but before any sliced plan is
+        # compiled or published into the cache.
+        rejected_cache = EnvCache(topo)
+        rejected_context = _PlanningDistributedContext(0, 100)
+        rejected = try
+            eff_h1(
+                rejected_cache, ψ, O, root;
+                distributed=rejected_context,
+                channel_slices=3,
+                channel_minbatch=1,
+                channel_memory_cap_bytes=1_000_000_000,
+            )
+            nothing
+        catch err
+            err
+        end
+        @test rejected isa DistributedChannelAdmissionError
+        @test rejected.reason == :empty_rank
+        @test rejected.ranks == 100
+        @test length(sliced.maps) <= rejected.nonempty_slices < 100
+        @test all(
+            key -> !startswith(String(key.kind), "h1_channel_"),
+            keys(rejected_cache.plans),
+        )
+
         reference = full(ψ.tensors[root])
         got1 = sliced(ψ.tensors[root])
         got2 = sliced(ψ.tensors[root])
@@ -286,6 +338,26 @@ end
             channel_slices=3, channel_memory_cap_bytes=1_000_000_000,
         )
         @test h2sliced isa ChannelSlicedEffectiveMap
+        rejected_h2_cache = EnvCache(topo)
+        rejected_h2 = try
+            eff_h2(
+                rejected_h2_cache, ψ, O, child, root;
+                distributed=rejected_context,
+                channel_slices=3,
+                channel_minbatch=1,
+                channel_memory_cap_bytes=1_000_000_000,
+            )
+            nothing
+        catch err
+            err
+        end
+        @test rejected_h2 isa DistributedChannelAdmissionError
+        @test rejected_h2.reason == :empty_rank
+        @test rejected_h2.ranks == 100
+        @test all(
+            key -> !startswith(String(key.kind), "h2_channel_"),
+            keys(rejected_h2_cache.plans),
+        )
         h2reference = h2full(Θ)
         h2scale = max(norm(h2reference), 1.0)
         h2pooled = _CP._channel_workspace_map(h2sliced)
@@ -635,6 +707,351 @@ end
         e1 = dot(ψ.tensors[n], eff_h1(EnvCache(topo), ψ, O, n)(ψ.tensors[n]))
         @test e0 ≈ e1 rtol=1e-12 atol=1e-12
     end
+end
+
+function _concurrent_cache_requests(request, count::Int)
+    gate = Channel{Nothing}(count)
+    results = Vector{Any}(undef, count)
+    @sync begin
+        for i in 1:count
+            Base.Threads.@spawn begin
+                take!(gate)
+                results[i] = request(i)
+            end
+        end
+        for _ in 1:count
+            put!(gate, nothing)
+        end
+    end
+    return results
+end
+
+function _repeated_map_allocations(map_, input, repetitions::Int)
+    output = Ref{Any}()
+    bytes = @allocated begin
+        for _ in 1:repetitions
+            output[] = map_(input)
+        end
+    end
+    return output[], bytes
+end
+
+@graft_testset "compiled contraction plans: concurrent plan and root-cap cache" begin
+    A, B, C, spec = _sector_three_map_fixture()
+    cache = EnvCache(star_topology(2, 1))
+    request_count = max(8, 2Base.Threads.nthreads())
+
+    maps = _concurrent_cache_requests(request_count) do _
+        _CP._effective_map!(
+            cache, :concurrent_equal_key, spec, (A, B, C), (B, C),
+            ComplexF64,
+        )
+    end
+    diagnostics = cache_diagnostics(cache)
+    @test diagnostics isa CacheDiagnostics
+    @test diagnostics.plan_entries == 1
+    @test diagnostics.shape_plan_hits + diagnostics.shape_plan_misses ==
+          request_count
+    @test diagnostics.effective_plan_hits +
+          diagnostics.effective_plan_misses == request_count
+    @test diagnostics.plan_duplicate_builds <=
+          max(diagnostics.shape_plan_misses - 1, 0)
+    @test all(map -> map.plan.steps === maps[1].plan.steps, maps)
+    planner_diagnostics = plan_diagnostics(maps[1].plan)
+    @test planner_diagnostics isa PlannerDiagnostics
+    @test planner_diagnostics.strategy == maps[1].plan.strategy
+    @test planner_diagnostics.classification == :selected
+    @test isempty(planner_diagnostics.candidate_failures)
+
+    empty!(cache)
+    distinct_count = 8
+    distinct_maps = _concurrent_cache_requests(distinct_count) do i
+        _CP._effective_map!(
+            cache, Symbol(:concurrent_distinct_key_, i), spec,
+            (A, B, C), (B, C), ComplexF64,
+        )
+    end
+    diagnostics = cache_diagnostics(cache)
+    @test diagnostics.plan_entries == distinct_count
+    @test diagnostics.shape_plan_hits == 0
+    @test diagnostics.shape_plan_misses == distinct_count
+    @test diagnostics.plan_duplicate_builds == 0
+    @test all(map -> map isa EffectiveMap, distinct_maps)
+
+    empty!(cache)
+    capspace = ℂ^1 ⊗ ℂ^1
+    caps = _concurrent_cache_requests(request_count) do _
+        _CP._root_cap!(cache, ComplexF64, capspace)
+    end
+    diagnostics = cache_diagnostics(cache)
+    @test diagnostics.rootcap_entries == 1
+    @test diagnostics.rootcap_hits + diagnostics.rootcap_misses == request_count
+    @test diagnostics.rootcap_duplicate_builds <=
+          max(diagnostics.rootcap_misses - 1, 0)
+    @test all(cap -> cap === caps[1], caps)
+
+    empty!(cache)
+    cleared = cache_diagnostics(cache)
+    @test cleared.plan_entries == 0
+    @test cleared.rootcap_entries == 0
+    @test cleared.effective_plan_hits == 0
+    @test cleared.effective_plan_misses == 0
+    @test cleared.shape_plan_hits == 0
+    @test cleared.shape_plan_misses == 0
+    @test cleared.plan_duplicate_builds == 0
+    @test cleared.rootcap_hits == 0
+    @test cleared.rootcap_misses == 0
+    @test cleared.rootcap_duplicate_builds == 0
+    @test cleared.lock_contentions == 0
+    @test cleared.stale_build_discards == 0
+    @test cleared.environments.entries == 0
+    @test cleared.environments.clear_generation > 0
+    legacy = CacheDiagnostics(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    @test legacy.environments ==
+          EnvironmentCacheDiagnostics(
+              0, 0, 0, 0, 0, 0, 0, 0, 0,
+              0, 0, 0, 0, :none, UInt64(0), UInt64(0))
+end
+
+@graft_testset "compiled contraction plans: environment dependency generations" begin
+    topo = star_topology(3, 2)
+    phys = allspin(topo)
+    O = ttno_from_opsum(tfi(topo; g=0.37), topo, phys; hermitian=true)
+    ket = random_ttns(MersenneTwister(1701), ComplexF64, topo, phys, ℂ^3)
+    bra = random_ttns(MersenneTwister(1702), ComplexF64, topo, phys, ℂ^3)
+    root = topo.root
+    excluded_child = first(topo.children[root])
+    key = (root, excluded_child)
+
+    serial_cache = EnvCache(topo)
+    serial = _CP.env!(serial_cache, ket, O, bra, key...)
+
+    cache = EnvCache(topo)
+    request_count = max(8, 2Base.Threads.nthreads())
+    concurrent = _concurrent_cache_requests(request_count) do _
+        _CP.env!(cache, ket, O, bra, key...)
+    end
+    @test all(E -> E === concurrent[1], concurrent)
+    @test norm(concurrent[1] - serial) <= 1e-12 * max(norm(serial), 1)
+    diagnostics = cache_diagnostics(cache).environments
+    @test diagnostics isa EnvironmentCacheDiagnostics
+    @test diagnostics.entries == length(cache.envs)
+    @test diagnostics.rebuilds == diagnostics.entries
+    @test diagnostics.hits + diagnostics.misses >= request_count
+    @test diagnostics.duplicate_builds <=
+          max(diagnostics.misses - diagnostics.entries, 0)
+    @test diagnostics.retry_exhaustions == 0
+
+    # Sibling-final contractions stage into task-local workspaces only after a
+    # complete predicted-live-byte admission check. Results merge in the
+    # topology's fixed neighbor order.
+    @test_throws ArgumentError EnvCache(topo; threaded_envs=true)
+    staged_cache = EnvCache(
+        topo;
+        threaded_envs=true,
+        env_staging_minbatch=2,
+        env_staging_memory_cap_bytes=typemax(Int),
+    )
+    staged = _CP.env!(staged_cache, ket, O, bra, key...)
+    @test norm(staged - serial) <= 1e-12 * max(norm(serial), 1)
+    staged_diag = cache_diagnostics(staged_cache).environments
+    if Base.Threads.nthreads() > 1
+        @test staged_diag.staged_batches >= 1
+        @test staged_diag.staged_tasks >= 2
+        @test staged_diag.staged_admitted_bytes > 0
+        @test staged_diag.last_fallback == :none
+    else
+        @test staged_diag.staged_batches == 0
+        @test staged_diag.serial_fallbacks >= 1
+        @test staged_diag.last_fallback == :single_thread
+    end
+
+    # A worker exception happens before the deterministic commit phase, so no
+    # sibling-final candidate can leak into the cache. The classified failure
+    # remains observable and the same cache is immediately reusable.
+    if Base.Threads.nthreads() > 1
+        failure_cache = EnvCache(
+            topo;
+            threaded_envs=true,
+            env_staging_minbatch=2,
+            env_staging_memory_cap_bytes=typemax(Int),
+        )
+        sibling_keys = Tuple{Int,Int}[
+            (w, root) for w in neighbors(topo, root)
+            if w != excluded_child
+        ]
+        @test_throws CompositeException _CP._ensure_environment_prerequisites!(
+            failure_cache,
+            ket,
+            O,
+            bra,
+            key...;
+            execute_candidate=_ -> error("injected staging worker failure"),
+        )
+        @test all(k -> !haskey(failure_cache, k), sibling_keys)
+        failure_diag = cache_diagnostics(failure_cache).environments
+        @test failure_diag.staged_batches == 0
+        @test failure_diag.staged_tasks == 0
+        @test failure_diag.serial_fallbacks == 1
+        @test failure_diag.last_fallback == :worker_failure
+        recovered = _CP.env!(failure_cache, ket, O, bra, key...)
+        @test norm(recovered - serial) <= 1e-12 * max(norm(serial), 1)
+    end
+
+    capped_cache = EnvCache(
+        topo;
+        threaded_envs=true,
+        env_staging_minbatch=2,
+        env_staging_memory_cap_bytes=0,
+    )
+    capped = _CP.env!(capped_cache, ket, O, bra, key...)
+    @test norm(capped - serial) <= 1e-12 * max(norm(serial), 1)
+    capped_diag = cache_diagnostics(capped_cache).environments
+    @test capped_diag.staged_batches == 0
+    @test capped_diag.serial_fallbacks >= 1
+    @test capped_diag.last_fallback in (:memory_cap, :single_thread)
+
+    # Bounded high-contention invalidation stress: all readers either hit a
+    # valid generation or retry, and every returned value equals the serial
+    # reference. The invalidator changes no tensors, so numerical equality is
+    # exact up to the ordinary contraction tolerance.
+    stress_cache = EnvCache(topo)
+    stress_count = max(8, 2Base.Threads.nthreads())
+    stress_u, stress_v = key
+    stress_results = _concurrent_cache_requests(stress_count) do i
+        if i <= 4
+            _CP.invalidate_node!(stress_cache, root)
+            yield()
+        end
+        _CP.env!(stress_cache, ket, O, bra, stress_u, stress_v)
+    end
+    @test all(
+        E -> norm(E - serial) <= 1e-12 * max(norm(serial), 1),
+        stress_results,
+    )
+    stress_diag = cache_diagnostics(stress_cache).environments
+    @test stress_diag.retry_exhaustions == 0
+    @test stress_diag.entries == length(stress_cache.envs)
+
+    # An invalidation outside the dependency component does not invalidate its
+    # captured stamp; a relevant node update does.
+    leaves_ = collect(Graft.leaves(topo))
+    dependent_leaf = first(leaves_)
+    unrelated_leaf = first(filter(!=(dependent_leaf), leaves_))
+    leaf_key = (dependent_leaf, topo.parent[dependent_leaf])
+    leaf_cache = EnvCache(topo)
+    leaf_env = _CP.env!(leaf_cache, ket, O, bra, leaf_key...)
+    leaf_stamp = leaf_cache.env_stamps[leaf_key]
+    @test leaf_stamp !== nothing
+    _CP.invalidate_node!(leaf_cache, unrelated_leaf)
+    @test _CP._environment_stamp_is_current(
+        leaf_cache, leaf_stamp, ket, O, bra)
+
+    update_tensor!(
+        ket,
+        dependent_leaf,
+        1.01 * ket.tensors[dependent_leaf];
+        gauge=false,
+        caches=(leaf_cache,),
+    )
+    @test !_CP._environment_stamp_is_current(
+        leaf_cache, leaf_stamp, ket, O, bra)
+    rejected = _CP._commit_environment_candidate!(
+        leaf_cache, leaf_key, copy(leaf_env), leaf_stamp, ket, O, bra)
+    @test rejected.status == :stale
+    @test !haskey(leaf_cache, leaf_key)
+    rebuilt = _CP.env!(leaf_cache, ket, O, bra, leaf_key...)
+    rebuilt_ref = _CP._build_env_ncon_reference(
+        ket, O, bra, leaf_key..., leaf_cache.envs)
+    @test norm(rebuilt - rebuilt_ref) <=
+          1e-12 * max(norm(rebuilt_ref), 1)
+
+    # Tensor identity is checked in addition to explicit generations, closing
+    # the write-before-invalidate window and rejecting unannounced replacement.
+    identity_cache = EnvCache(topo)
+    identity_old = _CP.env!(identity_cache, ket, O, bra, leaf_key...)
+    ket.tensors[dependent_leaf] = 0.99 * ket.tensors[dependent_leaf]
+    identity_new = _CP.env!(identity_cache, ket, O, bra, leaf_key...)
+    @test identity_new !== identity_old
+    identity_diag = cache_diagnostics(identity_cache).environments
+    @test identity_diag.stale_build_discards >= 1
+
+    # Cache-wide clear generations reject a candidate captured before clear.
+    clear_cache = EnvCache(topo)
+    clear_candidate = _CP.env!(clear_cache, ket, O, bra, leaf_key...)
+    clear_stamp = clear_cache.env_stamps[leaf_key]
+    empty!(clear_cache)
+    clear_rejected = _CP._commit_environment_candidate!(
+        clear_cache, leaf_key, copy(clear_candidate), clear_stamp,
+        ket, O, bra)
+    @test clear_rejected.status == :stale
+    @test isempty(clear_cache.envs)
+    clear_diag = cache_diagnostics(clear_cache).environments
+    @test clear_diag.stale_build_discards == 1
+    @test clear_diag.retry_exhaustions == 0
+
+    # Clearing inside an overlapping outer transaction invalidates staged work
+    # without corrupting the active-transaction count.
+    transaction_cache = EnvCache(topo)
+    entered = Channel{Nothing}(1)
+    release = Channel{Nothing}(1)
+    transaction = Base.Threads.@spawn begin
+        _CP._with_env_transaction(transaction_cache) do
+            put!(entered, nothing)
+            take!(release)
+        end
+    end
+    take!(entered)
+    empty!(transaction_cache)
+    put!(release, nothing)
+    fetch(transaction)
+    @test transaction_cache.transaction_depth == 0
+    @test isempty(transaction_cache.envs)
+end
+
+@graft_testset "compiled contraction plans: repeated matvec allocation flatness" begin
+    topo = mps_topology(4)
+    phys = allspin(topo)
+    O = ttno_from_opsum(tfi(topo; g=0.43), topo, phys; hermitian=true)
+    ψ = random_ttns(MersenneTwister(1751), ComplexF64, topo, phys, ℂ^3)
+    target = first(topo.children[topo.root])
+    move_center!(ψ, target)
+    cache = EnvCache(topo)
+    map_ = eff_h1(cache, ψ, O, target)
+    input = ψ.tensors[target]
+    map_(input)
+    map_(input)
+
+    cache_before = cache_diagnostics(cache)
+    GC.gc()
+    y4, allocated4 = _repeated_map_allocations(map_, input, 4)
+    GC.gc()
+    y8, allocated8 = _repeated_map_allocations(map_, input, 8)
+    cache_after = cache_diagnostics(cache)
+    @test norm(y8 - y4) <= 1e-12 * max(norm(y4), 1)
+    @test allocated4 > 0
+    @test allocated8 <= 2allocated4 + 65_536
+    @test cache_after.plan_entries == cache_before.plan_entries
+    @test cache_after.rootcap_entries == cache_before.rootcap_entries
+    @test cache_after.shape_plan_hits == cache_before.shape_plan_hits
+    @test cache_after.shape_plan_misses == cache_before.shape_plan_misses
+
+    workspace = workspace_map(map_)
+    workspace(input)
+    workspace(input)
+    workspace_before = workspace_stats(workspace.workspace)
+    GC.gc()
+    wy4, workspace_allocated4 =
+        _repeated_map_allocations(workspace, input, 4)
+    GC.gc()
+    wy8, workspace_allocated8 =
+        _repeated_map_allocations(workspace, input, 8)
+    workspace_after = workspace_stats(workspace.workspace)
+    @test norm(wy8 - y8) <= 1e-12 * max(norm(y8), 1)
+    @test norm(wy4 - y4) <= 1e-12 * max(norm(y4), 1)
+    @test workspace_allocated8 <= 2workspace_allocated4 + 65_536
+    @test workspace_after.allocations == workspace_before.allocations
+    @test workspace_after.buffers == workspace_before.buffers
 end
 
 @graft_testset "compiled contraction plans: mixed-boson post-TDVP2 root h1" begin

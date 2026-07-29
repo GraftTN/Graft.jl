@@ -65,6 +65,19 @@ struct PairStep
 end
 
 """
+    PlannerCandidateFailure
+
+Typed record for a recoverable planner candidate that could not be compiled.
+The planner keeps the deterministic env-first candidate as its safety floor,
+but no longer hides discarded candidate failures.
+"""
+struct PlannerCandidateFailure
+    candidate::Symbol
+    exception::Symbol
+    message::String
+end
+
+"""
 A concrete, cacheable sequence of pair contractions plus dense and
 symmetry-aware metrics.
 
@@ -98,6 +111,7 @@ struct ContractionPlan
     sector_known_temporary_peak_bytes::Float64
     sector_known_permutation_peak_bytes::Float64
     scalar_output::Bool
+    candidate_failures::Tuple{Vararg{PlannerCandidateFailure}}
 end
 
 function ContractionPlan(nslots::Integer, output_slot::Integer,
@@ -115,7 +129,9 @@ function ContractionPlan(nslots::Integer, output_slot::Integer,
                          sector_live_peak_bytes::Real=NaN,
                          sector_known_temporary_peak_bytes::Real=NaN,
                          sector_known_permutation_peak_bytes::Real=NaN,
-                         scalar_output::Bool=false)
+                         scalar_output::Bool=false,
+                         candidate_failures=())
+    failures = Tuple(PlannerCandidateFailure[failure for failure in candidate_failures])
     return ContractionPlan(Int(nslots), Int(output_slot), steps, strategy,
                            Float64(flops), Float64(peak_elements),
                            Float64(sector_flops),
@@ -129,7 +145,7 @@ function ContractionPlan(nslots::Integer, output_slot::Integer,
                            Float64(sector_live_peak_bytes),
                            Float64(sector_known_temporary_peak_bytes),
                            Float64(sector_known_permutation_peak_bytes),
-                           scalar_output)
+                           scalar_output, failures)
 end
 
 # Preserve the pre-live-model positional constructor for downstream users that
@@ -171,7 +187,62 @@ function ContractionPlan(nslots::Integer, output_slot::Integer,
                            Float64(sector_operand_bytes),
                            Float64(sector_live_peak_bytes),
                            Float64(sector_known_temporary_peak_bytes),
-                           Float64(sector_known_permutation_peak_bytes), false)
+                           Float64(sector_known_permutation_peak_bytes), false,
+                           ())
+end
+
+# Preserve the full positional layout that included scalar-output metadata
+# immediately before planner-candidate diagnostics were added.
+function ContractionPlan(nslots::Integer, output_slot::Integer,
+                         steps::Vector{PairStep}, strategy::Symbol,
+                         flops::Real, peak_elements::Real,
+                         sector_flops::Real, sector_peak_elements::Real,
+                         sector_peak_block_elements::Real,
+                         scalar_bytes::Integer, operand_bytes::Real,
+                         live_peak_bytes::Real,
+                         known_temporary_peak_bytes::Real,
+                         known_permutation_peak_bytes::Real,
+                         sector_operand_bytes::Real,
+                         sector_live_peak_bytes::Real,
+                         sector_known_temporary_peak_bytes::Real,
+                         sector_known_permutation_peak_bytes::Real,
+                         scalar_output::Bool)
+    return ContractionPlan(
+        nslots, output_slot, steps;
+        strategy, flops, peak_elements, sector_flops, sector_peak_elements,
+        sector_peak_block_elements, scalar_bytes, operand_bytes,
+        live_peak_bytes, known_temporary_peak_bytes,
+        known_permutation_peak_bytes, sector_operand_bytes,
+        sector_live_peak_bytes, sector_known_temporary_peak_bytes,
+        sector_known_permutation_peak_bytes, scalar_output,
+    )
+end
+
+function _with_candidate_failures(
+        plan::ContractionPlan,
+        failures::Tuple{Vararg{PlannerCandidateFailure}})
+    return ContractionPlan(
+        plan.nslots,
+        plan.output_slot,
+        plan.steps;
+        strategy=plan.strategy,
+        flops=plan.flops,
+        peak_elements=plan.peak_elements,
+        sector_flops=plan.sector_flops,
+        sector_peak_elements=plan.sector_peak_elements,
+        sector_peak_block_elements=plan.sector_peak_block_elements,
+        scalar_bytes=plan.scalar_bytes,
+        operand_bytes=plan.operand_bytes,
+        live_peak_bytes=plan.live_peak_bytes,
+        known_temporary_peak_bytes=plan.known_temporary_peak_bytes,
+        known_permutation_peak_bytes=plan.known_permutation_peak_bytes,
+        sector_operand_bytes=plan.sector_operand_bytes,
+        sector_live_peak_bytes=plan.sector_live_peak_bytes,
+        sector_known_temporary_peak_bytes=plan.sector_known_temporary_peak_bytes,
+        sector_known_permutation_peak_bytes=plan.sector_known_permutation_peak_bytes,
+        scalar_output=plan.scalar_output,
+        candidate_failures=failures,
+    )
 end
 
 """
@@ -361,6 +432,29 @@ PlanKey(kind::Symbol, sig::UInt, shape::Tuple, T::DataType,
         optimize::Bool, memory_weight::Real, sector_aware::Bool) =
     PlanKey(kind, sig, shape, T, optimize, Float64(memory_weight), sector_aware, Inf)
 
+"""
+    PlannerDiagnostics
+
+Stable typed summary of the selected planner candidate, its predicted live
+memory, and any recoverable candidate-compilation failures.
+"""
+struct PlannerDiagnostics
+    strategy::Symbol
+    live_peak_bytes::Float64
+    sector_live_peak_bytes::Float64
+    classification::Symbol
+    candidate_failures::Tuple{Vararg{PlannerCandidateFailure}}
+end
+
+plan_diagnostics(plan::ContractionPlan) =
+    PlannerDiagnostics(
+        plan.strategy,
+        plan.live_peak_bytes,
+        plan.sector_live_peak_bytes,
+        isempty(plan.candidate_failures) ? :selected : :candidate_fallback,
+        plan.candidate_failures,
+    )
+
 """Return all dense and symmetry-aware metrics attached to a compiled plan."""
 plan_metrics(plan::ContractionPlan) =
     (flops=plan.flops,
@@ -378,4 +472,5 @@ plan_metrics(plan::ContractionPlan) =
      sector_known_temporary_peak_bytes=plan.sector_known_temporary_peak_bytes,
      sector_known_permutation_peak_bytes=plan.sector_known_permutation_peak_bytes,
      scalar_output=plan.scalar_output,
-     strategy=plan.strategy)
+     strategy=plan.strategy,
+     candidate_failures=plan.candidate_failures)

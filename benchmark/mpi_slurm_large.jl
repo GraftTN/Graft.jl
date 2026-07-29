@@ -73,9 +73,10 @@ function timed_run(f)
     distributed_barrier(context)
     start = time_ns()
     result = f()
-    local_seconds = [(time_ns() - start) / 1e9]
-    MPI.Allreduce!(local_seconds, MPI.MAX, context.comm)
-    return result, only(local_seconds)
+    rank_seconds = (time_ns() - start) / 1e9
+    maximum_seconds = [rank_seconds]
+    MPI.Allreduce!(maximum_seconds, MPI.MAX, context.comm)
+    return result, only(maximum_seconds), rank_seconds
 end
 
 snapshots, operator, topology = benchmark_fixture()
@@ -83,20 +84,29 @@ run_benchmark() =
     complex_time_krylov(snapshots, operator; distributed=context)
 
 # Compile and populate contraction-plan caches before measuring wall time.
-warmup, _ = timed_run(run_benchmark)
+warmup, _, _ = timed_run(run_benchmark)
 times = Float64[]
+rank_times = Float64[]
 result_ref = Ref(warmup)
 for _ in 1:SAMPLES
-    sample_result, seconds = timed_run(run_benchmark)
+    sample_result, seconds, rank_seconds = timed_run(run_benchmark)
     result_ref[] = sample_result
     rank == root && push!(times, seconds)
+    push!(rank_times, rank_seconds)
 end
 result = result_ref[]
+rank_medians = distributed_allgather(context, median(rank_times))
+rank_rss_bytes = distributed_allgather(context, Int(Sys.maxrss()))
+rank_hosts = distributed_allgather(context, gethostname())
 
 if rank == root
     elapsed = median(times)
+    slowest_rank_seconds = maximum(rank_medians)
+    fastest_rank_seconds = minimum(rank_medians)
+    load_imbalance = slowest_rank_seconds / fastest_rank_seconds
     println(
         "GRAFT_SLURM_RESULT ",
+        "kind=sample_parallel ",
         "ranks=$nranks ",
         "blas_threads=$(BLAS.get_num_threads()) ",
         "julia_threads=$(Threads.nthreads()) ",
@@ -107,6 +117,13 @@ if rank == root
         "median_seconds=$(repr(elapsed)) ",
         "minimum_seconds=$(repr(minimum(times))) ",
         "maximum_seconds=$(repr(maximum(times))) ",
+        "rank_median_min_seconds=$(repr(fastest_rank_seconds)) ",
+        "rank_median_max_seconds=$(repr(slowest_rank_seconds)) ",
+        "load_imbalance=$(repr(load_imbalance)) ",
+        "peak_rss_min_bytes=$(minimum(rank_rss_bytes)) ",
+        "peak_rss_max_bytes=$(maximum(rank_rss_bytes)) ",
+        "peak_rss_aggregate_bytes=$(sum(rank_rss_bytes)) ",
+        "hosts=$(join(rank_hosts, ',')) ",
         "overlap_norm=$(repr(norm(result.overlap))) ",
         "hamiltonian_norm=$(repr(norm(result.hamiltonian))) ",
         "energy_sum_real=$(repr(sum(real, result.values))) ",

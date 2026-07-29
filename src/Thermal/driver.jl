@@ -256,7 +256,9 @@ thermal_expect(traj::PurificationTrajectory, O::TTNO) = thermal_expect(traj.fina
                        prop_grid=:uniform, prop_nsteps=nothing,
                        trajectory=nothing, connected=false,
                        metadata=(;), threaded=false,
-                       minbatch=2) -> CorrelatorSeries
+                       minbatch=2,
+                       task_memory_cap_bytes=nothing,
+                       task_workspace_memory_bytes=nothing) -> CorrelatorSeries
 
 Thermal correlator `C_AB(τ) = tr(e^{-(β-τ)K} A e^{-τK} B) / Z` using the stable
 β-τ preparation formula (§05 plan §1.3, §2.5).
@@ -278,6 +280,14 @@ operators, not model-specific constants such as `N - 1`.
 `A` and `B` are `site => op` local insertions. The returned series does NOT
 include a fermionic minus sign; the caller constructs `G(τ) = -C_{d,d†}(τ)`
 explicitly.
+
+Threaded execution is fail-closed. `task_memory_cap_bytes` bounds retained
+checkpoints/results plus every concurrently admitted item.
+`task_workspace_memory_bytes` is the measured conservative scratch allowance
+for one evolver/solver item; because an arbitrary `Evolver` does not expose a
+generic workspace-size oracle, omitting it forces an observable
+`:missing_task_workspace_memory` serial fallback. Returned metadata contains
+the complete fan-out diagnostics.
 """
 function thermal_correlator(rep::Purified, problem::PurificationProblem,
                            A, B, beta::Real, taus;
@@ -288,8 +298,16 @@ function thermal_correlator(rep::Purified, problem::PurificationProblem,
                            connected::Bool=false,
                            metadata::NamedTuple=(;),
                            threaded::Bool=false,
-                           minbatch::Integer=2)
+                           minbatch::Integer=2,
+                           task_memory_cap_bytes::Union{Nothing,Integer}=nothing,
+                           task_workspace_memory_bytes::Union{Nothing,Integer}=nothing)
     minbatch >= 1 || throw(ArgumentError("minbatch must be positive"))
+    task_memory_cap_bytes === nothing || task_memory_cap_bytes >= 0 ||
+        throw(ArgumentError("task_memory_cap_bytes must be nonnegative"))
+    task_workspace_memory_bytes === nothing ||
+        task_workspace_memory_bytes >= 0 ||
+        throw(ArgumentError(
+            "task_workspace_memory_bytes must be nonnegative"))
     beta_value = Float64(beta)
     beta_value >= 0 || throw(ArgumentError("beta must be nonnegative"))
     tau_values = Float64.(collect(taus))
@@ -332,12 +350,36 @@ function thermal_correlator(rep::Purified, problem::PurificationProblem,
     tau_items = [(i, tau, state_at(traj, beta_value - tau; atol=1e-10))
                  for (i, tau) in enumerate(tau_values)]
     vals = Vector{ComplexF64}(undef, length(tau_values))
-    threaded_foreach(tau_items; threaded, minbatch) do item
+    state_payloads = [_thermal_ttns_payload_bytes(item[3].psi)
+                      for item in tau_items]
+    retained_memory_bytes = sum(state_payloads; init=0) +
+        Base.summarysize(evolver_template) +
+        sizeof(eltype(vals)) * length(vals)
+    item_memory_bytes = [
+        4 * payload + Base.summarysize(evolver_template) +
+            something(task_workspace_memory_bytes, 0)
+        for payload in state_payloads
+    ]
+    missing_workspace_model = threaded &&
+        task_workspace_memory_bytes === nothing
+    fanout = bounded_threaded_foreach(
+        tau_items;
+        threaded=threaded && !missing_workspace_model,
+        minbatch,
+        retained_memory_bytes,
+        memory_cap_bytes=task_memory_cap_bytes,
+        item_memory_bytes=(index, _) -> item_memory_bytes[index],
+        item_id=(index, item) -> (; tau_index=index, tau=item[2]),
+    ) do item
         i, tau, state_b = item
         l_b = state_b.log_amplitude
 
-        bra = apply_local(state_b.psi, adjoint(Aop), Asite)
-        ket = apply_local(state_b.psi, Bop, Bsite)
+        # TTNS `copy` is intentionally structural and may retain TensorMap
+        # block storage. Give bra and ket separate deep clones: in addition to
+        # isolating different τ tasks, this prevents normalization/evolution
+        # of ket from mutating backing arrays still observed by bra.
+        bra = apply_local(deepcopy(state_b.psi), adjoint(Aop), Asite)
+        ket = apply_local(deepcopy(state_b.psi), Bop, Bsite)
         n_ket = norm(ket)
         if iszero(n_ket)
             vals[i] = 0
@@ -362,12 +404,49 @@ function thermal_correlator(rep::Purified, problem::PurificationProblem,
             vals[i] = exp(2 * l_b + l_k - 2 * l_beta) * overlap
         end
     end
+    missing_workspace_model &&
+        (fanout = _thermal_fanout_fallback(
+            fanout, :missing_task_workspace_memory))
 
     meta = merge(metadata, (; beta=Float64(beta), Asite, Bsite,
                              connected,
                              centering=connected ? :thermal_mean_insertion : :none,
-                             Abar, Bbar, evolver_type=typeof(evolver),))
+                             Abar, Bbar, evolver_type=typeof(evolver),
+                             fanout,))
     return CorrelatorSeries(tau_values, vals, meta)
+end
+
+function _thermal_fanout_fallback(
+    diagnostics::BoundedFanoutDiagnostics,
+    fallback::Symbol,
+)
+    return BoundedFanoutDiagnostics(
+        diagnostics.mode,
+        fallback,
+        diagnostics.item_count,
+        diagnostics.worker_limit,
+        diagnostics.batch_count,
+        diagnostics.max_batch_items,
+        diagnostics.retained_memory_bytes,
+        diagnostics.peak_admitted_bytes,
+        diagnostics.memory_cap_bytes,
+        diagnostics.completed_items,
+        diagnostics.cancelled_items,
+    )
+end
+
+function _thermal_tensor_payload_bytes(tensor)
+    bytes = 0
+    for (_, block_) in blocks(tensor)
+        T = eltype(block_)
+        bytes += isbitstype(T) ? sizeof(T) * length(block_) :
+            Base.summarysize(block_)
+    end
+    return bytes
+end
+
+function _thermal_ttns_payload_bytes(psi::TTNS)
+    return sum(_thermal_tensor_payload_bytes, psi.tensors; init=0)
 end
 
 function _check_evolver_no_normalize(evolver)

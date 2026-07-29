@@ -21,6 +21,9 @@ Base.@kwdef mutable struct GSE_TDVP <: Evolver
     rsvd_poweriter::Int = 0
     rsvd_threaded::Bool = Base.Threads.nthreads() > 1
     rsvd_minbatch::Int = max(2, Base.Threads.nthreads())
+    rsvd_memory_cap_bytes::Union{Nothing,Int} = nothing
+    rsvd_task_workspace_bytes::Union{Nothing,Int} = nothing
+    rsvd_fanout_diagnostics::Union{Nothing,Base.RefValue} = nothing
     enr_rtol::Float64 = 1e-10
     enr_atol::Float64 = 1e-12
     krylovdim::Int = 30
@@ -57,6 +60,9 @@ Base.@kwdef mutable struct LSE_TDVP <: Evolver
     rsvd_poweriter::Int = 0
     rsvd_threaded::Bool = Base.Threads.nthreads() > 1
     rsvd_minbatch::Int = max(2, Base.Threads.nthreads())
+    rsvd_memory_cap_bytes::Union{Nothing,Int} = nothing
+    rsvd_task_workspace_bytes::Union{Nothing,Int} = nothing
+    rsvd_fanout_diagnostics::Union{Nothing,Base.RefValue} = nothing
     enr_rtol::Float64 = 1e-10
     enr_atol::Float64 = 1e-12
     krylovdim::Int = 30
@@ -156,11 +162,13 @@ function _log_subspace_tdvp_start(name::String, ev, ψ::TTNS, H::TTNO,
     rsvd_poweriter = ev.rsvd_poweriter
     rsvd_threaded = ev.rsvd_threaded
     rsvd_minbatch = ev.rsvd_minbatch
+    rsvd_memory_cap_bytes = ev.rsvd_memory_cap_bytes
+    rsvd_task_workspace_bytes = ev.rsvd_task_workspace_bytes
     trunc_maxdim = ev.trunc.maxdim
     trunc_atol = ev.trunc.atol
     trunc_rtol = ev.trunc.rtol
     trunc_discarded_weight = ev.trunc.discarded_weight
-    @info "$name step start" dz order nodes physical_sites bonds center_site initial_maxbond krylovdim tol hermitian cache_reused expand_scheme max_add mixing enr_rtol enr_atol rsvd_oversample rsvd_poweriter rsvd_threaded rsvd_minbatch trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight
+    @info "$name step start" dz order nodes physical_sites bonds center_site initial_maxbond krylovdim tol hermitian cache_reused expand_scheme max_add mixing enr_rtol enr_atol rsvd_oversample rsvd_poweriter rsvd_threaded rsvd_minbatch rsvd_memory_cap_bytes rsvd_task_workspace_bytes trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight
     return nothing
 end
 
@@ -195,6 +203,13 @@ function _prepare_subspace_expansion!(ev, ψ::TTNS, H::TTNO, dz::Number, name::S
     ev.max_add >= 0 || throw(ArgumentError("$name: max_add must be nonnegative"))
     ev.mixing >= 0 || throw(ArgumentError("$name: mixing must be nonnegative"))
     ev.rsvd_minbatch >= 1 || throw(ArgumentError("$name: rsvd_minbatch must be positive"))
+    ev.rsvd_memory_cap_bytes === nothing ||
+        ev.rsvd_memory_cap_bytes >= 0 ||
+        throw(ArgumentError("$name: rsvd_memory_cap_bytes must be nonnegative"))
+    ev.rsvd_task_workspace_bytes === nothing ||
+        ev.rsvd_task_workspace_bytes >= 0 ||
+        throw(ArgumentError(
+            "$name: rsvd_task_workspace_bytes must be nonnegative"))
     if ev.cache === nothing || ev.cache.topo != ψ.topo
         ev.cache = EnvCache(ψ.topo)
     end
@@ -212,6 +227,9 @@ function _expand_all_bonds!(ev, ψ::TTNS, H::TTNO, cache::EnvCache; rev::Bool)
                 rsvd_poweriter=ev.rsvd_poweriter,
                 rsvd_threaded=ev.rsvd_threaded,
                 rsvd_minbatch=ev.rsvd_minbatch,
+                rsvd_memory_cap_bytes=ev.rsvd_memory_cap_bytes,
+                rsvd_task_workspace_bytes=ev.rsvd_task_workspace_bytes,
+                rsvd_fanout_diagnostics=ev.rsvd_fanout_diagnostics,
                 contraction_optimize=ev.contraction_optimize,
                 contraction_sector_aware=ev.contraction_sector_aware,
                 threaded_channels=ev.threaded_channels,

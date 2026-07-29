@@ -44,7 +44,8 @@ export AbstractTensorMap, TensorMap, DiagonalTensorMap, id, isometry, unitary,
 export left_orth, right_orth, left_null, qr_compact, svd_compact, svd_trunc,
     svd_vals, truncrank, trunctol, truncerror, notrunc
 # contraction primitives
-export @tensor, ncon, contract_pair, pair_cost, space_signature,
+export @tensor, ncon, contract_pair, pair_cost, pair_workload_profile,
+    space_signature,
     sector_cost_supported, sector_cost_nontrivial, sector_block_peak,
     tensor_scalar, contract_pair!, allocate_contract_pair,
     contract_pair_compatible
@@ -301,6 +302,60 @@ function pair_cost(A::TensorMapSpace, pA::Tuple, conjA::Bool,
             peak_block_elements=max(largest, output_largest),
             supported=supported)
 end
+
+"""
+    pair_workload_profile(A, pA, conjA, B, pB, conjB, pAB)
+
+Return the exact structural GEMM block dimensions and transform payload sizes
+for one planned TensorKit pair contraction. This is Tier-0 observability for
+production workload histograms; it executes no numerical contraction.
+"""
+function pair_workload_profile(A::TensorMapSpace, pA::Tuple, conjA::Bool,
+                               B::TensorMapSpace, pB::Tuple, conjB::Bool,
+                               pAB::Tuple)
+    A′, pA′ = _conjugated_structure(A, pA, conjA)
+    B′, pB′ = _conjugated_structure(B, pB, conjB)
+    LA = TensorKit.permute(A′, pA′)
+    LB = TensorKit.permute(B′, pB′)
+    product_space = TensorKit.compose(LA, LB)
+    output = TensorOperations.tensorcontract(
+        A, pA, conjA, B, pB, conjB, pAB)
+    gemms = NamedTuple[]
+    for q in TensorKit.blocksectors(product_space)
+        TensorKit.hasblock(LA, q) && TensorKit.hasblock(LB, q) || continue
+        m = TensorKit.blockdim(codomain(LA), q)
+        k = TensorKit.blockdim(domain(LA), q)
+        k == TensorKit.blockdim(codomain(LB), q) ||
+            throw(ArgumentError("incompatible planned sector block $q"))
+        n = TensorKit.blockdim(domain(LB), q)
+        push!(gemms, (; sector=q, m=Int(m), k=Int(k), n=Int(n)))
+    end
+    transforms = (;
+        left_permuted_elements=Int(dim(LA)),
+        right_permuted_elements=Int(dim(LB)),
+        product_elements=Int(dim(product_space)),
+        output_elements=Int(dim(output)),
+    )
+    return (; output, gemms, transforms)
+end
+
+pair_workload_profile(A::AbstractTensorMap, pA::Tuple, conjA::Bool,
+                      B::AbstractTensorMap, pB::Tuple, conjB::Bool,
+                      pAB::Tuple) =
+    pair_workload_profile(
+        space(A), pA, conjA, space(B), pB, conjB, pAB)
+
+pair_workload_profile(A::TensorMapSpace, pA::Tuple, conjA::Bool,
+                      B::AbstractTensorMap, pB::Tuple, conjB::Bool,
+                      pAB::Tuple) =
+    pair_workload_profile(
+        A, pA, conjA, space(B), pB, conjB, pAB)
+
+pair_workload_profile(A::AbstractTensorMap, pA::Tuple, conjA::Bool,
+                      B::TensorMapSpace, pB::Tuple, conjB::Bool,
+                      pAB::Tuple) =
+    pair_workload_profile(
+        space(A), pA, conjA, B, pB, conjB, pAB)
 
 """
     pair_cost(dimsA, openA, contractA, dimsB, openB; memory_weight=0) -> Float64

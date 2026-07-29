@@ -22,9 +22,17 @@ replacement for TensorOperations' exact optimizer: it only supplies a bounded
 candidate, and the Phase-1 env-first plan remains the memory-safe floor during
 selection below.
 """
+struct _GreedyNode
+    tree::Any
+    labels::Vector{Int}
+    dims::Vector{Int}
+end
+
 function _greedy_tree(spec::ContractionSpec, dims::Vector{Vector{Int}})
-    nodes = [(tree=i, labels=copy(spec.labels[i]), dims=copy(dims[i]))
-             for i in eachindex(spec.labels)]
+    nodes = _GreedyNode[
+        _GreedyNode(i, copy(spec.labels[i]), copy(dims[i]))
+        for i in eachindex(spec.labels)
+    ]
     while length(nodes) > 1
         best_i, best_j = 0, 0
         best_metrics = nothing
@@ -48,8 +56,11 @@ function _greedy_tree(spec::ContractionSpec, dims::Vector{Vector{Int}})
             best_metrics = dense_cost(nodes[best_i].labels, nodes[best_i].dims,
                                       nodes[best_j].labels, nodes[best_j].dims)
         end
-        merged = (tree=Any[nodes[best_i].tree, nodes[best_j].tree],
-                  labels=best_metrics.labels, dims=best_metrics.dims)
+        merged = _GreedyNode(
+            Any[nodes[best_i].tree, nodes[best_j].tree],
+            best_metrics.labels,
+            best_metrics.dims,
+        )
         nodes[best_i] = merged
         deleteat!(nodes, best_j)
     end
@@ -602,70 +613,70 @@ Base.@noinline function plan_contraction(
         return heuristic
     end
     candidates = ContractionPlan[heuristic]
+    candidate_failures = PlannerCandidateFailure[]
+    record_failure!(candidate::Symbol, err) =
+        push!(candidate_failures,
+              PlannerCandidateFailure(candidate, nameof(typeof(err)),
+                                      sprint(showerror, err)))
 
     use_sector_model = sector_aware && structural_metrics
     if use_sector_model
         for tree in _sector_dp_trees(spec, dims, protos)
-            try
-                push!(candidates,
-                      _compile_plan(tree, spec, dims, protos;
-                                    strategy=:sector_exact,
-                                    structural_metrics=structural_metrics,
-                                    canonical_intermediates=true,
-                                    scalar_type=scalar_type))
-            catch err
-                err isa InterruptException && rethrow()
-            end
+            # These trees and their compiler are both owned here. Any failure
+            # is therefore an invariant violation, not a recoverable missing
+            # candidate, and must fail closed.
+            push!(candidates,
+                  _compile_plan(tree, spec, dims, protos;
+                                strategy=:sector_exact,
+                                structural_metrics=structural_metrics,
+                                canonical_intermediates=true,
+                                scalar_type=scalar_type))
         end
     end
 
     # A FLOP-optimal tree is the ecosystem candidate required by Phase 2. For
     # bigger maps the bounded greedy tree is the only search candidate.
     if length(spec.labels) <= _EXACT_TENSOR_LIMIT
-        try
+        dense_tree = try
+            _optimaltree(spec, label_dims)
+        catch err
+            err isa InterruptException && rethrow()
+            # TensorOperations' optimizer is an optional candidate source.
+            # Failure before it returns a tree is recoverable and observable;
+            # compilation of a returned tree remains an owned invariant.
+            record_failure!(:dense_optimal, err)
+            nothing
+        end
+        if dense_tree !== nothing
             push!(candidates,
-                  _compile_plan(_optimaltree(spec, label_dims), spec, dims, protos;
+                  _compile_plan(dense_tree, spec, dims, protos;
                                 strategy=:dense_optimal,
                                 structural_metrics=structural_metrics,
                                 scalar_type=scalar_type))
-        catch err
-            err isa InterruptException && rethrow()
         end
         # This independently minimises each next intermediate's peak before
         # FLOPs, supplying a usable memory-sensitive candidate rather than
         # treating the single FLOP tree as the entire Phase-2 search space.
-        try
-            push!(candidates,
-                  _compile_plan(_greedy_tree(spec, dims), spec, dims, protos;
-                                strategy=:memory_greedy,
-                                structural_metrics=structural_metrics,
-                                scalar_type=scalar_type))
-        catch err
-            err isa InterruptException && rethrow()
-        end
+        push!(candidates,
+              _compile_plan(_greedy_tree(spec, dims), spec, dims, protos;
+                            strategy=:memory_greedy,
+                            structural_metrics=structural_metrics,
+                            scalar_type=scalar_type))
     else
         if isfinite(cap)
             for tree in _memory_beam_trees(spec, dims)
-                try
-                    push!(candidates,
-                          _compile_plan(tree, spec, dims, protos;
-                                        strategy=:memory_beam,
-                                        structural_metrics=structural_metrics,
-                                        scalar_type=scalar_type))
-                catch err
-                    err isa InterruptException && rethrow()
-                end
-            end
-        else
-            try
                 push!(candidates,
-                      _compile_plan(_greedy_tree(spec, dims), spec, dims, protos;
-                                    strategy=:dense_greedy,
+                      _compile_plan(tree, spec, dims, protos;
+                                    strategy=:memory_beam,
                                     structural_metrics=structural_metrics,
                                     scalar_type=scalar_type))
-            catch err
-                err isa InterruptException && rethrow()
             end
+        else
+            push!(candidates,
+                  _compile_plan(_greedy_tree(spec, dims), spec, dims, protos;
+                                strategy=:dense_greedy,
+                                structural_metrics=structural_metrics,
+                                scalar_type=scalar_type))
         end
     end
 
@@ -684,5 +695,6 @@ Base.@noinline function plan_contraction(
         throw(ArgumentError("no contraction plan fits memory_cap_bytes=$cap; " *
                             "env-first requires at least " *
                             "$(max(heuristic.live_peak_bytes, heuristic.sector_live_peak_bytes)) bytes"))
-    return best
+    return isempty(candidate_failures) ? best :
+           _with_candidate_failures(best, Tuple(candidate_failures))
 end
