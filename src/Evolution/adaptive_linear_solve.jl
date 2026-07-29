@@ -191,7 +191,16 @@ struct ResidualExpansionEdgeReport
     embedding_error::Float64
 end
 
-"""Diagnostics for one all-edge residual-driven scoring and expansion round."""
+"""
+Diagnostics for one residual-driven expansion round.
+
+The round interleaves all-edge scoring with one state-preserving splice at a
+time. Each edge report therefore aggregates the round: ranks are the initial
+and final ranks, requested and added ranks are cumulative, and the reported
+weight is the largest score at which a selected edge was chosen (or the final
+score for an unselected edge). `weight_threshold` is the smallest deterministic
+selection threshold encountered while rescoring.
+"""
 struct ResidualExpansionReport
     edges::Vector{ResidualExpansionEdgeReport}
     selected_edges::Int
@@ -522,18 +531,27 @@ function _rde_possible_add(
 end
 
 function _rde_score_edges!(
-        ψ::TTNS, residual::TTNS, policy::ResidualDrivenExpansion)
+        ψ::TTNS,
+        residual::TTNS,
+        policy::ResidualDrivenExpansion,
+        requested::Dict{Int,Int}=Dict{Int,Int}())
     t = topology(ψ)
-    gauge_cache = EnvCache(t)
     candidates = _RDECandidate[]
     for (child, parent) in edges(t)
-        move_center!(ψ, child; cache=gauge_cache)
-        A = ψ.tensors[child]
+        # Scoring must not gauge-sweep the staged state itself. A freshly
+        # zero-padded bond is an enlarged variational manifold even though the
+        # represented vector still has its old Schmidt rank; a thin QR center
+        # move across that bond may legitimately remove the zero direction.
+        # Gauge an edge-local copy so later candidates see every splice that
+        # the round has already installed.
+        edge_state = copy(ψ)
+        move_center!(edge_state, child)
+        A = edge_state.tensors[child]
         predictor = _rde_local_residual_tensor(
-            ψ, residual, child, parent)
+            edge_state, residual, child, parent)
         rank_before = dim(domain(A))
         room = min(
-            policy.max_add,
+            max(policy.max_add - get(requested, child, 0), 0),
             max(policy.trunc.maxdim - rank_before, 0),
         )
         weight = _rde_uncovered_weight(A, predictor)
@@ -550,10 +568,9 @@ function _rde_score_edges!(
     return candidates
 end
 
-function _rde_select_candidates(
+function _rde_scoring_threshold(
         candidates::Vector{_RDECandidate},
-        policy::ResidualDrivenExpansion,
-        remaining_add::Int)
+        policy::ResidualDrivenExpansion)
     maximum_weight = maximum(
         (candidate.weight for candidate in candidates);
         init=0.0,
@@ -562,88 +579,127 @@ function _rde_select_candidates(
         policy.weight_atol,
         policy.weight_rtol * maximum_weight,
     )
-    eligible = [
-        candidate for candidate in candidates
-        if candidate.weight > threshold && candidate.possible_add > 0
-    ]
-    sort!(eligible; by=candidate -> (-candidate.weight, candidate.child))
-
-    requested = Dict{Int,Int}()
-    remaining = min(remaining_add, policy.max_total_add)
-    for candidate in eligible
-        length(requested) >= policy.max_edges && break
-        remaining == 0 && break
-        add = min(candidate.possible_add, remaining)
-        add > 0 || continue
-        requested[candidate.child] = add
-        remaining -= add
-    end
-    return requested, threshold
+    return threshold, maximum_weight
 end
 
-function _rde_splice_selected!(
+function _rde_choose_candidate(
+        candidates::Vector{_RDECandidate},
+        policy::ResidualDrivenExpansion,
+        remaining_add::Int,
+        selected::Set{Int})
+    threshold, maximum_weight = _rde_scoring_threshold(
+        candidates, policy)
+    remaining_add > 0 || return nothing, 0, threshold, maximum_weight
+    eligible = _RDECandidate[
+        candidate for candidate in candidates
+        if candidate.weight > threshold &&
+            candidate.possible_add > 0 &&
+            !(candidate.child in selected) &&
+            length(selected) < policy.max_edges
+    ]
+    sort!(eligible; by=candidate -> (-candidate.weight, candidate.child))
+    isempty(eligible) &&
+        return nothing, 0, threshold, maximum_weight
+    candidate = first(eligible)
+    request = min(candidate.possible_add, remaining_add)
+    return candidate, request, threshold, maximum_weight
+end
+
+function _rde_splice_candidate!(
         ψ::TTNS,
         residual::TTNS,
-        candidates::Vector{_RDECandidate},
-        requested::Dict{Int,Int},
+        candidate::_RDECandidate,
+        request::Int,
         policy::ResidualDrivenExpansion)
     t = topology(ψ)
     gauge_cache = EnvCache(t)
-    added = Dict{Int,Int}()
-    errors = Dict{Int,Float64}()
-    selected = sort(
-        [candidate for candidate in candidates
-         if haskey(requested, candidate.child)];
-        by=candidate -> (-candidate.weight, candidate.child),
+    child, parent = candidate.child, candidate.parent
+    move_center!(ψ, child; cache=gauge_cache)
+    A = ψ.tensors[child]
+    predictor = _rde_local_residual_tensor(
+        ψ, residual, child, parent)
+    rank_before = dim(domain(A))
+    request <= candidate.rank_room ||
+        throw(ArgumentError(
+            "residual_expand!: requested rank exceeds the current edge budget"))
+    enrichment = _rde_enrichment_predictor(
+        A, predictor, request, policy)
+    enrichment === nothing && return 0, 0.0
+    U, R = Contractions._expand_enrich_split(
+        A,
+        enrichment;
+        maxdim=min(policy.trunc.maxdim, rank_before + request),
+        max_add=request,
+        enr_rtol=0.0,
+        enr_atol=0.0,
     )
-    for candidate in selected
-        child, parent = candidate.child, candidate.parent
-        move_center!(ψ, child; cache=gauge_cache)
-        A = ψ.tensors[child]
-        predictor = _rde_local_residual_tensor(
-            ψ, residual, child, parent)
-        rank_before = dim(domain(A))
-        request = requested[child]
-        enrichment = _rde_enrichment_predictor(
-            A, predictor, request, policy)
-        if enrichment === nothing
-            added[child] = 0
-            errors[child] = 0.0
-            continue
-        end
-        U, R = Contractions._expand_enrich_split(
-            A,
-            enrichment;
-            maxdim=min(policy.trunc.maxdim, rank_before + request),
-            max_add=request,
-            enr_rtol=0.0,
-            enr_atol=0.0,
-        )
-        rank_added = dim(domain(U)) - rank_before
-        rank_added >= 0 ||
-            throw(ArgumentError("residual_expand!: enrichment reduced a bond"))
-        rank_added <= request ||
-            throw(ArgumentError(
-                "residual_expand!: enrichment exceeded the allocated rank"))
-        embedding_error = Float64(norm(A - U * R))
-        isfinite(embedding_error) ||
-            throw(ArgumentError(
-                "residual_expand!: non-finite state-embedding error"))
-        added[child] = rank_added
-        errors[child] = embedding_error
-        rank_added == 0 && continue
+    rank_added = dim(domain(U)) - rank_before
+    rank_added >= 0 ||
+        throw(ArgumentError("residual_expand!: enrichment reduced a bond"))
+    rank_added <= request ||
+        throw(ArgumentError(
+            "residual_expand!: enrichment exceeded the allocated rank"))
+    embedding_error = Float64(norm(A - U * R))
+    isfinite(embedding_error) ||
+        throw(ArgumentError(
+            "residual_expand!: non-finite state-embedding error"))
+    rank_added == 0 && return 0, embedding_error
 
-        ψ.tensors[child] = U
-        link = Networks._pivotal_link(R)
-        ψ.tensors[parent] = absorb_on_leg(
-            ψ.tensors[parent],
-            link,
-            childslot(t, parent, child),
+    ψ.tensors[child] = U
+    link = Networks._pivotal_link(R)
+    ψ.tensors[parent] = absorb_on_leg(
+        ψ.tensors[parent],
+        link,
+        childslot(t, parent, child),
+    )
+    ψ.center = parent
+    invalidate_edge!(gauge_cache, child, parent)
+    return rank_added, embedding_error
+end
+
+mutable struct _RDEEdgeRoundAccumulator
+    rank_before::Int
+    final_weight::Float64
+    final_relative_weight::Float64
+    selected_weight::Float64
+    selected_relative_weight::Float64
+    requested_rank::Int
+    added_rank::Int
+    embedding_error::Float64
+end
+
+function _rde_round_accumulators(
+        ψ::TTNS, candidates::Vector{_RDECandidate})
+    accumulators = Dict{Int,_RDEEdgeRoundAccumulator}()
+    for candidate in candidates
+        accumulators[candidate.child] = _RDEEdgeRoundAccumulator(
+            candidate.rank_before,
+            candidate.weight,
+            0.0,
+            0.0,
+            0.0,
+            0,
+            0,
+            0.0,
         )
-        ψ.center = parent
-        invalidate_edge!(gauge_cache, child, parent)
     end
-    return added, errors
+    length(accumulators) == length(edges(topology(ψ))) ||
+        throw(ArgumentError(
+            "residual_expand!: scoring did not cover every tree edge"))
+    return accumulators
+end
+
+function _rde_record_scores!(
+        accumulators::Dict{Int,_RDEEdgeRoundAccumulator},
+        candidates::Vector{_RDECandidate},
+        maximum_weight::Float64)
+    for candidate in candidates
+        accumulator = accumulators[candidate.child]
+        accumulator.final_weight = candidate.weight
+        accumulator.final_relative_weight = iszero(maximum_weight) ? 0.0 :
+            candidate.weight / maximum_weight
+    end
+    return accumulators
 end
 
 function _rde_expansion_stop_reason(
@@ -687,9 +743,11 @@ end
                  remaining_add=policy.max_total_add) -> (ψ, report)
 
 Score every tree edge by the norm of the exact residual component outside the
-current child-side bond basis. Edges are selected by descending uncovered
-weight, with child index as the deterministic tie-break, then bounded by the
-per-edge, edge-count, global, and final-rank budgets.
+current child-side bond basis. Choose the largest eligible edge, splice it,
+then rescore every edge before choosing again. This allows a state-preserving
+splice to make an adjacent residual direction representable within the same
+round. Ties use the child index, and the cumulative round remains bounded by
+the per-edge, distinct-edge-count, global, and final-rank budgets.
 
 Selected residual directions are inserted through the existing enrichment
 split. The old tensor is factored exactly through the enlarged isometry, so
@@ -712,52 +770,100 @@ function residual_expand!(
 
     stage = copy(ψ)
     original_center = center(stage)
-    candidates = _rde_score_edges!(stage, residual, policy)
-    requested, threshold = _rde_select_candidates(
-        candidates,
-        policy,
-        remaining,
-    )
-    added, errors = _rde_splice_selected!(
-        stage,
-        residual,
-        candidates,
-        requested,
-        policy,
-    )
+    requested = Dict{Int,Int}()
+    selected = Set{Int}()
+    candidates = _rde_score_edges!(
+        stage, residual, policy, requested)
+    accumulators = _rde_round_accumulators(stage, candidates)
+    thresholds = Float64[]
+    remaining_round = remaining
+
+    while true
+        candidate, request, threshold, maximum_weight =
+            _rde_choose_candidate(
+                candidates,
+                policy,
+                remaining_round,
+                selected,
+            )
+        push!(thresholds, threshold)
+        _rde_record_scores!(
+            accumulators, candidates, maximum_weight)
+        candidate === nothing && break
+
+        child = candidate.child
+        accumulator = accumulators[child]
+        push!(selected, child)
+        requested[child] = get(requested, child, 0) + request
+        accumulator.requested_rank += request
+        candidate.weight > accumulator.selected_weight &&
+            begin
+                accumulator.selected_weight = candidate.weight
+                accumulator.selected_relative_weight =
+                    iszero(maximum_weight) ? 0.0 :
+                    candidate.weight / maximum_weight
+            end
+        rank_added, embedding_error = _rde_splice_candidate!(
+            stage,
+            residual,
+            candidate,
+            request,
+            policy,
+        )
+        accumulator.added_rank += rank_added
+        accumulator.embedding_error = max(
+            accumulator.embedding_error, embedding_error)
+        remaining_round -= rank_added
+
+        # A rescore is intentional even when a budget has just been exhausted:
+        # it validates the final staged state and leaves coherent final scores.
+        candidates = _rde_score_edges!(
+            stage, residual, policy, requested)
+    end
     move_center!(stage, original_center)
 
-    maximum_weight = maximum(
-        (candidate.weight for candidate in candidates);
-        init=0.0,
-    )
     reports = ResidualExpansionEdgeReport[]
-    for candidate in candidates
-        child = candidate.child
-        rank_added = get(added, child, 0)
+    t = topology(stage)
+    for (child, parent) in edges(t)
+        accumulator = accumulators[child]
+        was_selected = child in selected
+        rank_after = dim(virtualspace(stage, child))
+        actual_added = rank_after - accumulator.rank_before
+        actual_added >= 0 ||
+            throw(ArgumentError(
+                "residual_expand!: staged gauge transport reduced an existing bond"))
+        actual_added == accumulator.added_rank ||
+            throw(ArgumentError(
+                "residual_expand!: staged gauge transport did not preserve " *
+                "the added rank on edge $(nodeid(t, child))"))
         push!(reports, ResidualExpansionEdgeReport(
-            nodeid(topology(stage), child) =>
-                nodeid(topology(stage), candidate.parent),
-            candidate.rank_before,
-            candidate.rank_before + rank_added,
-            candidate.weight,
-            iszero(maximum_weight) ? 0.0 :
-                candidate.weight / maximum_weight,
-            haskey(requested, child),
-            get(requested, child, 0),
-            rank_added,
-            get(errors, child, 0.0),
+            nodeid(t, child) => nodeid(t, parent),
+            accumulator.rank_before,
+            rank_after,
+            was_selected ? accumulator.selected_weight :
+                accumulator.final_weight,
+            was_selected ? accumulator.selected_relative_weight :
+                accumulator.final_relative_weight,
+            was_selected,
+            accumulator.requested_rank,
+            actual_added,
+            accumulator.embedding_error,
         ))
     end
-    total_added = sum(values(added); init=0)
-    embedding_error = maximum(values(errors); init=0.0)
+    total_added = sum(edge.added_rank for edge in reports; init=0)
+    embedding_error = maximum(
+        accumulator.embedding_error for accumulator in values(accumulators);
+        init=0.0,
+    )
+    threshold = minimum(thresholds; init=policy.weight_atol)
+    final_threshold, _ = _rde_scoring_threshold(candidates, policy)
     stop_reason = _rde_expansion_stop_reason(
         candidates,
         requested,
         total_added,
-        threshold,
+        final_threshold,
         policy,
-        remaining,
+        remaining_round,
     )
     report = ResidualExpansionReport(
         reports,
@@ -765,7 +871,7 @@ function residual_expand!(
         total_added,
         threshold,
         embedding_error,
-        remaining - total_added,
+        remaining_round,
         stop_reason,
     )
     total_added > 0 && _rde_commit!(ψ, stage)

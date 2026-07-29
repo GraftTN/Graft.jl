@@ -275,6 +275,8 @@ end
     @test diagnostic.classification isa PairedLinearClassification
     @test diagnostic.edge_subspace_evidence isa
           Vector{PairedEdgeSubspaceEvidence}
+    @test diagnostic.subspace_evidence_available
+    @test diagnostic.subspace_evidence_stop_reason == :available
     @test diagnostic.classification.residual_driven_residual ==
           diagnostic.residual_driven_report.physical_residuals[end]
     @test diagnostic.classification.two_site_residual ==
@@ -353,6 +355,26 @@ end
     @test isempty(unavailable.principal_cosines)
     @test isnan(unavailable.residual_driven_to_two_site_projection_error)
     @test isnan(unavailable.two_site_to_residual_driven_projection_error)
+
+    saturated = PairedEdgeSubspaceEvidence(
+        :thermal_leaf => :thermal_parent,
+        true,
+        :available,
+        2,
+        2,
+        2,
+        0,
+        0,
+        Float64[],
+        0.0,
+        0.0,
+    )
+    evidence_available, evidence_stop_reason =
+        Graft.Evolution._paired_subspace_evidence_status(
+            [unavailable, saturated])
+    @test !evidence_available
+    @test evidence_stop_reason ==
+          :no_informative_comparable_novel_edges
 
     function rejects_without_mutation(
             residual_candidate, two_site_candidate)

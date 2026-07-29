@@ -3,7 +3,7 @@ using Test
 using Random: Xoshiro
 using LinearAlgebra: norm
 using Graft
-using Graft.TestUtils: random_ttns, to_dense
+using Graft.TestUtils: product_ttns, random_ttns, to_dense
 using Graft.Backend: ℂ, dim, domain
 using Graft.Trees: edges
 
@@ -185,6 +185,69 @@ end
     @test norm(to_dense(ψ) - before) <= 1e-12
     @test report.embedding_error <= 1e-12
     @test center(ψ) == topo.root
+    @test check_arrows(ψ)
+end
+
+@testset "residual-driven adjacent edges rescore within one round" begin
+    topo = mps_topology(3)
+    ψ = product_ttns(
+        ComplexF64,
+        topo,
+        Dict(
+            :site1 => ComplexF64[1, 0],
+            :site2 => ComplexF64[1, 0],
+            :site3 => ComplexF64[1, 0],
+        ),
+    )
+    residual = product_ttns(
+        ComplexF64,
+        topo,
+        Dict(
+            :site1 => ComplexF64[0, 1],
+            :site2 => ComplexF64[0, 1],
+            :site3 => ComplexF64[1, 0],
+        ),
+    )
+    policy = _RDE.ResidualDrivenExpansion(
+        trunc=TruncationScheme(maxdim=2),
+        max_add=1,
+        max_total_add=2,
+        max_edges=2,
+        max_rounds=1,
+        weight_atol=1e-13,
+        weight_rtol=0,
+        enrichment_atol=1e-13,
+        enrichment_rtol=0,
+    )
+
+    initial_candidates = _RDE._rde_score_edges!(
+        copy(ψ), residual, policy)
+    initial_by_child = Dict(
+        nodeid(topo, candidate.child) => candidate
+        for candidate in initial_candidates
+    )
+    @test initial_by_child[:site1].possible_add == 1
+    @test initial_by_child[:site2].possible_add == 0
+    @test initial_by_child[:site2].weight <= policy.weight_atol
+
+    before = to_dense(ψ)
+    before_center = center(ψ)
+    _, report = _RDE.residual_expand!(ψ, residual, policy)
+    edge_reports = Dict(edge.edge.first => edge for edge in report.edges)
+
+    @test report.stop_reason == :expanded
+    @test report.selected_edges == 2
+    @test report.total_added == 2
+    @test edge_reports[:site1].added_rank == 1
+    @test edge_reports[:site2].added_rank == 1
+    @test edge_reports[:site1].requested_rank == 1
+    @test edge_reports[:site2].requested_rank == 1
+    @test edge_reports[:site2].uncovered_weight > policy.weight_atol
+    @test all(edge.added_rank <= policy.max_add for edge in report.edges)
+    @test all(edge.rank_after <= policy.trunc.maxdim for edge in report.edges)
+    @test norm(to_dense(ψ) - before) <= 1e-12
+    @test report.embedding_error <= 1e-12
+    @test center(ψ) == before_center
     @test check_arrows(ψ)
 end
 

@@ -215,13 +215,18 @@ end
 
 Typed reports, per-edge novel-subspace evidence, and physical-residual
 classification from [`paired_linear_diagnostic`](@ref). Both solvers start
-from independent copies of the same input state.
+from independent copies of the same input state. `subspace_evidence_available`
+is true only when at least one comparable edge has a novel direction from
+either solver. Otherwise `subspace_evidence_stop_reason` reports why the
+per-edge evidence cannot support a subspace comparison.
 """
 struct PairedLinearDiagnostic
     residual_driven_report::ResidualDrivenReport
     two_site_report::TwoSiteLinearReport
     classification::PairedLinearClassification
     edge_subspace_evidence::Vector{PairedEdgeSubspaceEvidence}
+    subspace_evidence_available::Bool
+    subspace_evidence_stop_reason::Symbol
 end
 
 """
@@ -304,12 +309,32 @@ function paired_linear_diagnostic(
         residual_driven_state,
         two_site_state,
     )
+    subspace_evidence_available, subspace_evidence_stop_reason =
+        _paired_subspace_evidence_status(edge_subspace_evidence)
     return PairedLinearDiagnostic(
         residual_driven_report,
         two_site_report,
         classification,
         edge_subspace_evidence,
+        subspace_evidence_available,
+        subspace_evidence_stop_reason,
     )
+end
+
+function _paired_subspace_evidence_status(
+        evidence::Vector{PairedEdgeSubspaceEvidence})
+    informative = any(evidence) do edge
+        edge.available &&
+            (edge.residual_driven_novel_rank > 0 ||
+             edge.two_site_novel_rank > 0)
+    end
+    informative && return true, :available
+    isempty(evidence) && return false, :no_edges
+    all(edge -> !edge.available, evidence) &&
+        return false, :incompatible_external_space
+    all(edge -> edge.available, evidence) &&
+        return false, :no_novel_directions
+    return false, :no_informative_comparable_novel_edges
 end
 
 function _paired_edge_subspace_evidence(
