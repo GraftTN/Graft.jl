@@ -136,18 +136,21 @@ merge proof steps and an optimizer log. Both expose the same canonical
 abstract type AbstractTTNOMergePlan end
 
 """
-    DirectSumPlan(provenance, expansions)
+    DirectSumPlan(topology, provenance, expansions)
 
 The uncompressed direct-sum plan: every term expansion is retained channel
-for channel. Primary correctness oracle for all optimized plans.
+for channel. Primary correctness oracle for all optimized plans. Plans are
+self-contained: they carry the topology and the input provenance they were
+built from, and realization fails closed on a provenance mismatch.
 """
 struct DirectSumPlan{Q,C<:Number} <: AbstractTTNOMergePlan
+    topology::TreeTopology
     provenance::BuildInputProvenance
     expansions::Vector{TermTTNOExpansion{Q,C}}
 end
 
 """
-    StateDiagram(provenance, expansions, proofs, log)
+    StateDiagram(topology, provenance, expansions, proofs, log)
 
 The optimized merge plan: the term expansions with their channel copies
 rewritten by proved merges, the typed merge proof steps, and the exact
@@ -156,6 +159,7 @@ state diagram, whose realization view must be field-identical to the
 direct-sum view over the same input (ADR-0003 decision 5).
 """
 struct StateDiagram{Q,C<:Number} <: AbstractTTNOMergePlan
+    topology::TreeTopology
     provenance::BuildInputProvenance
     expansions::Vector{TermTTNOExpansion{Q,C}}
     proofs::Vector{MergeProofStep}

@@ -37,6 +37,7 @@ include("build_input.jl")
 include("ir.jl")
 include("merge_plans.jl")
 include("lowering.jl")
+include("realize.jl")
 include("ir_serialization.jl")
 
 end # module TTNOBuild
