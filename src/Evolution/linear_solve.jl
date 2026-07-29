@@ -1,6 +1,8 @@
-# Variational full-state linear solves on the TTNS manifold. This reuses the
-# GlobalKrylov vector wrapper and direct operator-aware fit compression so all
-# linear-combination and matvec policies stay in one place.
+# Variational full-state linear solves on the TTNS manifold.  The TTNS set at
+# fixed bond dimensions is not a vector space, so projecting every vector
+# operation through fit! does not define the linear map required by GMRES.
+# Instead, solve the variational normal equations one orthogonality center at
+# a time.  Each local effective problem is genuinely linear.
 
 const _LinInfo = NamedTuple{(:converged, :normres, :numiter, :numops),
                             Tuple{Int,Float64,Int,Int}}
@@ -10,9 +12,12 @@ const _LinInfo = NamedTuple{(:converged, :normres, :numiter, :numops),
               tol=1e-10, fit_nsweeps=4, fit_tol=1e-10) -> (ψ, info)
 
 Solve `(a0 * I + a1 * H)ψ = rhs` on the fixed TTNS manifold carried by `ψ`.
-The matrix-vector product contracts `H` directly into the public
-operator-aware `fit!` path; KrylovKit GMRES handles the shifted system. The
-state `ψ` is both the initial guess and the destination.
+One-site alternating sweeps solve the effective linear equation at each
+orthogonality center.  `fit_nsweeps` is the maximum number of full alternating
+sweeps; `krylovdim` and `maxiter` configure each local Krylov solve.  The
+reported residual is the full Hilbert-space norm of
+`rhs - a0*ψ - a1*H*ψ`, evaluated without variational compression.  The state
+`ψ` is both the initial guess and the destination.
 """
 function linsolve!(ψ::TTNS, H::TTNO, rhs::TTNS;
                    a0::Number=one(eltype(ψ)), a1::Number=one(eltype(ψ)),
@@ -23,20 +28,45 @@ function linsolve!(ψ::TTNS, H::TTNO, rhs::TTNS;
                          fit_nsweeps, fit_tol)
     T = eltype(ψ)
     a0T, a1T = convert(T, a0), convert(T, a1)
-    template = copy(ψ)
-    b = _GKState(copy(rhs), template, fit_nsweeps, fit_tol, fit_verbose)
-    x0 = _GKState(copy(ψ), template, fit_nsweeps, fit_tol, fit_verbose)
-    op = _GKOperator(H, template, fit_nsweeps, fit_tol, fit_verbose)
-    y, info = KrylovKit.linsolve(op, b, x0, a0T, a1T;
-                                 krylovdim, maxiter, tol,
-                                 ishermitian=_shifted_ishermitian(H, a0T, a1T),
-                                 isposdef=false)
-    _replace_state!(ψ, y.ψ)
-    infoout = (; converged=info.converged,
-               normres=Float64(info.normres),
-               numiter=info.numiter,
-               numops=info.numops)
+    cache = EnvCache(topology(ψ))
+    order = postorder(topology(ψ))
+    total_iterations = 0
+    total_operations = 0
+    residual = Inf
+    for sweep in 1:fit_nsweeps
+        for n in Iterators.flatten((order, Iterators.reverse(order)))
+            move_center!(ψ, n; cache)
+            effective = eff_h1(cache, ψ, H, n)
+            rhs_cache = Networks._FitCache(topology(ψ), nothing)
+            local_rhs = Networks._fit_local_tensor(
+                [rhs_cache], ψ, (rhs,), T[one(T)], n)
+            local_solution, local_info = KrylovKit.linsolve(
+                effective, local_rhs, ψ.tensors[n], a0T, a1T;
+                krylovdim, maxiter, tol,
+                ishermitian=_shifted_ishermitian(H, a0T, a1T),
+                isposdef=false)
+            total_iterations += local_info.numiter
+            total_operations += local_info.numops
+            update_tensor!(ψ, n, local_solution; caches=(cache,))
+        end
+        residual = _linear_physical_residual(ψ, H, rhs, a0T, a1T)
+        fit_verbose && @info "linsolve! ALS sweep" sweep residual
+        residual <= tol && break
+    end
+    infoout = (; converged=Int(residual <= tol),
+               normres=Float64(residual),
+               numiter=total_iterations,
+               numops=total_operations)
     return ψ, infoout
+end
+
+function _linear_physical_residual(ψ::TTNS, H::TTNO, rhs::TTNS,
+                                   a0::Number, a1::Number)
+    acted = apply(H, ψ; center=center(ψ))
+    residual = exact_linear_combination(
+        [rhs, ψ, acted], [one(eltype(ψ)), -a0, -a1];
+        max_bond=4096, max_payload=100_000_000)
+    return Float64(norm(residual))
 end
 
 function _check_linsolve_args(ψ::TTNS, H::TTNO, rhs::TTNS, a0::Number,
@@ -243,18 +273,17 @@ end
 function _implicit_step!(ev::ImplicitLogTime, ::LogTrapezoid,
                          ψ::TTNS, H::TTNO, h::Real, shift::Real)
     old = copy(ψ)
-    rhs = copy(old)
-    _, fit_errors = fit!(rhs, (old, old); Hs=(nothing, H),
-                         coeffs=(one(eltype(ψ)) + h * shift / 2, -h / 2),
-                         nsweeps=ev.fit_nsweeps, tol=ev.fit_tol,
-                         normalize=false, verbose=ev.fit_verbose)
-    _replace_state!(ψ, rhs) # paper: use the right-hand side as initial guess
+    acted = apply(H, old; center=center(old))
+    rhs = exact_linear_combination(
+        [old, acted],
+        [one(eltype(ψ)) + h * shift / 2, -h / 2];
+        max_bond=4096, max_payload=100_000_000)
     _, info = linsolve!(ψ, H, rhs;
                         a0=one(eltype(ψ)) - h * shift / 2, a1=h / 2,
                         krylovdim=ev.krylovdim, maxiter=ev.maxiter,
                         tol=ev.tol, fit_nsweeps=ev.fit_nsweeps,
                         fit_tol=ev.fit_tol, fit_verbose=ev.fit_verbose)
-    _record_implicit_info!(ev, _LinInfo[info], _last_fit_error(fit_errors))
+    _record_implicit_info!(ev, _LinInfo[info], nothing)
     return ψ
 end
 
