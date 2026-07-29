@@ -11,44 +11,6 @@
 using Graft.TestUtils: to_dense, dense_hamiltonian
 using Graft.Backend: ⊠, ⊗
 
-const _SD2_MM_Q = typeof(FermionParity(0) ⊠ U1Irrep(0))
-_sd2_mm_sector(n::Int) = FermionParity(n % 2) ⊠ U1Irrep(n)
-
-"Two-mode fZ2 ⊠ U(1) fermionic carrier (CG-009 contract, intra-site JW)."
-function _sd2_multimode_carrier(mode_count::Int)
-    states = sort!(collect(0:((1 << mode_count) - 1)); by=s -> (count_ones(s), s))
-    d = length(states)
-    pos = Dict(s => i for (i, s) in enumerate(states))
-    P = Graft.Backend.Vect[_SD2_MM_Q](
-        (_sd2_mm_sector(n) => binomial(mode_count, n) for n in 0:mode_count)...)
-    annihilate = Graft.Backend.Vect[_SD2_MM_Q](
-        (FermionParity(1) ⊠ U1Irrep(-1)) => 1)
-    create = Graft.Backend.Vect[_SD2_MM_Q](
-        (FermionParity(1) ⊠ U1Irrep(1)) => 1)
-    C = Vector{Any}(undef, mode_count)
-    Cd = Vector{Any}(undef, mode_count)
-    N = Vector{Any}(undef, mode_count)
-    for j in 1:mode_count
-        mask = 1 << (j - 1)
-        a = zeros(ComplexF64, d, d)
-        c = zeros(ComplexF64, d, d)
-        nn = zeros(ComplexF64, d, d)
-        for s in states
-            sgn = isodd(count_ones(s & (mask - 1))) ? -1.0 : 1.0
-            if (s & mask) != 0
-                a[pos[s & ~mask], pos[s]] = sgn
-                nn[pos[s], pos[s]] = 1.0
-            else
-                c[pos[s | mask], pos[s]] = sgn
-            end
-        end
-        C[j] = TensorMap(reshape(a, d, d, 1), P ← P ⊗ annihilate)
-        Cd[j] = TensorMap(reshape(c, d, d, 1), P ← P ⊗ create)
-        N[j] = TensorMap(nn, P ← P)
-    end
-    return (; P, C=Tuple(C), Cd=Tuple(Cd), N=Tuple(N))
-end
-
 "Realize `H` through the typed direct-sum pipeline and return (O, report, plan, input, exps)."
 function _sd2_realize(H, topo, phys; hermitian=false)
     hermiticity = hermitian ? TB.AssertedHermitian() : TB.NoHermiticityAssertion()

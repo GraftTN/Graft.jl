@@ -25,10 +25,14 @@ using ..Symbolic
 export ttno_from_opsum, THCFactorization, THCReport, isdf_thc, fit_thc,
     reconstruct_thc
 
-# The SD1+ typed compiler IR (category_services.jl, build_input.jl, ir.jl,
-# merge_plans.jl, lowering.jl, ir_serialization.jl) is intentionally
-# internal: no IR type enters the public facade or the GraftImpurity API
-# (ADR-0003 decision 6). The public typed compiler facade arrives with SD6.
+# SD6 public typed compiler facade. The compiler-internal IR (input,
+# expansion, channel, route, and merge-plan types) stays unexported: only
+# the facade, the kernel selectors, and the reports are public
+# (ADR-0003 decision 6). The legacy ttno_from_opsum remains the default
+# compiler and explicit oracle until the SD7 promotion is approved.
+export compile_ttno, AbelianScalarLowering, DirectSumMerge, StateDiagramMerge,
+    StructuralOptimizer, GammaCoverOptimizer, SGEOptimizer,
+    TTNOBuildReport, TTNOBuildEdgeReport
 
 include("thc.jl")
 include("statediagram.jl")
@@ -41,6 +45,7 @@ include("realize.jl")
 include("structural_merge.jl")
 include("sge.jl")
 include("gamma_cover.jl")
+include("facade.jl")
 include("ir_serialization.jl")
 
 end # module TTNOBuild

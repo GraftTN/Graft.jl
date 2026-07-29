@@ -91,6 +91,9 @@ export OpSum, Term, SiteOp, charge, spin_ops, spin_ops_u1,
     boson_ops, boson_ops_u1, boson_ops_pp, fermion_ops_z2,
     boson_modes, BosonCoupling,
     Lindbladian, ppdress, ttno_from_opsum,
+    compile_ttno, AbelianScalarLowering, DirectSumMerge, StateDiagramMerge,
+    StructuralOptimizer, GammaCoverOptimizer, SGEOptimizer,
+    TTNOBuildReport, TTNOBuildEdgeReport,
     THCFactorization, THCReport, isdf_thc, fit_thc, reconstruct_thc
 # L5
 export dmrg1!, dmrg2!, dmrg1_3s!, expand!,
