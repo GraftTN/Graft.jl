@@ -88,8 +88,8 @@ for T in (:CategorySemantics, :MissingCategoryCapability, :CoeffAtom,
           :LocalMorphismCertificate, :TermHyperedge, :LoweringProvenance,
           :TermTTNOExpansion, :BoundarySignature, :MixingBlockKey,
           :IdentitySpanRelation, :NoKnownSpanRelation,
-          :StructuralIdentityWitness, :MergeProofStep, :OptimizerLogEntry,
-          :OptimizerLog, :NormalizedTerm)
+          :StructuralIdentityWitness, :GammaCoverWitness, :MergeProofStep,
+          :OptimizerLogEntry, :OptimizerLog, :NormalizedTerm)
     @eval _ir_ser(io::IO, x::$T) = _ir_ser_struct(io, x)
 end
 

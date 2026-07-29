@@ -222,18 +222,46 @@ signature.
 function unmerge_expansions(plan::StateDiagram{Q,C}) where {Q,C}
     restored = collect(plan.expansions)
     by_ordinal = Dict(exp.term_ordinal => i for (i, exp) in enumerate(restored))
+    restore_label! = function (ordinal, label)
+        i = get(by_ordinal, ordinal, nothing)
+        i === nothing && throw(ArgumentError(
+            "merge proof addresses term $ordinal, which no expansion owns"))
+        current = restored[i].edge_channels[plan_proof_edge[]]
+        current isa ChannelIdentity{Q} || throw(ArgumentError(
+            "merge proof addresses the root boundary"))
+        original = ChannelIdentity{Q}(
+            current.sector, current.route, current.multiplicity, label,
+            current.orientation, current.frame)
+        restored[i] = _rewrite_channel(restored[i], plan_proof_edge[], original)
+        return nothing
+    end
+    plan_proof_edge = Ref(0)
     for proof in reverse(plan.proofs)
-        for label in proof.removed
-            i = get(by_ordinal, label.copy, nothing)
-            i === nothing && throw(ArgumentError(
-                "merge proof removes copy $(label.copy), which no expansion owns"))
-            current = restored[i].edge_channels[proof.edge]
-            current isa ChannelIdentity{Q} || throw(ArgumentError(
-                "merge proof addresses the root boundary"))
-            original = ChannelIdentity{Q}(
-                current.sector, current.route, current.multiplicity, label,
-                current.orientation, current.frame)
-            restored[i] = _rewrite_channel(restored[i], proof.edge, original)
+        plan_proof_edge[] = proof.edge
+        if proof.witness isa GammaCoverWitness
+            witness = proof.witness::GammaCoverWitness
+            for (ordinal, label) in witness.previous
+                restore_label!(ordinal, label)
+            end
+            for (ordinal, from, to) in reverse(witness.moved_atoms)
+                i = by_ordinal[ordinal]
+                restored[i] = _move_atom(restored[i], to, from)
+            end
+        else
+            for label in proof.removed
+                i = get(by_ordinal, label.copy, nothing)
+                i === nothing && throw(ArgumentError(
+                    "merge proof removes copy $(label.copy), which no expansion owns"))
+                current = restored[i].edge_channels[proof.edge]
+                current isa ChannelIdentity{Q} || throw(ArgumentError(
+                    "merge proof addresses the root boundary"))
+                # A structural merge changes only the copy axis: the live
+                # span must equal the removed label's span.
+                current.degeneracy.span == label.span || throw(ArgumentError(
+                    "structural merge proof on edge $(proof.edge) removes a " *
+                    "label whose span is not live for term $(label.copy)"))
+                restore_label!(label.copy, label)
+            end
         end
     end
     return restored
@@ -255,18 +283,31 @@ function validate_merge_plan(input::TTNOBuildInput,
     for proof in plan.proofs
         validate_basis_proof(svc, proof.relation) || throw(ArgumentError(
             "merge proof on edge $(proof.edge) carries an invalid basis relation"))
-        proof.witness isa StructuralIdentityWitness || throw(ArgumentError(
-            "merge proof on edge $(proof.edge) carries an unknown witness kind"))
-        proof.witness.kind in (:identical_hyperedge, :identical_subtree) ||
+        if proof.witness isa StructuralIdentityWitness
+            proof.witness.kind in (:identical_hyperedge, :identical_subtree) ||
+                throw(ArgumentError(
+                    "merge proof on edge $(proof.edge) has witness $(proof.witness.kind)"))
+            length(proof.retained) == 1 || throw(ArgumentError(
+                "merge proof on edge $(proof.edge) must retain exactly one label"))
+        elseif proof.witness isa GammaCoverWitness
+            witness = proof.witness::GammaCoverWitness
+            witness.edge == proof.edge || throw(ArgumentError(
+                "gamma cover witness edge does not match its proof edge"))
+            isempty(proof.retained) && throw(ArgumentError(
+                "gamma cover proof on edge $(proof.edge) retains no label"))
+            length(witness.cover_rows) + length(witness.cover_cols) <
+                length(witness.rows) || throw(ArgumentError(
+                    "gamma cover proof on edge $(proof.edge) does not reduce the block"))
+        else
             throw(ArgumentError(
-                "merge proof on edge $(proof.edge) has witness $(proof.witness.kind)"))
-        length(proof.retained) == 1 || throw(ArgumentError(
-            "merge proof on edge $(proof.edge) must retain exactly one label"))
+                "merge proof on edge $(proof.edge) carries an unknown witness kind"))
+        end
+        # A proof's retained label may be superseded by a later proof on the
+        # same edge; liveness of the final state is checked globally through
+        # the reversal below. Removed labels, however, must never resurface.
         live = [exp.edge_channels[proof.edge].degeneracy
                 for exp in plan.expansions
                 if exp.edge_channels[proof.edge] isa ChannelIdentity{Q}]
-        first(proof.retained) in live || throw(ArgumentError(
-            "merge proof on edge $(proof.edge) retains a label that is not live"))
         for label in proof.removed
             label in live && throw(ArgumentError(
                 "merge proof on edge $(proof.edge) removed label $(label.copy) is still live"))

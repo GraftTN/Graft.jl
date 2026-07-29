@@ -78,6 +78,30 @@ struct StructuralIdentityWitness <: AbstractRedundancyWitness
 end
 
 """
+    GammaCoverWitness
+
+Exact reconstruction log of one raw-Gamma minimum-cover merge on one cut:
+the deterministic mixing-block key, the lossless row (below-content) and
+column (above-context) keys, the support graph, the deterministic
+Hopcroft-Karp maximum matching, the Konig cover, the per-term
+row/column assignment, and every coefficient-atom relocation performed by
+the reconstruction. The witness replays and reverses the merge exactly.
+"""
+struct GammaCoverWitness <: AbstractRedundancyWitness
+    edge::Int
+    block::String
+    rows::Vector{String}
+    cols::Vector{String}
+    support::Vector{Tuple{Int,Int}}
+    matching::Vector{Tuple{Int,Int}}
+    cover_rows::Vector{Int}
+    cover_cols::Vector{Int}
+    assignments::Vector{Tuple{Int,Int,Int}}
+    moved_atoms::Vector{Tuple{Int,Int,Int}}
+    previous::Vector{Tuple{Int,DegeneracyLabel}}
+end
+
+"""
     MergeProofStep(kind, edge, span, relation, witness, removed, retained)
 
 One typed, replayable merge proof step: the merge kind, the oriented edge
@@ -166,8 +190,8 @@ struct StateDiagram{Q,C<:Number} <: AbstractTTNOMergePlan
     log::OptimizerLog
 end
 
-for T in (:StructuralIdentityWitness, :MergeProofStep, :OptimizerLogEntry,
-          :OptimizerLog, :DirectSumPlan, :StateDiagram)
+for T in (:StructuralIdentityWitness, :GammaCoverWitness, :MergeProofStep,
+          :OptimizerLogEntry, :OptimizerLog, :DirectSumPlan, :StateDiagram)
     @eval begin
         Base.:(==)(a::$T, b::$T) = _ir_isequal(a, b)
         Base.isequal(a::$T, b::$T) = _ir_isequal(a, b)
