@@ -145,13 +145,18 @@ all active in the runs below:
   scale (`tau = 0.75` agrees to `4e-4`); quantitative error budgets are
   deferred to the full sweep against the high-statistics reference. See
   `beta4_partial/beta4_u2_gtau_partial_vs_ctseg.png`.
-- **`beta = 16` production sweeps in flight.** The exact-RHS two-site
-  baseline has passed `tau = 0.8` with every step below tolerance
-  (`3.5e-7`–`9.3e-7` at bond 128); truncated-RHS two-site and RDE lanes run
-  in parallel as a controlled method comparison. Full-trajectory
-  achievable-residual and bond-demand curves (a "measurement mode" that
-  records warnings instead of aborting when a step cannot reach `1e-6`) are
-  the deliverable, feeding the error budget for the colder targets.
+- **`beta = 16` production sweeps in flight; first bond-demand markers
+  recorded.** The exact-RHS two-site baseline has passed `tau = 1.0` with
+  every step below tolerance (`3.5e-7`–`9.3e-7` at bond 128, no warnings
+  after five hours). The measurement mode (record a warning and continue
+  instead of aborting when a step cannot reach `1e-6`) has produced its
+  first quantitative cap-saturation points: with the bond cap at 128, the
+  truncated-RHS two-site lane reaches an achievable residual of `2.3e-6`
+  on the `tau = 1.0 -> 1.5` step (`dtau = 0.5`), and the RDE lane
+  saturates earlier — `1.2e-6` already at `tau = 0.5` — consistent with
+  its greedier rank allocation. These are the first entries of the
+  full-trajectory achievable-residual / bond-demand curves that will set
+  the cap budgets for the colder targets.
 
 ## Error budget (beta = 16, headline comparison)
 
@@ -207,8 +212,17 @@ finite-bath systematic shrinks rapidly with additional poles.
 
 The remaining obstacles are economic rather than algorithmic: (i) the uniform
 `G(tau)` checkpoint grid currently forces ~24 implicit steps at `beta = 16`
-where a pure logarithmic grid needs ~9 — a DLR/log-spaced measurement grid
-restores geometric stepping; (ii) RDE's rank allocation is greedier than the
+where a pure logarithmic grid needs ~9; replacing it with DLR measurement
+nodes restores geometric stepping and would directly accelerate the
+Green-function calculation. The sharpened requirement, if the half-scaled
+DLR nodes are to embed as a subset of the implicit preparation grid
+(`P_implicit ⊃ T/2`) without reusing values across the reflection
+`G(tau) <-> G(beta - tau)`, is that the DLR node set must be self-dual,
+`T = beta - T`. Checking the available Lehmann constructions: the plain
+`:none` DLR grids do **not** satisfy self-duality; the pregenerated `:sym`
+grids do; and the exact-`E_uv` reconstruction path does not guarantee it —
+it would need paired node selection in place of the plain pivoted QR. The
+practical route is therefore the self-dual `:sym`-style node set; (ii) RDE's rank allocation is greedier than the
 two-site reference at equal residual and is under active measurement; and
 (iii) bond demand grows along the trajectory, which the warn-mode sweeps are
 quantifying to set caps for `beta = 32` and beyond.
