@@ -24,9 +24,27 @@ const QUIET = (verbose=false,)
             :site1 => S.Z, :site1 => S.Z, beta, taus;
             evolver=TDVP2(trunc=TruncationScheme(maxdim=4); QUIET...),
             prep_nsteps=40, prop_nsteps=40)
+        variable_steps = thermal_correlator(Purified(), prob,
+            :site1 => S.Z, :site1 => S.Z, beta, taus;
+            evolver=TDVP2(trunc=TruncationScheme(maxdim=4); QUIET...),
+            prep_nsteps=40, prop_max_step=beta / 40)
         Zd = dense_hamiltonian(OpSum() + Term(1.0, SiteOp(:site1, :Z, S.Z)), topo, phys)
         ref = exact_thermal_correlator(Hd, Zd, Zd, beta, taus)
         @test maximum(abs.(series.values .- ref)) < 1e-10
+        @test maximum(abs.(variable_steps.values .- ref)) < 1e-10
+        @test series.metadata.propagation_step_counts ==
+              [0, 40, 40, 40, 40]
+        @test variable_steps.metadata.propagation_step_counts ==
+              [0, 10, 20, 30, 40]
+        @test variable_steps.metadata.propagation_total_steps == 100
+        @test_throws ArgumentError thermal_correlator(Purified(), prob,
+            :site1 => S.Z, :site1 => S.Z, beta, taus;
+            evolver=TDVP2(trunc=TruncationScheme(maxdim=4); QUIET...),
+            prep_nsteps=40, prop_nsteps=40, prop_max_step=beta / 40)
+        @test_throws ArgumentError thermal_correlator(Purified(), prob,
+            :site1 => S.Z, :site1 => S.Z, beta, taus;
+            evolver=TDVP2(trunc=TruncationScheme(maxdim=4); QUIET...),
+            prep_nsteps=40, prop_max_step=0.0)
     end
 
     @testset "connected chi_nn(tau) vs dense trace" begin

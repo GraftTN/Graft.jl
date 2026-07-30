@@ -254,6 +254,7 @@ thermal_expect(traj::PurificationTrajectory, O::TTNO) = thermal_expect(traj.fina
                        A, B, beta, taus;
                        evolver, prep_grid=:uniform, prep_nsteps=nothing,
                        prop_grid=:uniform, prop_nsteps=nothing,
+                       prop_max_step=nothing,
                        trajectory=nothing, connected=false,
                        metadata=(;), threaded=false,
                        minbatch=2,
@@ -288,12 +289,19 @@ for one evolver/solver item; because an arbitrary `Evolver` does not expose a
 generic workspace-size oracle, omitting it forces an observable
 `:missing_task_workspace_memory` serial fallback. Returned metadata contains
 the complete fan-out diagnostics.
+
+For a uniform propagation grid, `prop_max_step` selects the smallest number
+of steps for each individual `τ` such that `Δτ ≤ prop_max_step`. This avoids
+giving short-`τ` items the same step count as `τ=β` while preserving one
+caller-selected maximum step size. It is mutually exclusive with
+`prop_nsteps` and with an explicit `prop_grid`.
 """
 function thermal_correlator(rep::Purified, problem::PurificationProblem,
                            A, B, beta::Real, taus;
                            evolver::Evolver,
                            prep_grid=:uniform, prep_nsteps=nothing,
                            prop_grid=:uniform, prop_nsteps=nothing,
+                           prop_max_step::Union{Nothing,Real}=nothing,
                            trajectory=nothing,
                            connected::Bool=false,
                            metadata::NamedTuple=(;),
@@ -308,6 +316,16 @@ function thermal_correlator(rep::Purified, problem::PurificationProblem,
         task_workspace_memory_bytes >= 0 ||
         throw(ArgumentError(
             "task_workspace_memory_bytes must be nonnegative"))
+    if prop_max_step !== nothing
+        isfinite(prop_max_step) && prop_max_step > 0 ||
+            throw(ArgumentError("prop_max_step must be finite and positive"))
+        prop_nsteps === nothing ||
+            throw(ArgumentError(
+                "prop_max_step and prop_nsteps are mutually exclusive"))
+        prop_grid === :uniform ||
+            throw(ArgumentError(
+                "prop_max_step requires prop_grid=:uniform"))
+    end
     beta_value = Float64(beta)
     beta_value >= 0 || throw(ArgumentError("beta must be nonnegative"))
     tau_values = Float64.(collect(taus))
@@ -329,7 +347,14 @@ function thermal_correlator(rep::Purified, problem::PurificationProblem,
     end
 
     l_beta = traj.final.log_amplitude
-    p_nsteps = prop_nsteps === nothing ? max(length(traj.tau_grid) - 1, 1) : prop_nsteps
+    p_nsteps = prop_nsteps === nothing ?
+        max(length(traj.tau_grid) - 1, 1) : prop_nsteps
+    propagation_step_counts = [
+        iszero(tau) ? 0 :
+            (prop_max_step === nothing ?
+                p_nsteps : max(ceil(Int, tau / prop_max_step), 1))
+        for tau in tau_values
+    ]
 
     Abar = zero(ComplexF64)
     Bbar = zero(ComplexF64)
@@ -389,7 +414,8 @@ function thermal_correlator(rep::Purified, problem::PurificationProblem,
 
             if tau > 0
                 ev = _fresh_evolver_thermal(evolver_template)
-                pgrid = _build_prop_grid(tau, prop_grid, p_nsteps)
+                item_nsteps = propagation_step_counts[i]
+                pgrid = _build_prop_grid(tau, prop_grid, item_nsteps)
                 for j in 1:(length(pgrid) - 1)
                     dtau = pgrid[j + 1] - pgrid[j]
                     iszero(dtau) && continue
@@ -412,6 +438,10 @@ function thermal_correlator(rep::Purified, problem::PurificationProblem,
                              connected,
                              centering=connected ? :thermal_mean_insertion : :none,
                              Abar, Bbar, evolver_type=typeof(evolver),
+                             propagation_step_counts,
+                             propagation_total_steps=sum(
+                                 propagation_step_counts; init=0),
+                             propagation_max_step=prop_max_step,
                              fanout,))
     return CorrelatorSeries(tau_values, vals, meta)
 end

@@ -66,7 +66,10 @@ Graft.step!(::P1FailingEvolver, ::TTNS, ::TTNO, ::Number) =
         @test item_error isa BoundedFanoutItemError
         @test item_error.item_index == 2
         @test item_error.item_id == (; index=2, item=2)
-        @test item_error.cancelled_items > 0
+        # With at least 16 Julia threads every item belongs to the first
+        # admitted batch, so a deterministic failure can legitimately leave
+        # no later batch to cancel.
+        @test item_error.attempted_items + item_error.cancelled_items == 16
 
         # Exercise repeated batch publication. This catches accidental capture
         # and reuse of loop-local batch state across threaded regions.
