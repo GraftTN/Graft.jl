@@ -6,10 +6,9 @@
   (ImpuriTree: Weiyi Guo, Linjie Chen, Wenfeng Wu, Xiaoteng Huang)
 - Date: 2026-07-30
 - Code: `Graft.jl` / `GraftImpurity.jl` / `GreenFunc.jl` (revisions recorded per
-  run below); comparison artifacts in this directory
-  (`comparison_data.h5`, `comparison_overview.png`,
-  `graft_solve_tdvp_beta16.jl`, `triqs_ctseg_u2_u8.py`,
-  `plot_beta16_u2_u8_tdvp_cthyb.py`).
+  run below); TDVP comparison artifacts in `tdvp_beta16/`, implicit
+  log-step reproduction scripts in `implicit_logstep/`, partial `beta = 4`
+  demonstration in `beta4_partial/`.
 
 ## Headline result: the beta = 16 continuous-bath milestone is met
 
@@ -29,7 +28,7 @@ result uses a 9-pole ESPRIT-tau finite bath per spin and two-site TDVP
 `49d97da`). Residuals are a few `1e-3` in absolute units — a factor of a few
 above the CT-QMC statistical band — and are dominated by the 9-pole bath
 discretization, not by the state propagation (Section "Error budget").
-`comparison_overview.png` shows both overlays and pointwise deviations,
+`tdvp_beta16/comparison_overview.png` shows both overlays and pointwise deviations,
 including the particle-hole-symmetrized CT-QMC comparison.
 
 This satisfies the challenge's continuous-bath acceptance item
@@ -86,8 +85,8 @@ propagator: `dt = 0.5`, two-site updates with SVD truncation
 `beta/2 = 8` with enforced particle-hole symmetry and measuring `G(tau)` on
 65 tau points (0.25 spacing). Wall clock: 82 minutes per parameter set on
 16 threads; peak RSS 7.3 GiB. This is the method behind
-the headline table and `comparison_overview.png`. Runner:
-`graft_solve_tdvp_beta16.jl METHOD=tdvp2`.
+the headline table and `tdvp_beta16/comparison_overview.png`. Runner:
+`tdvp_beta16/graft_solve_tdvp_beta16.jl METHOD=tdvp2`.
 
 ## Method B (research target): implicit A-stable logarithmic-grid evolution
 
@@ -129,10 +128,23 @@ all active in the runs below:
   budgets. Matched at caps 24 and 48 (RDE `8.1e-7` in 3 expansion rounds vs
   two-site `6.6e-7` at cap 24); this exonerates RDE's
   residual-to-subspace path at the first step.
-- **`beta = 4` control: complete end-to-end.** 21 implicit steps to
-  `beta/2 = 2`, every step converged below `1e-6` (typically
-  `1e-7`–`9e-7`), bond capped at 128, wall clock 90 minutes on 32 cores;
-  the `G(tau)` measurement stage runs as an 8-way fan-out immediately after.
+- **`beta = 4` control: preparation complete; measurement partial.**
+  21 implicit steps to `beta/2 = 2`, every step converged below `1e-6`
+  (typically `1e-7`–`9e-7`), bond capped at 128, wall clock 90 minutes on
+  32 cores. The `G(tau)` 8-way fan-out was still running when this report
+  was written: **5 of 17 tau points were finished — the full implicit
+  `G(tau)` sweep did not complete in time**. The five available points were
+  compared against a quick locally generated TRIQS/CTSEG reference
+  (8 × 100k cycles, particle-hole symmetrized) whose per-bin
+  high-frequency statistical noise we accept as-is: the purpose of this
+  comparison is a **working demonstration of the implicit log-step
+  pipeline** — bootstrap, logarithmic-grid implicit steps, thermal
+  checkpoints, operator insertion, and branch propagation all operating
+  end-to-end with every step residual-certified at `1e-6` — not an error
+  quantification. The points track the noisy reference at its own noise
+  scale (`tau = 0.75` agrees to `4e-4`); quantitative error budgets are
+  deferred to the full sweep against the high-statistics reference. See
+  `beta4_partial/beta4_u2_gtau_partial_vs_ctseg.png`.
 - **`beta = 16` production sweeps in flight.** The exact-RHS two-site
   baseline has passed `tau = 0.8` with every step below tolerance
   (`3.5e-7`–`9.3e-7` at bond 128); truncated-RHS two-site and RDE lanes run
@@ -162,8 +174,7 @@ finite-bath systematic shrinks rapidly with additional poles.
   8 × 200k cycles. `comparison_data.h5` is self-contained (G(tau),
   Matsubara `mps_iw`, and full provenance attributes); the complete
   reproducibility bundle (JLD2 archive, driver and PBS scripts, workflow
-  doc, bath CSV SHA-256) is
-  `scratch/beta16_latest_tau025_reproducibility_bundle(1).zip`.
+  doc, bath CSV SHA-256) is `tdvp_beta16/reproducibility_bundle.zip`.
 - Implicit-log-grid campaign: Snellius (genoa), one shared node per lane;
   preparation 32 cores / 240 GB, measurement fan-out 8 × 16 cores. Julia
   parallel runtime with thread-level task fan-out (BLAS pinned to 1 thread).
@@ -172,17 +183,25 @@ finite-bath systematic shrinks rapidly with additional poles.
 
 ## Reproducibility
 
-- `graft_solve_tdvp_beta16.jl METHOD CHI RESOLUTION PROFILE OUTPUT_DIR` runs
-  either method (`tdvp2` | `implicit`) with environment-pinned bath, grid,
-  and solver settings and records code revisions in its output.
-- `triqs_ctseg_u2_u8.py` regenerates the CT-QMC references;
-  `plot_beta16_u2_u8_tdvp_cthyb.py` rebuilds `comparison_overview.png` from
-  `comparison_data.h5` (schema `mps_ctqmc_gtau_comparison_v1`).
+- `tdvp_beta16/graft_solve_tdvp_beta16.jl METHOD CHI RESOLUTION PROFILE
+  OUTPUT_DIR` runs either method (`tdvp2` | `implicit`) with
+  environment-pinned bath, grid, and solver settings and records code
+  revisions in its output.
+- `tdvp_beta16/triqs_ctseg_u2_u8.py` regenerates the CT-QMC references;
+  `tdvp_beta16/plot_beta16_u2_u8_tdvp_cthyb.py` rebuilds
+  `comparison_overview.png` from `comparison_data.h5`
+  (schema `mps_ctqmc_gtau_comparison_v1`).
 - The implicit-log-grid campaign runs under immutable, content-locked run
   roots with source/config/environment hashes; the evidence trail is
   registered in the team's harness ledger
   (workstream `residual-driven-expansion`, report
   `2026-07-30-rde-beta16-matched-gate-and-warn-measurement`).
+- `implicit_logstep/` contains the exact production scripts and the
+  full environment contract for the implicit log-step runs, with the
+  heavy-computing costs and the `beta = 4` ESPRIT 7-pole bath documented;
+  note again that **no full implicit data set exists yet** — partial
+  `beta = 4` measurement points and the local CTSEG comparison live in
+  `beta4_partial/`.
 
 ## Outlook toward beta = 100
 
