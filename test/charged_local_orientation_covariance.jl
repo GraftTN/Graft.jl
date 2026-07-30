@@ -419,6 +419,19 @@ end
                             _clo_mm_global_factor(topo, phys, carriers, site, op) *
                             coordinates) < _CLO_TOL
                     end
+                    for (op, expected) in (
+                            (adjoint(carriers[site].C[mode]),
+                             carriers[site].Cd[mode]),
+                            (adjoint(carriers[site].Cd[mode]),
+                             carriers[site].C[mode]))
+                        inserted = apply_local(state, op, site)
+                        @test check_arrows(inserted)
+                        @test norm(_clo_mm_coordinates(
+                            inserted, basis, indices, dimension, plan_cache) -
+                            _clo_mm_global_factor(
+                                topo, phys, carriers, site, expected) *
+                            coordinates) < _CLO_TOL
+                    end
                 end
             end
         end

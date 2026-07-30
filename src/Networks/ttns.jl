@@ -238,19 +238,21 @@ end
 
 function _charged_adjoint_to_apply(op::AbstractTensorMap{T,S}) where {T<:Number,S<:ElementarySpace}
     Pout = codomain(op)[1]
-    C = codomain(op)[2]
+    Cadjoint = codomain(op)[2]
+    C = dual(Cadjoint)
     Pin = domain(op)[1]
     Pout == Pin || throw(SpaceMismatch("adjoint charged local operator must use one physical space"))
-    C isa ElementarySpace || throw(ArgumentError("adjoint charged local operator needs an elementary charge leg"))
+    Cadjoint isa ElementarySpace ||
+        throw(ArgumentError("adjoint charged local operator needs an elementary charge leg"))
     out = zeros(T, Pout ← Pin ⊗ C)
 
     unitq = one(sectortype(Pout))
-    oldcodcoord = _basis_coord(S[Pout, C], unitq)
+    oldcodcoord = _basis_coord(S[Pout, Cadjoint], unitq)
     olddomcoord = _basis_coord(S[Pin], unitq)
     newcodcoord = _basis_coord(S[Pout], unitq)
     newdomcoord = _basis_coord(S[Pin, C], unitq)
 
-    for pout in 1:dim(Pout), c in 1:dim(C), pin in 1:dim(Pin)
+    for pout in 1:dim(Pout), c in 1:dim(Cadjoint), pin in 1:dim(Pin)
         val = _tensor_entry(op, oldcodcoord, olddomcoord, (pout, c), (pin,), T)
         _add_tensor_entry!(out, newcodcoord, newdomcoord, (pout,), (pin, c), val)
     end
