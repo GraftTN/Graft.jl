@@ -82,6 +82,30 @@ function exact_linear_combination(
     return _canonicalize_apply!(result, t.root)
 end
 
+"""
+    truncated_linear_combination(states, coefficients;
+                                 trunc::TruncationScheme,
+                                 max_bond=typemax(Int),
+                                 max_payload=typemax(Int))
+        -> (TTNS, Float64)
+
+[`exact_linear_combination`](@ref) followed by [`truncate_sweep!`](@ref)
+under `trunc`. Returns the truncated combination, canonical at the root, and
+an upper bound on the 2-norm distance between the truncated and the exact
+combination (the sum of all discarded 2-norms). With `NO_TRUNCATION` the
+bound is zero and the result equals the exact combination.
+"""
+function truncated_linear_combination(
+        states::AbstractVector{<:TTNS}, coefficients;
+        trunc::TruncationScheme,
+        max_bond::Int=typemax(Int),
+        max_payload::Int=typemax(Int))
+    combined = exact_linear_combination(
+        states, coefficients; max_bond, max_payload)
+    error_bound = truncate_sweep!(combined, trunc)
+    return combined, error_bound
+end
+
 function _check_exact_combination_guards(
         reference::TTNS, sources::Vector{<:TTNS};
         max_bond::Int, max_payload::Int)

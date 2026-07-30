@@ -13,7 +13,8 @@ using ..Trees
 
 export TTNS, TTNO, TTNDO, topology, center, hasphys, physleg, parentleg,
     physspace, virtualspace, check_arrows, move_center!, update_tensor!,
-    normalize!, apply, fit!, exact_linear_combination, apply_local, ishermitian,
+    normalize!, apply, fit!, exact_linear_combination,
+    truncated_linear_combination, truncate_sweep!, apply_local, ishermitian,
     invalidate_node!, invalidate_edge!, compress!, TTNOCompressionSectorReport,
     TTNOCompressionEdgeReport, TTNOCompressionReport
 

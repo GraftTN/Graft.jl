@@ -51,7 +51,8 @@ export @tensor, ncon, contract_pair, pair_cost, pair_workload_profile,
     contract_pair_compatible
 # Graft-defined
 export FermionSector, AbelianSector, TruncationScheme, truncspec, split_svd,
-    split_svd_with_error, absorb_on_leg, transform_leg, transform_leg_space,
+    split_svd_with_error, svd_factor_leg_with_error,
+    absorb_on_leg, transform_leg, transform_leg_space,
     orth_factor_leg,
     trivialspace, ones_tensor
 
@@ -542,6 +543,27 @@ function orth_factor_leg(A::AbstractTensorMap, k::Int)
     Q̃, C = left_orth(t)                            # Q̃ :: others ← Y isometric, C :: Y ← dual(V_old)
     Q = permute(Q̃, _restore_perm(N, No, k))        # leg k has space dual(Y)
     return Q, C
+end
+
+"""
+    svd_factor_leg_with_error(A, k, ts::TruncationScheme)
+        -> (Q, C, discarded_norm)
+
+Truncated analogue of [`orth_factor_leg`](@ref): the same
+`permute(A, (others, (k,)))` split is factored by a `TruncationScheme`-
+controlled SVD instead of a plain QR. `Q` is isometric away from leg `k`,
+`C = S * Vᴴ :: Y ← dual(V_old)` carries the retained weight, and
+`discarded_norm` is the 2-norm of the discarded spectrum. With
+`NO_TRUNCATION` this reproduces the exact factorization up to gauge.
+"""
+function svd_factor_leg_with_error(A::AbstractTensorMap, k::Int,
+                                   ts::TruncationScheme)
+    N, No = numind(A), numout(A)
+    1 <= k <= No || throw(ArgumentError("leg $k is not a codomain leg (numout=$No)"))
+    t = permute(A, (_others(N, k), (k,)))          # :: others ← dual(V_old)
+    U, S, Vᴴ, discarded = split_svd_with_error(t, ts)
+    Q = permute(U, _restore_perm(N, No, k))        # leg k has space dual(Y)
+    return Q, S * Vᴴ, Float64(discarded)
 end
 
 end # module Backend

@@ -124,6 +124,52 @@ function move_center!(ψ::TTNS, target::Int; cache=nothing)
     return ψ
 end
 
+"""
+    truncate_sweep!(ψ::TTNS, ts::TruncationScheme; cache=nothing) -> Float64
+
+Truncate every tree edge of `ψ` exactly once: walking the tree from the
+root, each edge is truncated by a `TruncationScheme`-controlled SVD when the
+orthogonality center first crosses it downward, and recanonicalized exactly
+on the way back up. The state must be canonical at the root on entry; the
+center is restored to the root on exit.
+
+Returns an upper bound on the introduced 2-norm error: the sum of the
+discarded 2-norms of all edge truncations. Each truncation is performed at
+the orthogonality center, so the bound follows from the triangle inequality
+over the sequence of locally optimal truncations.
+"""
+function truncate_sweep!(ψ::TTNS, ts::TruncationScheme; cache=nothing)
+    t = ψ.topo
+    ψ.center == t.root ||
+        throw(ArgumentError("truncate_sweep! requires the center at the root"))
+    total = 0.0
+    descend!(n::Int) = for m in t.children[n]
+        total += _move_center_edge_trunc!(ψ, m, ts, cache)
+        descend!(m)
+        _move_center_edge!(ψ, n, cache)
+    end
+    descend!(t.root)
+    return total
+end
+
+# truncated down-move: like the down branch of `_move_center_edge!` but the
+# factorization discards weight under `ts`; returns the discarded 2-norm.
+function _move_center_edge_trunc!(ψ::TTNS, m::Int, ts::TruncationScheme,
+                                  cache)
+    t = ψ.topo
+    n = ψ.center
+    t.parent[m] == n ||
+        throw(ArgumentError("truncated center move must descend to a child"))
+    k = childslot(t, n, m)
+    Q, C, discarded = svd_factor_leg_with_error(ψ.tensors[n], k, ts)
+    ψ.tensors[n] = Q
+    Ct = _pivotal_link(transpose(C))
+    ψ.tensors[m] = ψ.tensors[m] * Ct
+    ψ.center = m
+    cache === nothing || invalidate_edge!(cache, n, m)
+    return discarded
+end
+
 # one step of the center move, to a node `m` adjacent to the current center
 function _move_center_edge!(ψ::TTNS, m::Int, cache)
     t = ψ.topo

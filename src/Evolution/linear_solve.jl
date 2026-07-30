@@ -129,6 +129,13 @@ _exact_residual_max_bond() =
 _exact_residual_max_payload() =
     parse(Int, get(ENV, "GRAFT_EXACT_RESIDUAL_MAX_PAYLOAD", "100000000"))
 
+# Optional SVD truncation of the implicit-step right-hand side. The default
+# (atol = 0) reproduces the exact combination; a positive atol trades bond
+# dimension for a certified 2-norm error bound, which is charged against the
+# solve tolerance so a converged step still certifies the untightened bound.
+_rhs_truncation_scheme() = TruncationScheme(
+    atol=parse(Float64, get(ENV, "GRAFT_RHS_TRUNC_ATOL", "0")))
+
 function _linear_physical_residual(ψ::TTNS, H::TTNO, rhs::TTNS,
                                    a0::Number, a1::Number)
     acted = apply(H, ψ; center=center(ψ))
@@ -287,6 +294,7 @@ mutable struct ImplicitLogTime{S<:ImplicitLogScheme} <: Evolver
     last_two_site_reports::Vector{TwoSiteLinearReport}
     last_fit_error::Union{Nothing,Float64}
     last_shift::Float64
+    last_rhs_error::Float64
 end
 
 function ImplicitLogTime(; scheme::ImplicitLogScheme=LogTrapezoid(),
@@ -334,7 +342,7 @@ function ImplicitLogTime(; scheme::ImplicitLogScheme=LogTrapezoid(),
         scheme, krylovdim, maxiter, tol, fit_nsweeps, fit_tol,
         fit_verbose, normalize, energy_shift, expansion, two_site,
         nothing, _LinInfo[], ResidualDrivenReport[], TwoSiteLinearReport[],
-        nothing, 0.0,
+        nothing, 0.0, 0.0,
     )
 end
 
@@ -406,15 +414,26 @@ function _implicit_step!(ev::ImplicitLogTime, ::LogTrapezoid,
                          ψ::TTNS, H::TTNO, h::Real, shift::Real)
     old = copy(ψ)
     acted = apply(H, old; center=center(old))
-    rhs = exact_linear_combination(
+    rhs, rhs_error = truncated_linear_combination(
         [old, acted],
         [one(eltype(ψ)) + h * shift / 2, -h / 2];
+        trunc=_rhs_truncation_scheme(),
         max_bond=_exact_residual_max_bond(),
         max_payload=_exact_residual_max_payload())
+    rhs_error <= ev.tol / 2 ||
+        throw(ArgumentError(
+            "ImplicitLogTime rhs truncation error bound $rhs_error " *
+            "exceeds half of the solve tolerance $(ev.tol); lower " *
+            "GRAFT_RHS_TRUNC_ATOL"))
+    ev.last_rhs_error = rhs_error
+    ev.fit_verbose && rhs_error > 0 &&
+        println("RHS_TRUNCATION error_bound=", rhs_error,
+                " effective_tol=", ev.tol - rhs_error)
     info, residual_driven_reports, two_site_reports =
         _implicit_linsolve!(
             ev, ψ, H, rhs;
-            a0=one(eltype(ψ)) - h * shift / 2, a1=h / 2)
+            a0=one(eltype(ψ)) - h * shift / 2, a1=h / 2,
+            tol=ev.tol - rhs_error)
     _record_implicit_info!(
         ev, _LinInfo[info], nothing;
         residual_driven_reports, two_site_reports)
@@ -469,22 +488,32 @@ end
 
 function _implicit_linsolve!(
         ev::ImplicitLogTime, ψ::TTNS, H::TTNO, rhs::TTNS;
-        a0::Number, a1::Number)
+        a0::Number, a1::Number, tol::Float64=ev.tol)
     if ev.expansion !== nothing
         _, report = residual_driven_linsolve!(
             ψ, H, rhs, ev.expansion;
             a0, a1,
             krylovdim=ev.krylovdim,
             maxiter=ev.maxiter,
-            tol=ev.tol,
+            tol,
             fit_nsweeps=ev.fit_nsweeps,
             fit_tol=ev.fit_tol,
             fit_verbose=ev.fit_verbose)
         return _residual_driven_lininfo(report),
             ResidualDrivenReport[report], TwoSiteLinearReport[]
     elseif ev.two_site !== nothing
+        policy = ev.two_site
+        if policy.residual_tol != tol
+            policy = TwoSiteLinearPolicy(
+                trunc=policy.trunc,
+                sweeps=policy.sweeps,
+                krylovdim=policy.krylovdim,
+                maxiter=policy.maxiter,
+                local_tol=policy.local_tol,
+                residual_tol=tol)
+        end
         _, report = two_site_linsolve!(
-            ψ, H, rhs, ev.two_site; a0, a1, verbose=ev.fit_verbose)
+            ψ, H, rhs, policy; a0, a1, verbose=ev.fit_verbose)
         return _two_site_lininfo(report),
             ResidualDrivenReport[], TwoSiteLinearReport[report]
     end
@@ -494,7 +523,7 @@ function _implicit_linsolve!(
         a0, a1,
         krylovdim=ev.krylovdim,
         maxiter=ev.maxiter,
-        tol=ev.tol,
+        tol,
         fit_nsweeps=ev.fit_nsweeps,
         fit_tol=ev.fit_tol,
         fit_verbose=ev.fit_verbose)

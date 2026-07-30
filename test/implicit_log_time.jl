@@ -240,3 +240,44 @@ end
             (ENV["GRAFT_EXACT_RESIDUAL_MAX_PAYLOAD"] = saved_payload)
     end
 end
+
+@graft_testset "truncated linear combination with certified error bound" begin
+    F = fermion_ops_z2()
+    topo = mps_topology(2)
+    phys = Dict(:site1 => F.P, :site2 => F.P)
+    H = OpSum() + Term(-0.5, SiteOp(:site1, :N, F.N)) +
+        Term(-1.0, SiteOp(:site1, :Cd, F.Cd), SiteOp(:site2, :C, F.C)) +
+        Term(-1.0, SiteOp(:site1, :C, F.C), SiteOp(:site2, :Cd, F.Cd))
+    problem = purification_problem(H, topo, phys; hermitian=true)
+    a = random_ttns(Xoshiro(11), ComplexF64, problem.topo_doubled,
+                    problem.phys_doubled, F.P)
+    b = random_ttns(Xoshiro(22), ComplexF64, problem.topo_doubled,
+                    problem.phys_doubled, F.P)
+    coeffs = ComplexF64[1.0 + 0.25im, -0.5 + 0.125im]
+
+    exact = exact_linear_combination([a, b], coeffs)
+    same, zero_bound = truncated_linear_combination(
+        [a, b], coeffs; trunc=TruncationScheme())
+    @test zero_bound == 0.0
+    @test norm(to_dense(exact) - to_dense(same)) < 1e-11
+
+    truncated, bound = truncated_linear_combination(
+        [a, b], coeffs; trunc=TruncationScheme(maxdim=1))
+    @test bound >= 0.0
+    @test norm(to_dense(exact) - to_dense(truncated)) <= bound + 1e-10
+
+    # An over-aggressive RHS truncation budget must fail closed inside the
+    # implicit solver rather than silently loosening the certified bound.
+    saved = get(ENV, "GRAFT_RHS_TRUNC_ATOL", nothing)
+    try
+        ENV["GRAFT_RHS_TRUNC_ATOL"] = "1.0"
+        psi = copy(a)
+        Graft.normalize!(psi)
+        ev = ImplicitLogTime(krylovdim=4, maxiter=2, tol=1e-8,
+                             fit_nsweeps=2, fit_tol=1e-9)
+        @test_throws ArgumentError step!(ev, psi, problem.K, -0.01)
+    finally
+        saved === nothing ? delete!(ENV, "GRAFT_RHS_TRUNC_ATOL") :
+            (ENV["GRAFT_RHS_TRUNC_ATOL"] = saved)
+    end
+end
