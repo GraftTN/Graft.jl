@@ -120,12 +120,22 @@ function linsolve!(ψ::TTNS, H::TTNO, rhs::TTNS;
     return ψ, infoout
 end
 
+# Safety bounds for the uncompressed exact-combination evaluations inside
+# implicit solves. The defaults match the historical hard limits; large-cap
+# production runs may raise them through the environment without changing
+# any numerical tolerance.
+_exact_residual_max_bond() =
+    parse(Int, get(ENV, "GRAFT_EXACT_RESIDUAL_MAX_BOND", "4096"))
+_exact_residual_max_payload() =
+    parse(Int, get(ENV, "GRAFT_EXACT_RESIDUAL_MAX_PAYLOAD", "100000000"))
+
 function _linear_physical_residual(ψ::TTNS, H::TTNO, rhs::TTNS,
                                    a0::Number, a1::Number)
     acted = apply(H, ψ; center=center(ψ))
     residual = exact_linear_combination(
         [rhs, ψ, acted], [one(eltype(ψ)), -a0, -a1];
-        max_bond=4096, max_payload=100_000_000)
+        max_bond=_exact_residual_max_bond(),
+        max_payload=_exact_residual_max_payload())
     return Float64(norm(residual))
 end
 
@@ -399,7 +409,8 @@ function _implicit_step!(ev::ImplicitLogTime, ::LogTrapezoid,
     rhs = exact_linear_combination(
         [old, acted],
         [one(eltype(ψ)) + h * shift / 2, -h / 2];
-        max_bond=4096, max_payload=100_000_000)
+        max_bond=_exact_residual_max_bond(),
+        max_payload=_exact_residual_max_payload())
     info, residual_driven_reports, two_site_reports =
         _implicit_linsolve!(
             ev, ψ, H, rhs;

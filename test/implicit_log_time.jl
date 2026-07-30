@@ -218,3 +218,25 @@ end
         @test all(isfinite, to_dense(ψlarge))
     end
 end
+
+@testset "exact residual guard environment override" begin
+    saved_bond = get(ENV, "GRAFT_EXACT_RESIDUAL_MAX_BOND", nothing)
+    saved_payload = get(ENV, "GRAFT_EXACT_RESIDUAL_MAX_PAYLOAD", nothing)
+    try
+        delete!(ENV, "GRAFT_EXACT_RESIDUAL_MAX_BOND")
+        delete!(ENV, "GRAFT_EXACT_RESIDUAL_MAX_PAYLOAD")
+        @test Graft.Evolution._exact_residual_max_bond() == 4096
+        @test Graft.Evolution._exact_residual_max_payload() == 100_000_000
+        ENV["GRAFT_EXACT_RESIDUAL_MAX_BOND"] = "16384"
+        ENV["GRAFT_EXACT_RESIDUAL_MAX_PAYLOAD"] = "400000000"
+        @test Graft.Evolution._exact_residual_max_bond() == 16384
+        @test Graft.Evolution._exact_residual_max_payload() == 400_000_000
+    finally
+        saved_bond === nothing ?
+            delete!(ENV, "GRAFT_EXACT_RESIDUAL_MAX_BOND") :
+            (ENV["GRAFT_EXACT_RESIDUAL_MAX_BOND"] = saved_bond)
+        saved_payload === nothing ?
+            delete!(ENV, "GRAFT_EXACT_RESIDUAL_MAX_PAYLOAD") :
+            (ENV["GRAFT_EXACT_RESIDUAL_MAX_PAYLOAD"] = saved_payload)
+    end
+end
