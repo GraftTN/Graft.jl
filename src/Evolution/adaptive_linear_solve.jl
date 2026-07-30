@@ -153,8 +153,8 @@ function ResidualDrivenExpansion(;
         enrichment_rtol::Real=1e-10,
         compression_atol::Real=1e-12,
         compression_rtol::Real=1e-10,
-        residual_max_bond::Integer=4096,
-        residual_max_payload::Integer=100_000_000)
+        residual_max_bond::Integer=_exact_residual_max_bond(),
+        residual_max_payload::Integer=_exact_residual_max_payload())
     return ResidualDrivenExpansion(
         trunc,
         residual_trunc,
@@ -268,7 +268,8 @@ end
 
 """
     linear_residual(ψ, H, rhs; a0=1, a1=1,
-                    max_bond=4096, max_payload=100_000_000)
+                    max_bond=_exact_residual_max_bond(),
+                    max_payload=_exact_residual_max_payload())
         -> (residual, report)
 
 Construct the exact canonical residual
@@ -280,8 +281,8 @@ function linear_residual(
         ψ::TTNS, H::TTNO, rhs::TTNS;
         a0::Number=one(eltype(ψ)),
         a1::Number=one(eltype(ψ)),
-        max_bond::Integer=4096,
-        max_payload::Integer=100_000_000)
+        max_bond::Integer=_exact_residual_max_bond(),
+        max_payload::Integer=_exact_residual_max_payload())
     residual_max_bond = _rde_positive_limit(
         "linear_residual max_bond", max_bond)
     residual_max_payload = _rde_positive_limit(
