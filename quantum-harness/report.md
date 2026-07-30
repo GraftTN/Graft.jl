@@ -29,7 +29,9 @@ result uses a 9-pole ESPRIT-tau finite bath per spin and two-site TDVP
 above the CT-QMC statistical band — and are dominated by the 9-pole bath
 discretization, not by the state propagation (Section "Error budget").
 `tdvp_beta16/comparison_overview.png` shows both overlays and pointwise deviations,
-including the particle-hole-symmetrized CT-QMC comparison.
+including the particle-hole-symmetrized CT-QMC comparison:
+
+![ESPRIT9/TDVP2 MPS vs CTQMC at beta=16 for U=2 and U=8](https://cdn.jsdelivr.net/gh/GraftTN/Graft.jl@quantum-harness/quantum-harness/tdvp_beta16/comparison_overview.png)
 
 This satisfies the challenge's continuous-bath acceptance item
 ("one beta = 16 or 32 calculation cross-checked against CT-HYB") for two
@@ -143,8 +145,9 @@ all active in the runs below:
   end-to-end with every step residual-certified at `1e-6` — not an error
   quantification. The points track the noisy reference at its own noise
   scale (`tau = 0.75` agrees to `4e-4`); quantitative error budgets are
-  deferred to the full sweep against the high-statistics reference. See
-  `beta4_partial/beta4_u2_gtau_partial_vs_ctseg.png`.
+  deferred to the full sweep against the high-statistics reference.
+
+  ![beta=4 implicit log-step working demonstration vs CTSEG](https://cdn.jsdelivr.net/gh/GraftTN/Graft.jl@quantum-harness/quantum-harness/beta4_partial/beta4_u2_gtau_partial_vs_ctseg.png)
 - **`beta = 16` production sweeps in flight; first bond-demand markers
   recorded.** The exact-RHS two-site baseline has passed `tau = 1.0` with
   every step below tolerance (`3.5e-7`–`9.3e-7` at bond 128, no warnings
