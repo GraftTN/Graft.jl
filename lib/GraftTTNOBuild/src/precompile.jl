@@ -1,0 +1,6 @@
+import PrecompileTools
+
+if get(ENV, "GRAFT_FULL_PRECOMPILE", "false") == "true"
+    include("precompile/dense_core.jl")
+    include("precompile/symmetry.jl")
+end

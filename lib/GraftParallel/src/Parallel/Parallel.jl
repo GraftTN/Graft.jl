@@ -26,10 +26,12 @@ export ParallelRuntimeConfig, ParallelRuntimeConfigurationError,
     BoundedFanoutItemError,
     parallel_runtime_config, threaded_foreach, bounded_threaded_foreach,
     configure_parallel_runtime!,
-    AbstractDistributedContext, mpi_context, distributed_rank,
+    AbstractDistributedContext, AbstractRootDrivenContext,
+    mpi_context, distributed_rank,
     distributed_size, distributed_root, distributed_isroot,
     distributed_barrier, distributed_allreduce_sum!,
     distributed_broadcast!, distributed_allgather,
+    root_driven_solver,
     distributed_eigsolve, distributed_exponentiate,
     SubtreeOwnership, subtree_owner,
     local_nodes, boundary_edges
@@ -42,6 +44,14 @@ Concrete MPI state lives in `GraftMPIExt`; the core package never imports
 MPI.jl and never consults a global communicator.
 """
 abstract type AbstractDistributedContext end
+
+"""
+    AbstractRootDrivenContext <: AbstractDistributedContext
+
+Marker for a distributed context that supports the root-driven adaptive-solver
+protocol. Concrete execution state remains owned by package extensions.
+"""
+abstract type AbstractRootDrivenContext <: AbstractDistributedContext end
 
 """Construct an MPI context. Methods are supplied by the MPI package extension."""
 function mpi_context end
@@ -69,6 +79,16 @@ function distributed_broadcast! end
 
 """Collect one arbitrary Julia value from every rank, in rank order."""
 function distributed_allgather end
+
+"""
+    root_driven_solver(solver, context, workspace)
+
+Run `solver` on the selected root while every other rank services collective
+applications of `workspace`. Concrete coordination methods are supplied by a
+distributed extension; solver owners retain responsibility for constructing
+the workspace and invoking their numerical backend.
+"""
+function root_driven_solver end
 
 """Root-driven distributed eigensolve supplied by a distributed extension."""
 function distributed_eigsolve end

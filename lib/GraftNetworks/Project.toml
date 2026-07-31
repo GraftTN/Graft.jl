@@ -8,6 +8,7 @@ version = "0.1.1"
 GraftFoundation = "b817f51d-645c-48d5-8696-150514b96021"
 GraftPlanning = "b2c5fc82-2f33-488f-8f79-59dbb6382a93"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
 
 [sources]
 GraftFoundation = {path = "../GraftFoundation"}
@@ -17,4 +18,5 @@ GraftPlanning = {path = "../GraftPlanning"}
 GraftFoundation = "0.1.1"
 GraftPlanning = "0.1.1"
 LinearAlgebra = "1.11"
+PrecompileTools = "1"
 julia = "1.11"

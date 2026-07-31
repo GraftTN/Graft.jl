@@ -34,4 +34,6 @@ export EnvCache, env!, build_env, invalidate_node!,
     workspace_map, workspace_stats, inner, expect, eff_h1, eff_h0, eff_h2,
     two_site_tensor, two_site_space, split_two_site!, expand!
 
+include("precompile.jl")
+
 end # module GraftContractions

@@ -18,4 +18,6 @@ using .GroundState
 export GroundState
 export dmrg1!, dmrg2!, dmrg1_3s!, expand!, groundstate_eigsolve_backend
 
+include("precompile.jl")
+
 end # module GraftGroundState

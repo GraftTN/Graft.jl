@@ -28,4 +28,6 @@ export TTNS, TTNO, TTNDO, topology, center, hasphys, physleg,
     TTNOCompressionReport, TTNOExactChannelRelation, TTNOExactProvenance,
     TTNOExactWitness
 
+include("precompile.jl")
+
 end # module GraftNetworks

@@ -33,4 +33,6 @@ export Evolver, step!, evolve!, CorrelatorSeries, correlator, correlator_series,
     paired_linear_diagnostic,
     evolution_exponentiate_backend
 
+include("precompile.jl")
+
 end # module GraftEvolution

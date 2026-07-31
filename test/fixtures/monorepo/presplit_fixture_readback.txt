@@ -1,0 +1,21 @@
+baseline_sha	057d2fc9df275e5e45f312e07545dde0c6f27cf4
+julia_version	1.12.6
+public_export_count	274
+checkpoint_outer_keys	format_version,metadata,state
+checkpoint_object_keys	tree_topology,ttns,ttno,truncation_scheme,state_diagram_input,state_diagram_plan,state_diagram_report,thermal_metts_trajectory,thermal_metts_state
+resume_readback	PASS
+jld2_readback	PASS
+state_diagram_plan_kind	state_diagram
+state_diagram_proofs	0
+metts_samples	2
+metts_total_steps	2
+object_types
+tree_topology	TreeTopology
+ttns	TTNS{TensorKit.ComplexSpace, ComplexF64}
+ttno	TTNO{TensorKit.ComplexSpace, ComplexF64}
+truncation_scheme	TruncationScheme
+state_diagram_input	Graft.TTNOBuild.TTNOBuildInput{TensorKit.ComplexSpace, Float64, Graft.TTNOBuild.AssertedHermitian, Graft.TTNOBuild.CategorySemantics{Graft.TTNOBuild.UniqueFusionProfile, Graft.TTNOBuild.SymmetricBraidingProfile}}
+state_diagram_plan	Graft.TTNOBuild.StateDiagram{TensorKitSectors.Trivial, Float64}
+state_diagram_report	TTNOBuildReport{Graft.TTNOBuild.CategorySemantics{Graft.TTNOBuild.UniqueFusionProfile, Graft.TTNOBuild.SymmetricBraidingProfile}}
+thermal_metts_trajectory	METTSTrajectory{TensorKit.ComplexSpace, ComplexF64, Xoshiro}
+thermal_metts_state	METTSSample{TensorKit.ComplexSpace, ComplexF64}

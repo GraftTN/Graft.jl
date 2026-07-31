@@ -31,4 +31,6 @@ export ThermalRep, Purified, METTS, HybridMETTS, thermalize,
     infinite_temperature_state, thermal_expect, thermal_correlator,
     thermal_realtime_correlator, state_at, logZ, distributed_trajectory
 
+include("precompile.jl")
+
 end # module GraftThermal

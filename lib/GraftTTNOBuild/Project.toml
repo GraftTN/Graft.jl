@@ -9,6 +9,7 @@ GraftFoundation = "b817f51d-645c-48d5-8696-150514b96021"
 GraftNetworks = "9722b9cb-9502-4464-b3ad-04909505de0f"
 GraftSymbolic = "923ebbca-7fce-40e7-998b-8b588cdf2371"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
 
 [sources]
 GraftFoundation = {path = "../GraftFoundation"}
@@ -20,4 +21,5 @@ GraftFoundation = "0.1.1"
 GraftNetworks = "0.1.1"
 GraftSymbolic = "0.1.1"
 LinearAlgebra = "1.11"
+PrecompileTools = "1"
 julia = "1.11"

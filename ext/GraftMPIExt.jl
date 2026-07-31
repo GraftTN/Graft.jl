@@ -4,198 +4,12 @@ using Graft
 using MPI
 using SHA: sha256
 
-using Graft.Backend: AbstractTensorMap, blocks
-import Graft.Parallel: mpi_context, distributed_rank, distributed_size,
-    distributed_root, distributed_barrier, distributed_allreduce_sum!,
-    distributed_broadcast!, distributed_allgather, distributed_eigsolve,
-    distributed_exponentiate, AbstractDistributedContext,
-    configure_parallel_runtime!
+import Graft.Parallel: AbstractRootDrivenContext, distributed_rank,
+    distributed_size, distributed_root, distributed_broadcast!,
+    distributed_allgather
 import Graft.Checkpoints: DistributedCheckpointError,
     checkpoint!, resume, checkpoint_mpi!, resume_mpi
 using Graft.Thermal: DistributedMETTSTrajectory, distributed_trajectory
-using Graft.Contractions: with_workspace_map
-using Graft.GroundState: groundstate_eigsolve_backend
-using Graft.Evolution: evolution_exponentiate_backend
-
-"""
-    MPIContext
-
-Explicit MPI execution context used by Graft's distributed algorithms. The
-communicator is never stored in global package state and is not serializable.
-"""
-struct MPIContext{C} <: AbstractDistributedContext
-    comm::C
-    root::Int
-    threadlevel::MPI.ThreadLevel
-end
-
-"""
-    mpi_context(; comm=MPI.COMM_WORLD, root=0, initialize=true,
-                configure_runtime=true, blas_threads=1, strided_threads=1)
-
-Create a distributed context. MPI is initialized with `THREAD_FUNNELED` when
-needed: Julia worker threads may perform local contractions, while collectives
-run only after those workers have joined.
-"""
-function mpi_context(; comm=MPI.COMM_WORLD, root::Integer=0,
-                     initialize::Bool=true,
-                     configure_runtime::Bool=true,
-                     blas_threads::Integer=1,
-                     strided_threads::Integer=1)
-    if !MPI.Initialized()
-        initialize || throw(ArgumentError(
-            "MPI is not initialized; call MPI.Init or pass initialize=true"))
-        MPI.Init(; threadlevel=:funneled)
-    end
-    MPI.Finalized() &&
-        throw(ArgumentError("MPI has already been finalized"))
-    threadlevel = MPI.Query_thread()
-    threadlevel >= MPI.THREAD_FUNNELED || throw(ArgumentError(
-        "Graft requires at least MPI_THREAD_FUNNELED"))
-    size = MPI.Comm_size(comm)
-    0 <= root < size ||
-        throw(ArgumentError("root must lie in 0:$(size - 1)"))
-    configure_runtime && configure_parallel_runtime!(
-        ; blas_threads, strided_threads)
-    return MPIContext(comm, Int(root), threadlevel)
-end
-
-distributed_rank(context::MPIContext) = MPI.Comm_rank(context.comm)
-distributed_size(context::MPIContext) = MPI.Comm_size(context.comm)
-distributed_root(context::MPIContext) = context.root
-
-function distributed_barrier(context::MPIContext)
-    MPI.Barrier(context.comm)
-    return nothing
-end
-
-function distributed_allreduce_sum!(context::MPIContext,
-                                    value::Union{AbstractArray,Base.RefValue})
-    MPI.Allreduce!(value, MPI.SUM, context.comm)
-    return value
-end
-
-function distributed_allreduce_sum!(context::MPIContext,
-                                    tensor::AbstractTensorMap)
-    for (_, data) in blocks(tensor)
-        buffer = collect(data)
-        MPI.Allreduce!(buffer, MPI.SUM, context.comm)
-        copyto!(data, buffer)
-    end
-    return tensor
-end
-
-function distributed_broadcast!(context::MPIContext,
-                                value::Union{AbstractArray,Base.RefValue};
-                                root::Integer=context.root)
-    MPI.Bcast!(value, root, context.comm)
-    return value
-end
-
-function distributed_broadcast!(context::MPIContext,
-                                tensor::AbstractTensorMap;
-                                root::Integer=context.root)
-    for (_, data) in blocks(tensor)
-        buffer = collect(data)
-        MPI.Bcast!(buffer, root, context.comm)
-        copyto!(data, buffer)
-    end
-    return tensor
-end
-
-function distributed_allgather(context::MPIContext, value)
-    return [
-        MPI.bcast(value, source, context.comm)
-        for source in 0:(distributed_size(context) - 1)
-    ]
-end
-
-struct _RootDrivenMap{C,W}
-    context::C
-    workspace::W
-end
-
-function _collective_workspace_call(context::MPIContext, workspace, input)
-    local_result = try
-        (; ok=true, value=workspace(input), message="")
-    catch err
-        (; ok=false, value=nothing, message=sprint(showerror, err))
-    end
-    failures = [local_result.ok ? 0 : 1]
-    MPI.Allreduce!(failures, MPI.SUM, context.comm)
-    if !iszero(only(failures))
-        messages = distributed_allgather(context, local_result.message)
-        details = join(
-            ("rank $(rank - 1): $message"
-             for (rank, message) in enumerate(messages) if !isempty(message)),
-            "; ")
-        error("distributed map evaluation failed: $details")
-    end
-    return local_result.value
-end
-
-function (map::_RootDrivenMap)(x::AbstractTensorMap)
-    command = Int[1]
-    distributed_broadcast!(map.context, command)
-    input = MPI.bcast(
-        x, distributed_root(map.context), map.context.comm)
-    return _collective_workspace_call(map.context, map.workspace, input)
-end
-
-function _root_driven_solver(solver, context::MPIContext, effective, x)
-    root = distributed_root(context)
-    rank = distributed_rank(context)
-    return with_workspace_map(effective) do workspace
-        payload = if rank == root
-            driven = _RootDrivenMap(context, workspace)
-            result = try
-                (; ok=true, value=solver(driven), message="")
-            catch err
-                (; ok=false, value=nothing, message=sprint(showerror, err))
-            end
-            distributed_broadcast!(context, Int[0])
-            result
-        else
-            while true
-                command = Int[0]
-                distributed_broadcast!(context, command)
-                iszero(only(command)) && break
-                only(command) == 1 ||
-                    error("invalid root-driven solver command")
-                input = MPI.bcast(nothing, root, context.comm)
-                try
-                    _collective_workspace_call(context, workspace, input)
-                catch
-                    # The root sees the same collective failure, terminates the
-                    # adaptive solve, and sends the stop command and payload.
-                    # Workers must remain in the command loop to receive them.
-                end
-            end
-            nothing
-        end
-        payload = MPI.bcast(payload, root, context.comm)
-        payload.ok || error("distributed solver failed on root: " *
-                            payload.message)
-        return payload.value
-    end
-end
-
-function distributed_eigsolve(
-        context::MPIContext, effective, x, howmany::Integer, which;
-        kwargs...)
-    return _root_driven_solver(context, effective, x) do driven
-        groundstate_eigsolve_backend(
-            driven, x, howmany, which; kwargs...)
-    end
-end
-
-function distributed_exponentiate(
-        context::MPIContext, effective, x, time;
-        kwargs...)
-    return _root_driven_solver(context, effective, x) do driven
-        evolution_exponentiate_backend(driven, time, x; kwargs...)
-    end
-end
 
 _legacy_rank_shard(path, rank) =
     string(path, ".rank", lpad(string(rank), 4, '0'), ".jld2")
@@ -223,7 +37,7 @@ _rank_shard_path(path::AbstractString, shard_name::AbstractString) =
 _file_sha256(path::AbstractString) = bytes2hex(open(sha256, path))
 
 function _collective_checkpoint_stage(
-        operation, context::MPIContext, stage::Symbol)
+        operation, context::AbstractRootDrivenContext, stage::Symbol)
     local_result = try
         (; ok=true, value=operation(), message="")
     catch err
@@ -297,12 +111,11 @@ function _checkpoint_mpi!(
 
     chain_steps = distributed_allgather(
         context, trajectory.local_chain.total_steps)
-    generation = MPI.bcast(
-        rank == distributed_root(context) ?
-        _checkpoint_generation(path) : "",
-        distributed_root(context),
-        context.comm,
-    )
+    generation_bytes = rank == distributed_root(context) ?
+        Vector{UInt8}(codeunits(_checkpoint_generation(path))) :
+        Vector{UInt8}(undef, 24)
+    distributed_broadcast!(context, generation_bytes)
+    generation = String(generation_bytes)
     shard_name = _rank_shard_name(path, generation, rank)
     shard_path = _rank_shard_path(path, shard_name)
     local_shard = _collective_checkpoint_stage(
@@ -464,7 +277,7 @@ end
 function _resume_mpi_v1(
         path::AbstractString,
         manifest,
-        context::MPIContext;
+        context::AbstractRootDrivenContext;
         expected_model_identity=nothing)
     size = distributed_size(context)
     manifest.nranks == size || throw(ArgumentError(
@@ -493,7 +306,7 @@ end
 
 function resume_mpi(
         path::AbstractString,
-        context::MPIContext;
+        context::AbstractRootDrivenContext;
         expected_model_identity=nothing)
     manifest_record = _collective_checkpoint_stage(
             context, :manifest_read) do
