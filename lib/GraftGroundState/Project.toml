@@ -1,0 +1,28 @@
+name = "GraftGroundState"
+uuid = "3f84161c-7b72-40cd-aa05-f10ba8a65234"
+authors = ["weiyiguo9"]
+license = "Apache-2.0"
+version = "0.1.1"
+
+[deps]
+GraftContractions = "4d48fc77-7b13-40f5-b575-37e15910179b"
+GraftFoundation = "b817f51d-645c-48d5-8696-150514b96021"
+GraftNetworks = "9722b9cb-9502-4464-b3ad-04909505de0f"
+GraftParallel = "3d4f43ef-a709-449c-bf32-dbe6f02e99a3"
+KrylovKit = "0b1a1467-8014-51b9-945f-bf0ae24f4b77"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+
+[sources]
+GraftContractions = {path = "../GraftContractions"}
+GraftFoundation = {path = "../GraftFoundation"}
+GraftNetworks = {path = "../GraftNetworks"}
+GraftParallel = {path = "../GraftParallel"}
+
+[compat]
+GraftContractions = "0.1.1"
+GraftFoundation = "0.1.1"
+GraftNetworks = "0.1.1"
+GraftParallel = "0.1.1"
+KrylovKit = "0.10"
+Random = "1.11"
+julia = "1.11"

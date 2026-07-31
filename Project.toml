@@ -5,23 +5,54 @@ license = "Apache-2.0"
 version = "0.1.1"
 
 [deps]
+GraftContractions = "4d48fc77-7b13-40f5-b575-37e15910179b"
+GraftEvolution = "c0b0ae67-2c82-4574-a955-8b13fd9a0fd6"
+GraftFoundation = "b817f51d-645c-48d5-8696-150514b96021"
+GraftGroundState = "3f84161c-7b72-40cd-aa05-f10ba8a65234"
+GraftNetworks = "9722b9cb-9502-4464-b3ad-04909505de0f"
+GraftParallel = "3d4f43ef-a709-449c-bf32-dbe6f02e99a3"
+GraftPlanning = "b2c5fc82-2f33-488f-8f79-59dbb6382a93"
+GraftSpectral = "820719f9-8ca8-4bd9-8c80-731fd33f18ce"
+GraftStateDiagram = "13d62100-4025-43ba-bfff-5935242a45be"
+GraftSymbolic = "923ebbca-7fce-40e7-998b-8b588cdf2371"
+GraftTTNOBuild = "733c6fe2-fcce-4f2b-b032-39dffcf60a1e"
+GraftThermal = "5d032ad8-176f-4faa-8fb2-27bb559d27dc"
 JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
-KrylovKit = "0b1a1467-8014-51b9-945f-bf0ae24f4b77"
-LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
-TensorKit = "07d1fe3e-3e46-537d-9eac-e9e13d0d4cec"
-TensorOperations = "6aa20fa7-93e2-5fca-9bc0-fbd0db3c71a2"
+
+[sources]
+GraftContractions = {path = "lib/GraftContractions"}
+GraftEvolution = {path = "lib/GraftEvolution"}
+GraftFoundation = {path = "lib/GraftFoundation"}
+GraftGroundState = {path = "lib/GraftGroundState"}
+GraftNetworks = {path = "lib/GraftNetworks"}
+GraftParallel = {path = "lib/GraftParallel"}
+GraftPlanning = {path = "lib/GraftPlanning"}
+GraftSpectral = {path = "lib/GraftSpectral"}
+GraftStateDiagram = {path = "lib/GraftStateDiagram"}
+GraftSymbolic = {path = "lib/GraftSymbolic"}
+GraftTTNOBuild = {path = "lib/GraftTTNOBuild"}
+GraftThermal = {path = "lib/GraftThermal"}
 
 [compat]
+GraftContractions = "0.1.1"
+GraftEvolution = "0.1.1"
+GraftFoundation = "0.1.1"
+GraftGroundState = "0.1.1"
+GraftNetworks = "0.1.1"
+GraftParallel = "0.1.1"
+GraftPlanning = "0.1.1"
+GraftSpectral = "0.1.1"
+GraftStateDiagram = "0.1.1"
+GraftSymbolic = "0.1.1"
+GraftTTNOBuild = "0.1.1"
+GraftThermal = "0.1.1"
 JLD2 = "0.6"
-KrylovKit = "0.10"
 MPI = "0.20"
 PrecompileTools = "1"
-TensorKit = "0.17"
-TensorOperations = "5"
-julia = "1.10"
+julia = "1.11"
 
 [weakdeps]
 MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"

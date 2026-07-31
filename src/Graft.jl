@@ -29,24 +29,36 @@ packages depend on `Graft`, never the reverse; upper layers never
 """
 module Graft
 
-include("Backend/Backend.jl")
-include("Trees/Trees.jl")
-include("Planning/Planning.jl")
-include("Networks/Networks.jl")
-include("Parallel/Parallel.jl")
-include("Contractions/Contractions.jl")
-include("Symbolic/Symbolic.jl")
-include("TTNOBuild/TTNOBuild.jl")
-include("StateDiagram/StateDiagram.jl")
+import GraftFoundation
+import GraftParallel
+import GraftPlanning
+import GraftNetworks
+import GraftContractions
+import GraftSymbolic
+import GraftTTNOBuild
+import GraftStateDiagram
+import GraftGroundState
+import GraftEvolution
+import GraftSpectral
+import GraftThermal
+
+const Backend = GraftFoundation.Backend
+const Trees = GraftFoundation.Trees
+const Parallel = GraftParallel.Parallel
+const Planning = GraftPlanning.Planning
+const Networks = GraftNetworks.Networks
+const Contractions = GraftContractions.Contractions
+const Symbolic = GraftSymbolic.Symbolic
+const LegacyTTNOBuild = GraftTTNOBuild.LegacyTTNOBuild
+const StateDiagramCompiler = GraftStateDiagram.StateDiagramCompiler
 const StateDiagram = StateDiagramCompiler
 include("TTNOBuildCompatibility.jl")
-include("GroundState/GroundState.jl")
-include("Evolution/Evolution.jl")
-include("Spectral/Spectral.jl")
-include("Thermal/Thermal.jl")
+const GroundState = GraftGroundState.GroundState
+const Evolution = GraftEvolution.Evolution
+const Spectral = GraftSpectral.Spectral
+const Thermal = GraftThermal.Thermal
 include("FreqDomain/FreqDomain.jl")
 include("IO/Checkpoints.jl")
-include("TestUtils/TestUtils.jl")
 
 using .Backend
 using .Trees
