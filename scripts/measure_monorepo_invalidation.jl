@@ -17,6 +17,21 @@ using UUIDs
 const SCRIPT_ROOT = normpath(joinpath(@__DIR__, ".."))
 const CACHE_VERSION = "v$(VERSION.major).$(VERSION.minor)"
 const IMAGE_SUFFIXES = Set((".ji", ".so", ".dylib", ".dll"))
+const GENERAL_REGISTRY_BOOTSTRAP = """
+import Pkg
+Pkg.offline(false)
+try
+    Pkg.Registry.add(Pkg.RegistrySpec(name="General"))
+    Pkg.Registry.status()
+catch exception
+    println(stderr,
+            "failed to initialize General registry in isolated JULIA_DEPOT_PATH: ",
+            first(DEPOT_PATH))
+    showerror(stderr, exception)
+    println(stderr)
+    rethrow()
+end
+"""
 
 struct Target
     name::String
@@ -106,7 +121,8 @@ Safety and diagnostics:
   --overwrite            Permit replacement of the three report files. The default
                          is to refuse every existing output.
   --dry-run              Validate paths and print the planned isolated operations;
-                         do not copy, edit, resolve, compile, load, or write reports.
+                         do not use network, initialize registries, copy, edit,
+                         resolve, compile, load, or write reports.
   -h, --help             Show this help.
 
 The script runs only on Julia 1.12. Output and --keep-temp paths inside either the
@@ -116,6 +132,8 @@ compiled-cache baseline are restored before the next target. Package-image
 snapshots include the actual .ji/.so/.dylib/.dll paths, byte counts, mtimes in
 nanoseconds, and SHA-256 digests. Presplit runs assert only the monolithic Graft
 package image; split runs assert the umbrella and twelve runtime package images.
+Before resolution, every fresh isolated depot explicitly enables Pkg network
+access, adds General, and records the registry status in a dedicated phase log.
 """)
 end
 
@@ -316,13 +334,14 @@ end
 
 function run_julia_phase(source_root::AbstractString, depot::AbstractString,
                          logs::AbstractString, name::AbstractString,
-                         code::AbstractString)
+                         code::AbstractString; network_enabled::Bool=false)
     mkpath(logs)
     log_path = joinpath(logs, string(name, ".log"))
     command = `$(Base.julia_cmd()) --startup-file=no --history-file=no --project=$source_root -e $code`
     environment = copy(ENV)
     environment["JULIA_DEPOT_PATH"] = depot
     environment["JULIA_LOAD_PATH"] = "@:@stdlib"
+    network_enabled && (environment["JULIA_PKG_OFFLINE"] = "false")
     started = time_ns()
     process = open(log_path, "w") do io
         process = run(pipeline(setenv(command, environment), stdout=io, stderr=io);
@@ -338,6 +357,7 @@ function run_julia_phase(source_root::AbstractString, depot::AbstractString,
         "name" => String(name),
         "seconds" => elapsed,
         "command" => command_string(command),
+        "network_enabled" => network_enabled,
         "log_sha256" => bytes2hex(SHA.sha256(read(log_path))),
         "log_bytes" => filesize(log_path),
     )
@@ -648,8 +668,10 @@ function write_text(io::IO, report::Dict{String,Any})
     println(io, "Git status at copy time:\n", report["git_status"])
     println(io, "\nBaseline phases:")
     for phase in report["baseline_phases"]
-        @printf(io, "  %-16s %10.6f s  log sha256 %s\n",
-                phase["name"], phase["seconds"], phase["log_sha256"])
+        network_note = phase["network_enabled"] ? "  network enabled" : ""
+        @printf(io, "  %-16s %10.6f s  log sha256 %s%s\n",
+                phase["name"], phase["seconds"], phase["log_sha256"],
+                network_note)
         println(io, "    ", phase["command"])
     end
     for result in report["targets"]
@@ -704,7 +726,7 @@ function write_reports(options::Options, report::Dict{String,Any})
 end
 
 function print_dry_run(options::Options)
-    println("dry run: no files will be copied, edited, compiled, or written")
+    println("dry run: no network, registry, copy, edit, compile, load, or report writes")
     println("layout: ", options.layout)
     println("live source (read-only): ", options.source_root)
     println("Julia: ", VERSION)
@@ -715,7 +737,8 @@ function print_dry_run(options::Options)
     else
         println("reports: none requested for dry run")
     end
-    println("baseline: Pkg.resolve -> Pkg.instantiate -> Pkg.precompile -> using Graft")
+    println("baseline: add General registry (network enabled) -> Pkg.resolve -> " *
+            "Pkg.instantiate -> Pkg.precompile -> using Graft")
     any(target.load_mpi for target in options.targets) &&
         println("MPI baseline: using Graft; using MPI")
     println("targets:")
@@ -736,6 +759,9 @@ function execute(options::Options, work_root::AbstractString)
     mkpath(backups)
 
     baseline_phases = Dict{String,Any}[]
+    push!(baseline_phases, run_julia_phase(
+        source_root, depot, logs, "registry-general", GENERAL_REGISTRY_BOOTSTRAP;
+        network_enabled=true))
     for (name, code) in (
         ("resolve", "import Pkg; Pkg.resolve()"),
         ("instantiate", "import Pkg; Pkg.instantiate()"),
