@@ -694,7 +694,7 @@ function write_text(io::IO, report::Dict{String,Any})
     end
 end
 
-function atomic_write(path::AbstractString, overwrite::Bool, writer::Function)
+function atomic_write(writer::Function, path::AbstractString, overwrite::Bool)
     parent = dirname(path)
     mkpath(parent)
     temporary, io = mktemp(parent; cleanup=false)
