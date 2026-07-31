@@ -135,8 +135,10 @@ script checkout or selected source checkout are rejected. Every measured edit is
 an appended comment in the isolated source copy; the source file and Graft*
 compiled-cache baseline are restored before the next target. Package-image
 snapshots include the actual .ji/.so/.dylib/.dll paths, byte counts, mtimes in
-nanoseconds, and SHA-256 digests. Presplit runs assert only the monolithic Graft
-package image; split runs assert the umbrella and twelve runtime package images.
+nanoseconds, and SHA-256 digests. Cache reuse classification is content-based:
+mtime-only changes remain telemetry and do not count as recompilation. Presplit
+runs assert only the monolithic Graft package image; split runs assert the
+umbrella and twelve runtime package images.
 Before resolution, every fresh isolated depot explicitly enables Pkg network
 access, adds General, and records the registry status in a dedicated phase log.
 """)
@@ -411,7 +413,6 @@ end
 
 function image_equal(before::Dict{String,Any}, after::Dict{String,Any})
     return before["bytes"] == after["bytes"] &&
-        before["mtime_ns"] == after["mtime_ns"] &&
         before["sha256"] == after["sha256"]
 end
 
