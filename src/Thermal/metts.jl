@@ -344,7 +344,7 @@ function _distributed_metts(
         local_rep, problem, beta;
         evolver, tau_grid, nsteps, initial_state, collapse_initial,
         resume_from=local_resume, state_transform)
-    return _distributed_trajectory(chain, context)
+    return distributed_trajectory(chain, context)
 end
 
 function _distributed_metts(
@@ -366,10 +366,10 @@ function _distributed_metts(
     chain = thermalize(
         local_rep, problem, beta;
         evolver, tau_grid, nsteps, resume_from=local_resume, state_transform)
-    return _distributed_trajectory(chain, context)
+    return distributed_trajectory(chain, context)
 end
 
-function _distributed_trajectory(chain::METTSTrajectory, context)
+function distributed_trajectory(chain::METTSTrajectory, context)
     rank = distributed_rank(context)
     size = distributed_size(context)
     counts = zeros(Int, size)

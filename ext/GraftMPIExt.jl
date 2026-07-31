@@ -8,10 +8,14 @@ using Graft.Backend: AbstractTensorMap, blocks
 import Graft.Parallel: mpi_context, distributed_rank, distributed_size,
     distributed_root, distributed_barrier, distributed_allreduce_sum!,
     distributed_broadcast!, distributed_allgather, distributed_eigsolve,
-    distributed_exponentiate
+    distributed_exponentiate, AbstractDistributedContext,
+    configure_parallel_runtime!
 import Graft.Checkpoints: DistributedCheckpointError,
     checkpoint!, resume, checkpoint_mpi!, resume_mpi
-using Graft.Thermal: DistributedMETTSTrajectory
+using Graft.Thermal: DistributedMETTSTrajectory, distributed_trajectory
+using Graft.Contractions: with_workspace_map
+using Graft.GroundState: groundstate_eigsolve_backend
+using Graft.Evolution: evolution_exponentiate_backend
 
 """
     MPIContext
@@ -19,7 +23,7 @@ using Graft.Thermal: DistributedMETTSTrajectory
 Explicit MPI execution context used by Graft's distributed algorithms. The
 communicator is never stored in global package state and is not serializable.
 """
-struct MPIContext{C} <: Graft.AbstractDistributedContext
+struct MPIContext{C} <: AbstractDistributedContext
     comm::C
     root::Int
     threadlevel::MPI.ThreadLevel
@@ -51,7 +55,7 @@ function mpi_context(; comm=MPI.COMM_WORLD, root::Integer=0,
     size = MPI.Comm_size(comm)
     0 <= root < size ||
         throw(ArgumentError("root must lie in 0:$(size - 1)"))
-    configure_runtime && Graft.configure_parallel_runtime!(
+    configure_runtime && configure_parallel_runtime!(
         ; blas_threads, strided_threads)
     return MPIContext(comm, Int(root), threadlevel)
 end
@@ -141,7 +145,7 @@ end
 function _root_driven_solver(solver, context::MPIContext, effective, x)
     root = distributed_root(context)
     rank = distributed_rank(context)
-    return Graft.Contractions._with_workspace_map(effective) do workspace
+    return with_workspace_map(effective) do workspace
         payload = if rank == root
             driven = _RootDrivenMap(context, workspace)
             result = try
@@ -180,7 +184,7 @@ function distributed_eigsolve(
         context::MPIContext, effective, x, howmany::Integer, which;
         kwargs...)
     return _root_driven_solver(context, effective, x) do driven
-        Graft.GroundState.eigsolve(
+        groundstate_eigsolve_backend(
             driven, x, howmany, which; kwargs...)
     end
 end
@@ -189,7 +193,7 @@ function distributed_exponentiate(
         context::MPIContext, effective, x, time;
         kwargs...)
     return _root_driven_solver(context, effective, x) do driven
-        Graft.Evolution.exponentiate(driven, time, x; kwargs...)
+        evolution_exponentiate_backend(driven, time, x; kwargs...)
     end
 end
 
@@ -484,7 +488,7 @@ function _resume_mpi_v1(
             legacy=true,
         )
     end
-    return Graft.Thermal._distributed_trajectory(state, context)
+    return distributed_trajectory(state, context)
 end
 
 function resume_mpi(
@@ -545,7 +549,7 @@ function resume_mpi(
             expected_model_identity,
         )
     end
-    trajectory = Graft.Thermal._distributed_trajectory(state, context)
+    trajectory = distributed_trajectory(state, context)
     trajectory.samples_per_rank == manifest.samples_per_rank ||
         throw(ArgumentError("distributed METTS shard sample counts mismatch"))
     trajectory.global_nsamples == manifest.global_nsamples ||

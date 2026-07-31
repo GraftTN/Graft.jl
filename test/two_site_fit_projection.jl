@@ -5,7 +5,7 @@ using Graft
 using Graft.Backend
 using Graft.TestUtils
 
-const _FIT = Graft.Networks
+const _FIT = Graft.Contractions
 const _CON = Graft.Contractions
 
 function _projection_probe(target, source, n, m;

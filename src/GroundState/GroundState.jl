@@ -20,13 +20,16 @@ using ..Networks
 using ..Contractions
 using ..Parallel: AbstractDistributedContext, distributed_eigsolve
 
-export dmrg1!, dmrg2!, dmrg1_3s!, expand!
+export dmrg1!, dmrg2!, dmrg1_3s!, expand!, groundstate_eigsolve_backend
+
+groundstate_eigsolve_backend(map, x, howmany::Integer, which; kwargs...) =
+    eigsolve(map, x, howmany, which; kwargs...)
 
 function _effective_eigsolve(
         distributed, effective, x; krylovdim)
     if distributed === nothing
-        return Contractions._with_workspace_map(effective) do workspace
-            eigsolve(
+        return Contractions.with_workspace_map(effective) do workspace
+            groundstate_eigsolve_backend(
                 workspace, x, 1, :SR; ishermitian=true, krylovdim)
         end
     end

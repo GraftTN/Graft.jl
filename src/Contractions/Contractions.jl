@@ -37,13 +37,14 @@ using Random: AbstractRNG, Xoshiro, rand, randn!
 using ..Backend
 using ..Trees
 using ..Networks
+using ..Planning
 using ..Parallel: _with_parallel_runtime_region,
     threaded_foreach, bounded_threaded_foreach, BoundedFanoutDiagnostics,
     BoundedFanoutAdmissionError,
     AbstractDistributedContext,
     distributed_rank, distributed_size, distributed_allreduce_sum!,
     distributed_broadcast!
-import ..Networks: invalidate_node!, invalidate_edge!
+import ..Networks: fit!, invalidate_node!, invalidate_edge!
 
 export EnvCache, env!, build_env, invalidate_node!, invalidate_edge!,
     EffectiveMap, ChannelSlicedEffectiveMap, DistributedChannelEffectiveMap,
@@ -54,16 +55,17 @@ export EnvCache, env!, build_env, invalidate_node!, invalidate_edge!,
     EnvironmentBuildConflict, plan_cache_stats,
     cache_diagnostics,
     env_cache_stats,
+    with_workspace_map,
     PlanWorkspace, workspace_map, workspace_stats, inner, expect, eff_h1,
     eff_h0, eff_h2, two_site_tensor, two_site_space, split_two_site!, expand!
 
-include("planning/Planning.jl")
-using .Planning: ContractionSpec, ContractionPlan, EffectiveMap, PlanWorkspace,
+using ..Planning: ContractionSpec, ContractionPlan, EffectiveMap, PlanWorkspace,
     PlanKey, PlannerCandidateFailure, PlannerDiagnostics, plan_diagnostics,
     workspace_map, workspace_stats
 include("envcache.jl")
 include("effective.jl")
 include("expansion.jl")
 include("expectation.jl")
+include("fit.jl")
 
 end # module Contractions

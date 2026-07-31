@@ -1,5 +1,5 @@
 """
-    Contractions.Planning
+    Planning
 
 Shape-only planning and binary execution for Krylov-hot effective-Hamiltonian
 networks. The parent `Contractions` module describes TTN semantics and supplies
@@ -9,7 +9,7 @@ costs, plan selection, caching helpers, and the slot-walk executor.
 module Planning
 
 using TensorOperations
-using ...Backend
+using ..Backend
 
 export ContractionSpec, PairStep, ContractionPlan, EffectiveMap, PlanWorkspace,
     WorkspaceMap, PlanKey, PlannerCandidateFailure, PlannerDiagnostics,

@@ -309,7 +309,7 @@ end
         @test_throws ArgumentError pooled(ψ.tensors[root])
         @test isnothing(close(pooled))
 
-        scoped = _CP._with_workspace_map(sliced) do h1map
+        scoped = _CP.with_workspace_map(sliced) do h1map
             h1map(ψ.tensors[root])
         end
         @test norm(scoped - reference) <= 1e-12 * scale
@@ -382,7 +382,7 @@ end
         )
         @test leaf_sliced isa ChannelSlicedEffectiveMap
         leaf_reference = leaf_full(ψ.tensors[leaf])
-        leaf_got = _CP._with_workspace_map(leaf_sliced) do h1map
+        leaf_got = _CP.with_workspace_map(leaf_sliced) do h1map
             h1map(ψ.tensors[leaf])
         end
         @test norm(leaf_got - leaf_reference) <=

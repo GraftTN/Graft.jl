@@ -14,7 +14,7 @@ Planned extensions beyond PyTreeNet (§4b):
 * bipartite-graph optimization + symbolic Gaussian elimination on the diagram
   — TODO (upstream PyTreeNet has them; port after the baseline is validated).
 """
-module TTNOBuild
+module LegacyTTNOBuild
 
 using LinearAlgebra: ColumnNorm, diag, norm, pinv, qr
 using ..Backend
@@ -25,30 +25,8 @@ using ..Symbolic
 export ttno_from_opsum, THCFactorization, THCReport, isdf_thc, fit_thc,
     reconstruct_thc
 
-# SD6 public typed compiler facade. The compiler-internal IR (input,
-# expansion, channel, route, and merge-plan types) stays unexported: only
-# the facade, the kernel selectors, and the reports are public
-# (ADR-0003 decision 6). The legacy ttno_from_opsum remains the default
-# compiler and explicit oracle until the SD7 promotion is approved.
-export compile_ttno, AbstractOperatorLoweringKernel, AbelianScalarLowering,
-    AbstractTTNOMergeKernel, DirectSumMerge, StateDiagramMerge,
-    StructuralOptimizer, GammaCoverOptimizer, SGEOptimizer,
-    MissingCategoryCapability, TTNOBuildReport, TTNOBuildEdgeReport,
-    compiler_exact_provenance
-
 include("thc.jl")
 include("statediagram.jl")
-include("category_services.jl")
-include("build_input.jl")
-include("ir.jl")
-include("merge_plans.jl")
-include("lowering.jl")
-include("realize.jl")
-include("structural_merge.jl")
-include("sge.jl")
-include("gamma_cover.jl")
-include("facade.jl")
-include("compression_provenance.jl")
-include("ir_serialization.jl")
+include("legacy_lowering_interface.jl")
 
-end # module TTNOBuild
+end # module LegacyTTNOBuild

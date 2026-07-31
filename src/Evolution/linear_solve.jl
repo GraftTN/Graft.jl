@@ -76,15 +76,15 @@ function linsolve!(ψ::TTNS, H::TTNO, rhs::TTNS;
         for n in Iterators.flatten(directions)
             move_center!(ψ, n; cache)
             effective = eff_h1(cache, ψ, H, n)
-            rhs_cache = Networks._FitCache(topology(ψ), nothing)
-            local_rhs = Networks._fit_local_tensor(
+            rhs_cache = Contractions._FitCache(topology(ψ), nothing)
+            local_rhs = Contractions._fit_local_tensor(
                 [rhs_cache], ψ, (rhs,), T[one(T)], n)
             local_solution, local_info = if _root_first
                 # A root-first sweep can encounter a nontrivial pivotal
                 # self-overlap before any leaf update transports that
                 # coordinate change. Build a fresh normal map from the current
                 # state at every node and solve the full projected equation.
-                normal = Networks._fit_local_normal_map(ψ, n)
+                normal = Contractions._fit_local_normal_map(ψ, n)
                 combined = _LocalNormalEquationMap(
                     normal, effective, a0T, a1T)
                 KrylovKit.linsolve(

@@ -170,7 +170,7 @@ function Base.show(io::IO, f::ChannelSlicedEffectiveMap)
 end
 
 # Keep the public generic free of background-task lifecycle obligations.
-# Internal Krylov call sites use `_with_workspace_map` below to scope a
+# Krylov call sites and owner extensions use `with_workspace_map` below to scope a
 # persistent worker pool and close it deterministically after each solve.
 Planning.workspace_map(f::ChannelSlicedEffectiveMap) = f
 Planning.workspace_map(f::DistributedChannelEffectiveMap) = f
@@ -297,8 +297,8 @@ function Base.close(f::_ChannelSlicedWorkspaceMap)
     return nothing
 end
 
-_with_workspace_map(body, effective) = body(Planning.workspace_map(effective))
-function _with_workspace_map(body, effective::ChannelSlicedEffectiveMap)
+with_workspace_map(body, effective) = body(Planning.workspace_map(effective))
+function with_workspace_map(body, effective::ChannelSlicedEffectiveMap)
     workspace = _channel_workspace_map(effective)
     try
         return body(workspace)
@@ -306,7 +306,7 @@ function _with_workspace_map(body, effective::ChannelSlicedEffectiveMap)
         close(workspace)
     end
 end
-function _with_workspace_map(body, effective::DistributedChannelEffectiveMap)
+function with_workspace_map(body, effective::DistributedChannelEffectiveMap)
     workspace = _channel_workspace_map(effective)
     try
         return body(workspace)

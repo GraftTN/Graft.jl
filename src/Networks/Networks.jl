@@ -19,9 +19,14 @@ export TTNS, TTNO, TTNDO, topology, center, hasphys, physleg, parentleg,
     TTNOCompressionEdgeReport, TTNOCompressionReport,
     TTNOExactChannelRelation, TTNOExactProvenance, TTNOExactWitness
 
+"Variationally fit a target state to one or more source states."
+function fit! end
+
 include("ttns.jl")
 include("ttno.jl")
 include("ttno_compression.jl")
+include("apply.jl")
+include("linear_combination.jl")
 
 # ---------------------------------------------------------------------------
 # Generic operations implemented here: `apply(O::TTNO, ψ::TTNS)` and

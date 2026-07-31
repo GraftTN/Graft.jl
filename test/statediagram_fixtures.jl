@@ -4,7 +4,7 @@
 
 using Graft.Backend: ⊠, ⊗, ←
 
-function _sd1_dense_input(; hermiticity=Graft.TTNOBuild.NoHermiticityAssertion())
+function _sd1_dense_input(; hermiticity=Graft.StateDiagram.NoHermiticityAssertion())
     S = spin_ops()
     topo = mps_topology(3)
     phys = Dict(:site1 => S.P, :site2 => S.P, :site3 => S.P)
@@ -12,7 +12,7 @@ function _sd1_dense_input(; hermiticity=Graft.TTNOBuild.NoHermiticityAssertion()
     H += Term(-1.0, SiteOp(:site1, :Z, S.Z), SiteOp(:site2, :Z, S.Z))
     H += Term(-1.0, SiteOp(:site2, :Z, S.Z), SiteOp(:site3, :Z, S.Z))
     H += Term(-0.7, SiteOp(:site2, :X, S.X))
-    return Graft.TTNOBuild.TTNOBuildInput(H, topo, phys; hermiticity), topo
+    return Graft.StateDiagram.TTNOBuildInput(H, topo, phys; hermiticity), topo
 end
 
 const _SD2_MM_Q = typeof(Graft.Backend.FermionParity(0) ⊠ Graft.Backend.U1Irrep(0))
@@ -65,5 +65,5 @@ function _sd1_fz2_input()
     H += Term(1.0, SiteOp(a, :Cd, F.Cd), SiteOp(b, :C, F.C))
     H += Term(1.0, SiteOp(b, :Cd, F.Cd), SiteOp(a, :C, F.C))
     H += Term(0.5, SiteOp(sites[2], :N, F.N))
-    return Graft.TTNOBuild.TTNOBuildInput(H, topo, phys), topo
+    return Graft.StateDiagram.TTNOBuildInput(H, topo, phys), topo
 end

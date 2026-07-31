@@ -2,7 +2,7 @@
 # (state-diagram-compiler plan v2, SD1 deliverables; ADR-0003 decisions 2-4;
 # representability audit findings F1-F3).
 
-const TB = Graft.TTNOBuild
+const TB = Graft.StateDiagram
 
 include("statediagram_fixtures.jl")
 

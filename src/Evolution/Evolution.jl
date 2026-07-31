@@ -45,13 +45,18 @@ export Evolver, step!, evolve!, CorrelatorSeries, correlator, correlator_series,
     PairedEdgeSubspaceEvidence, PairedLinearDiagnostic,
     paired_linear_diagnostic
 
+export evolution_exponentiate_backend
+
+evolution_exponentiate_backend(map, time, x; kwargs...) =
+    exponentiate(map, time, x; kwargs...)
+
 abstract type Evolver end
 
 function _effective_exponentiate(
         distributed, effective, time, x; kwargs...)
     if distributed === nothing
-        return Contractions._with_workspace_map(effective) do workspace
-            exponentiate(workspace, time, x; kwargs...)
+        return Contractions.with_workspace_map(effective) do workspace
+            evolution_exponentiate_backend(workspace, time, x; kwargs...)
         end
     end
     return distributed_exponentiate(

@@ -73,7 +73,7 @@ export ThermalRep, Purified, METTS, HybridMETTS, thermalize,
     METTSSample, METTSTrajectory, DistributedMETTSTrajectory,
     METTSStatistics, metts_statistics,
     infinite_temperature_state, thermal_expect, thermal_correlator,
-    thermal_realtime_correlator, state_at, logZ
+    thermal_realtime_correlator, state_at, logZ, distributed_trajectory
 
 abstract type ThermalRep end
 

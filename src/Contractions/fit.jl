@@ -1,7 +1,3 @@
-import ..Contractions: Planning, _component_has_dual_physical,
-    _euclidean_bra_tensor, _euclidean_output_legs, two_site_space,
-    two_site_tensor
-
 # A fit projection leaves the center's physical ket leg genuinely open; unlike
 # an effective-Hamiltonian result, it does not close that leg through a local
 # bra/operator sandwich.  Pivotal corrections therefore apply only to open

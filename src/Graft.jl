@@ -31,16 +31,15 @@ module Graft
 
 include("Backend/Backend.jl")
 include("Trees/Trees.jl")
+include("Planning/Planning.jl")
 include("Networks/Networks.jl")
 include("Parallel/Parallel.jl")
 include("Contractions/Contractions.jl")
-# `apply` and `fit!` use the generic complete-tuple planner. Load their methods
-# after the lower-level Networks data types and Contractions.Planning exist.
-Base.include(Networks, joinpath(@__DIR__, "Networks", "apply.jl"))
-Base.include(Networks, joinpath(@__DIR__, "Networks", "linear_combination.jl"))
-Base.include(Networks, joinpath(@__DIR__, "Networks", "fit.jl"))
 include("Symbolic/Symbolic.jl")
 include("TTNOBuild/TTNOBuild.jl")
+include("StateDiagram/StateDiagram.jl")
+const StateDiagram = StateDiagramCompiler
+include("TTNOBuildCompatibility.jl")
 include("GroundState/GroundState.jl")
 include("Evolution/Evolution.jl")
 include("Spectral/Spectral.jl")

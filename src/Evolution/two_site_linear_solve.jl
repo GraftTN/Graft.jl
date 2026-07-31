@@ -645,8 +645,8 @@ function two_site_linsolve!(
                 move_center!(working, child; cache)
                 merged = two_site_tensor(working, child, parent)
                 effective = eff_h2(cache, working, H, child, parent)
-                rhs_cache = Networks._FitCache(topo, nothing)
-                local_rhs = Networks._fit_two_site_tensor(
+                rhs_cache = Contractions._FitCache(topo, nothing)
+                local_rhs = Contractions._fit_two_site_tensor(
                     rhs_cache, working, rhs, child, parent)
                 local_solution, local_info = KrylovKit.linsolve(
                     effective, local_rhs, merged, a0T, a1T;

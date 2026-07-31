@@ -73,7 +73,7 @@ function _p0p1_fit_ref_env!(φ, ψ, u, v,
         for w in neighbors(topology(φ), u)
             w == v || _p0p1_fit_ref_env!(φ, ψ, w, u, envs)
         end
-        Graft.Networks._fit_build_env_ncon_reference(φ, ψ, u, v, envs)
+        Graft.Contractions._fit_build_env_ncon_reference(φ, ψ, u, v, envs)
     end
 end
 
@@ -89,7 +89,7 @@ function _p0p1_fit_operator_ref_env!(φ, ψ, O, u, v,
         for w in neighbors(topology(φ), u)
             w == v || _p0p1_fit_operator_ref_env!(φ, ψ, O, w, u, envs)
         end
-        Graft.Networks._fit_operator_build_env_ncon_reference(φ, ψ, O, u, v, envs)
+        Graft.Contractions._fit_operator_build_env_ncon_reference(φ, ψ, O, u, v, envs)
     end
 end
 

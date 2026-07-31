@@ -1,4 +1,4 @@
-import ..Contractions: Planning
+import ..Planning
 
 """
     apply(O::TTNO, ψ::TTNS; center=center(ψ), optimize=true) -> TTNS

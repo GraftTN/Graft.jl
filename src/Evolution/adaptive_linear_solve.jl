@@ -458,8 +458,8 @@ end
 
 function _rde_local_residual_tensor(
         ψ::TTNS, residual::TTNS, child::Int, parent::Int)
-    cache = Networks._FitCache(topology(ψ), nothing)
-    window = Networks._fit_two_site_tensor(
+    cache = Contractions._FitCache(topology(ψ), nothing)
+    window = Contractions._fit_two_site_tensor(
         cache,
         ψ,
         residual,
