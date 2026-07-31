@@ -1,7 +1,7 @@
 #!/usr/bin/env julia
 
 """
-Measure Julia package-image invalidation for the split Graft monorepo.
+Measure Julia package-image invalidation before or after the Graft monorepo split.
 
 The live checkout is read-only. The script copies it (excluding `.git`) into a
 temporary workspace, uses a completely isolated `JULIA_DEPOT_PATH`, builds one
@@ -14,7 +14,7 @@ using Printf
 using SHA
 using UUIDs
 
-const LIVE_ROOT = normpath(joinpath(@__DIR__, ".."))
+const SCRIPT_ROOT = normpath(joinpath(@__DIR__, ".."))
 const CACHE_VERSION = "v$(VERSION.major).$(VERSION.minor)"
 const IMAGE_SUFFIXES = Set((".ji", ".so", ".dylib", ".dll"))
 
@@ -24,7 +24,7 @@ struct Target
     load_mpi::Bool
 end
 
-const TARGETS = Target[
+const SPLIT_TARGETS = Target[
     Target("parallel", "lib/GraftParallel/src/GraftParallel.jl", false),
     Target("planning", "lib/GraftPlanning/src/GraftPlanning.jl", false),
     Target("contractions", "lib/GraftContractions/src/GraftContractions.jl", false),
@@ -38,7 +38,16 @@ const TARGETS = Target[
     Target("mpi-evolution", "lib/GraftEvolution/ext/GraftEvolutionMPIExt.jl", true),
     Target("mpi-umbrella", "ext/GraftMPIExt.jl", true),
 ]
-const TARGET_BY_NAME = Dict(target.name => target for target in TARGETS)
+const PRESPLIT_TARGETS = Target[
+    Target("parallel", "src/Parallel/Parallel.jl", false),
+    Target("planning", "src/Contractions/planning/Planning.jl", false),
+    Target("contractions", "src/Contractions/Contractions.jl", false),
+    Target("symbolic", "src/Symbolic/Symbolic.jl", false),
+    Target("ttnobuild", "src/TTNOBuild/statediagram.jl", false),
+    Target("statediagram", "src/TTNOBuild/ir.jl", false),
+    Target("evolution", "src/Evolution/Evolution.jl", false),
+    Target("thermal", "src/Thermal/Thermal.jl", false),
+]
 const RUNTIME_PACKAGES = [
     "Graft", "GraftFoundation", "GraftParallel", "GraftPlanning",
     "GraftNetworks", "GraftContractions", "GraftSymbolic",
@@ -51,6 +60,8 @@ const MPI_EXTENSION_IMAGES = [
 ]
 
 struct Options
+    layout::String
+    source_root::String
     targets::Vector{Target}
     tsv::Union{Nothing,String}
     json::Union{Nothing,String}
@@ -68,6 +79,13 @@ Usage:
       --output-prefix /absolute/path/graft-invalidation \\
       [--targets parallel,planning,...] [--keep-temp /absolute/path] [--overwrite]
 
+Layout selection:
+  --layout split         Measure the split monorepo (default). The source root
+                         defaults to the checkout containing this script.
+  --layout presplit      Measure the monolithic before-layout. Requires an
+                         absolute --source-root and rejects all MPI targets.
+  --source-root ABS_PATH Read-only source checkout to copy into isolation.
+
 Output selection (required except with --dry-run):
   --output-prefix PATH   Write PATH.tsv, PATH.json, and PATH.txt.
   --tsv PATH             Explicit TSV path; requires --json and --text.
@@ -80,7 +98,7 @@ Probe selection:
                          ttnobuild, statediagram, evolution, thermal.
                          MPI: mpi-parallel, mpi-groundstate, mpi-evolution,
                          mpi-umbrella. Alias `mpi` expands all four MPI targets.
-                         Alias `all` expands every target.
+                         Alias `all` expands every target available in the layout.
 
 Safety and diagnostics:
   --keep-temp PATH       Keep the isolated source, depot, cache backups, and logs
@@ -91,11 +109,13 @@ Safety and diagnostics:
                          do not copy, edit, resolve, compile, load, or write reports.
   -h, --help             Show this help.
 
-The script runs only on Julia 1.12. Output and --keep-temp paths inside the live
-checkout are rejected. Every measured edit is an appended comment in the isolated
-source copy; the source file and Graft* compiled-cache baseline are restored before
-the next target. Package-image snapshots include the actual .ji/.so/.dylib/.dll
-paths, byte counts, mtimes in nanoseconds, and SHA-256 digests.
+The script runs only on Julia 1.12. Output and --keep-temp paths inside either the
+script checkout or selected source checkout are rejected. Every measured edit is
+an appended comment in the isolated source copy; the source file and Graft*
+compiled-cache baseline are restored before the next target. Package-image
+snapshots include the actual .ji/.so/.dylib/.dll paths, byte counts, mtimes in
+nanoseconds, and SHA-256 digests. Presplit runs assert only the monolithic Graft
+package image; split runs assert the umbrella and twelve runtime package images.
 """)
 end
 
@@ -104,7 +124,12 @@ function take_value(args::Vector{String}, index::Int, option::String)
     return args[index + 1], index + 2
 end
 
-function expand_targets(specification::String)
+available_targets(layout::AbstractString) =
+    layout == "split" ? SPLIT_TARGETS : PRESPLIT_TARGETS
+
+function expand_targets(specification::String, layout::String)
+    targets = available_targets(layout)
+    target_by_name = Dict(target.name => target for target in targets)
     requested = split(lowercase(specification), ','; keepempty=false)
     isempty(requested) && error("--targets must not be empty")
     names = String[]
@@ -112,12 +137,15 @@ function expand_targets(specification::String)
         name = strip(raw)
         isempty(name) && continue
         expanded = if name == "all"
-            [target.name for target in TARGETS]
+            [target.name for target in targets]
         elseif name == "mpi"
-            [target.name for target in TARGETS if target.load_mpi]
+            layout == "presplit" && error(
+                "MPI targets are unavailable with --layout presplit")
+            [target.name for target in targets if target.load_mpi]
         else
-            haskey(TARGET_BY_NAME, name) || error(
-                "unknown target '$name'; run with --help for the target list")
+            haskey(target_by_name, name) || error(
+                "target '$name' is unavailable for layout '$layout'; " *
+                "run with --help for the target list")
             [name]
         end
         for item in expanded
@@ -125,10 +153,12 @@ function expand_targets(specification::String)
         end
     end
     isempty(names) && error("--targets must select at least one target")
-    return [TARGET_BY_NAME[name] for name in names]
+    return [target_by_name[name] for name in names]
 end
 
 function parse_options(args::Vector{String})
+    layout = "split"
+    source_root = nothing
     target_specification = "all"
     output_prefix = nothing
     tsv = nothing
@@ -151,6 +181,17 @@ function parse_options(args::Vector{String})
         elseif argument == "--dry-run"
             dry_run = true
             index += 1
+        elseif startswith(argument, "--layout=")
+            layout = lowercase(split(argument, '='; limit=2)[2])
+            index += 1
+        elseif argument == "--layout"
+            layout, index = take_value(args, index, argument)
+            layout = lowercase(layout)
+        elseif startswith(argument, "--source-root=")
+            source_root = split(argument, '='; limit=2)[2]
+            index += 1
+        elseif argument == "--source-root"
+            source_root, index = take_value(args, index, argument)
         elseif startswith(argument, "--targets=")
             target_specification = split(argument, '='; limit=2)[2]
             index += 1
@@ -199,10 +240,21 @@ function parse_options(args::Vector{String})
     !help && !dry_run && explicit_count == 0 && error(
         "report paths are required; use --output-prefix or all explicit paths")
 
+    layout in ("split", "presplit") || error(
+        "--layout must be 'split' or 'presplit'; got '$layout'")
+    if source_root === nothing
+        layout == "presplit" && error(
+            "--layout presplit requires an absolute --source-root")
+        source_root = SCRIPT_ROOT
+    else
+        isabspath(source_root) || error("--source-root must be an absolute path")
+        source_root = normpath(source_root)
+    end
     absolute(value) = value === nothing ? nothing : abspath(value)
     return Options(
-        expand_targets(target_specification), absolute(tsv), absolute(json),
-        absolute(text), absolute(keep_temp), overwrite, dry_run, help)
+        layout, source_root, expand_targets(target_specification, layout),
+        absolute(tsv), absolute(json), absolute(text), absolute(keep_temp),
+        overwrite, dry_run, help)
 end
 
 function is_within(path::AbstractString, root::AbstractString)
@@ -212,35 +264,41 @@ function is_within(path::AbstractString, root::AbstractString)
 end
 
 function validate_paths(options::Options)
+    isdir(options.source_root) || error(
+        "source root does not exist or is not a directory: $(options.source_root)")
+    isfile(joinpath(options.source_root, "Project.toml")) || error(
+        "source root is missing Project.toml: $(options.source_root)")
     outputs = String[path for path in (options.tsv, options.json, options.text)
                      if path !== nothing]
     length(unique(normpath.(outputs))) == length(outputs) ||
         error("TSV, JSON, and text outputs must be distinct paths")
     for path in outputs
-        is_within(path, LIVE_ROOT) && error(
-            "report path must be outside the live checkout: $path")
+        (is_within(path, SCRIPT_ROOT) || is_within(path, options.source_root)) &&
+            error("report path must be outside the script and source checkouts: $path")
         isdir(path) && error("report path is a directory: $path")
         ispath(path) && !options.overwrite && error(
             "refusing to overwrite existing report (pass --overwrite): $path")
     end
     if options.keep_temp !== nothing
-        is_within(options.keep_temp, LIVE_ROOT) && error(
-            "--keep-temp must be outside the live checkout: $(options.keep_temp)")
+        (is_within(options.keep_temp, SCRIPT_ROOT) ||
+         is_within(options.keep_temp, options.source_root)) && error(
+            "--keep-temp must be outside the script and source checkouts: " *
+            options.keep_temp)
         ispath(options.keep_temp) && error(
             "--keep-temp path must not already exist: $(options.keep_temp)")
     end
     for target in options.targets
-        path = joinpath(LIVE_ROOT, target.source)
+        path = joinpath(options.source_root, target.source)
         isfile(path) || error("target source does not exist: $path")
     end
     return nothing
 end
 
-function copy_checkout(destination::AbstractString)
+function copy_checkout(source_root::AbstractString, destination::AbstractString)
     mkdir(destination)
-    for entry in readdir(LIVE_ROOT)
+    for entry in readdir(source_root)
         entry == ".git" && continue
-        cp(joinpath(LIVE_ROOT, entry), joinpath(destination, entry);
+        cp(joinpath(source_root, entry), joinpath(destination, entry);
            follow_symlinks=false)
     end
     return nothing
@@ -471,8 +529,8 @@ function measure_target(target::Target, source_root::AbstractString,
     )
 end
 
-function git_read(arguments...)
-    command = Cmd(String["git", "-C", LIVE_ROOT, string.(arguments)...])
+function git_read(source_root::AbstractString, arguments...)
+    command = Cmd(String["git", "-C", source_root, string.(arguments)...])
     try
         return chomp(read(command, String))
     catch
@@ -484,12 +542,13 @@ function tsv_field(value)
     return replace(string(value), '\t' => "\\t", '\n' => "\\n", '\r' => "\\r")
 end
 
-function write_tsv(io::IO, results::Vector{Dict{String,Any}})
+function write_tsv(io::IO, results::Vector{Dict{String,Any}},
+                   layout::AbstractString, source_root::AbstractString)
     headers = [
-        "target", "edited_file", "edit_load_seconds", "package",
-        "package_status", "image_status", "image_path", "before_bytes",
-        "after_bytes", "before_mtime_ns", "after_mtime_ns", "before_sha256",
-        "after_sha256",
+        "layout", "source_root", "target", "edited_file", "edit_load_seconds",
+        "package", "package_status", "image_status", "image_path",
+        "before_bytes", "after_bytes", "before_mtime_ns", "after_mtime_ns",
+        "before_sha256", "after_sha256",
     ]
     println(io, join(headers, '\t'))
     for result in results
@@ -500,7 +559,7 @@ function write_tsv(io::IO, results::Vector{Dict{String,Any}})
             after = record["after"]
             package = record["package"]
             row = Any[
-                result["target"], result["edited_file"],
+                layout, source_root, result["target"], result["edited_file"],
                 result["edit_load"]["seconds"], package,
                 package in changed ? "changed" : "reused",
                 record["classification"], record["path"],
@@ -583,6 +642,7 @@ end
 function write_text(io::IO, report::Dict{String,Any})
     println(io, "Graft monorepo package-image invalidation measurement")
     println(io, "Julia: ", report["julia_version"])
+    println(io, "Layout: ", report["layout"])
     println(io, "Live source (read-only input): ", report["live_source"])
     println(io, "Git HEAD: ", report["git_head"])
     println(io, "Git status at copy time:\n", report["git_status"])
@@ -631,7 +691,7 @@ end
 function write_reports(options::Options, report::Dict{String,Any})
     results = report["targets"]
     atomic_write(options.tsv, options.overwrite) do io
-        write_tsv(io, results)
+        write_tsv(io, results, report["layout"], report["live_source"])
     end
     atomic_write(options.json, options.overwrite) do io
         write_json(io, report)
@@ -645,7 +705,8 @@ end
 
 function print_dry_run(options::Options)
     println("dry run: no files will be copied, edited, compiled, or written")
-    println("live source (read-only): ", LIVE_ROOT)
+    println("layout: ", options.layout)
+    println("live source (read-only): ", options.source_root)
     println("Julia: ", VERSION)
     println("temporary policy: ", options.keep_temp === nothing ?
             "automatic cleanup" : "keep at $(options.keep_temp)")
@@ -670,7 +731,7 @@ function execute(options::Options, work_root::AbstractString)
     depot = joinpath(work_root, "depot")
     logs = joinpath(work_root, "logs")
     backups = joinpath(work_root, "cache-baselines")
-    copy_checkout(source_root)
+    copy_checkout(options.source_root, source_root)
     mkdir(depot)
     mkpath(backups)
 
@@ -686,7 +747,8 @@ function execute(options::Options, work_root::AbstractString)
     end
 
     umbrella_snapshot = snapshot_images(depot)
-    assert_packages(umbrella_snapshot, RUNTIME_PACKAGES, "umbrella baseline")
+    required_packages = options.layout == "split" ? RUNTIME_PACKAGES : ["Graft"]
+    assert_packages(umbrella_snapshot, required_packages, "umbrella baseline")
     umbrella_cache = joinpath(backups, "umbrella")
     save_cache_baseline(depot, umbrella_cache)
 
@@ -715,10 +777,11 @@ function execute(options::Options, work_root::AbstractString)
         "generated_at_utc" => string(now(UTC)),
         "julia_version" => string(VERSION),
         "julia_executable" => joinpath(Sys.BINDIR, Base.julia_exename()),
-        "live_source" => LIVE_ROOT,
+        "layout" => options.layout,
+        "live_source" => options.source_root,
         "live_source_was_modified" => false,
-        "git_head" => git_read("rev-parse", "HEAD"),
-        "git_status" => git_read("status", "--short", "--branch"),
+        "git_head" => git_read(options.source_root, "rev-parse", "HEAD"),
+        "git_status" => git_read(options.source_root, "status", "--short", "--branch"),
         "cache_version" => CACHE_VERSION,
         "image_suffixes" => sort!(collect(IMAGE_SUFFIXES)),
         "baseline_phases" => baseline_phases,
