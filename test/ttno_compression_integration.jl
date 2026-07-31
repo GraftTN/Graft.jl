@@ -29,7 +29,9 @@ end
 
     # Raw (direct-sum) compiler output: per-term transport channels are
     # bitwise duplicates, so exact Stage 1 removes them with witnesses.
-    Oraw, _ = compile_ttno(H, topo, phys; merge=DirectSumMerge())
+    Oraw, _, raw_provenance =
+        compile_ttno(H, topo, phys; merge=DirectSumMerge())
+    @test raw_provenance isa TTNOExactProvenance
     raw_before = sum(dim(virtualspace(Oraw, c))
                      for c in 1:nnodes(topo) if c != topo.root)
     report_raw = compress!(Oraw; compression_atol=1e-12)
@@ -42,13 +44,15 @@ end
               for e in report_raw.edges)
 
     # Structurally merged compiler output.
-    Osm, _ = compile_ttno(H, topo, phys;
-                          merge=StateDiagramMerge(StructuralOptimizer()))
+    Osm, _, sm_provenance = compile_ttno(
+        H, topo, phys; merge=StateDiagramMerge(StructuralOptimizer()))
+    @test isnothing(sm_provenance)
     report_sm = compress!(Osm; compression_atol=1e-12)
     @test norm(to_dense(Osm) - reference) < 1e-10
 
     # Fully optimized compiler output and the external legacy TTNO.
-    Osge, _ = compile_ttno(H, topo, phys)
+    Osge, _, sge_provenance = compile_ttno(H, topo, phys)
+    @test isnothing(sge_provenance)
     report_sge = compress!(Osge; compression_atol=1e-12)
     @test norm(to_dense(Osge) - reference) < 1e-10
     Oext = ttno_from_opsum(H, topo, phys)
@@ -70,16 +74,15 @@ end
         Term(0.7, SiteOp(:site1, :X, S.X), SiteOp(:site2, :Z, S.Z)) +
         Term(-0.31, SiteOp(:site1, :X, S.X), SiteOp(:site2, :Z, S.Z)) +
         Term(0.4, SiteOp(:site2, :X, S.X), SiteOp(:site3, :X, S.X))
-    input = Graft.TTNOBuild.TTNOBuildInput(H, topo, phys)
-    exps = Graft.TTNOBuild.lower_terms(
-        input, Graft.TTNOBuild.AbelianScalarLowering())
-    plan = Graft.TTNOBuild.merge_channels(input, exps, DirectSumMerge())
-    provenance = compiler_exact_provenance(input, plan)
+    O1, _, provenance1 =
+        compile_ttno(H, topo, phys; merge=DirectSumMerge())
+    O2, _, provenance =
+        compile_ttno(H, topo, phys; merge=DirectSumMerge())
+    @test provenance1 isa TTNOExactProvenance
+    @test provenance isa TTNOExactProvenance
     @test !isempty(provenance.relations)
     @test any(r -> r.factor ≈ -0.31 / 0.7, provenance.relations)
 
-    O1, _ = Graft.TTNOBuild.realize_ttno(input, plan)
-    O2, _ = Graft.TTNOBuild.realize_ttno(input, plan)
     reference = to_dense(O1)
     plain = compress!(O1; compression_atol=1e-12)
     certified = compress!(O2; compression_atol=1e-12, provenance)
@@ -103,7 +106,7 @@ end
                                        mode=:approximate,
                                        scheme=TruncationScheme(atol=1e-8))),
     ]
-        O, _ = compile_ttno(H, topo, phys; hermitian=true)
+        O, _, _ = compile_ttno(H, topo, phys; hermitian=true)
         prep(O)
         rng = Xoshiro(0xcafe1d)
         ψ = random_ttns(rng, ComplexF64, topo, phys, ℂ^4)
@@ -113,7 +116,7 @@ end
 
     # TDVP trajectory against exact dense propagation.
     Ht, topot, physt = _cp1d_tfi(3)
-    Ot, _ = compile_ttno(Ht, topot, physt; hermitian=true)
+    Ot, _, _ = compile_ttno(Ht, topot, physt; hermitian=true)
     compress!(Ot; compression_atol=1e-12)
     Hdt = dense_hamiltonian(Ht, topot, physt)
     rng = Xoshiro(0x7d0f)
@@ -146,9 +149,9 @@ end
     topo = mps_topology(8)
     phys = Dict(s => S.P for s in sites)
 
-    O_warm, _ = compile_ttno(H, topo, phys; merge=DirectSumMerge())
+    O_warm, _, _ = compile_ttno(H, topo, phys; merge=DirectSumMerge())
     compress!(O_warm; compression_atol=1e-12)
-    O1, _ = compile_ttno(H, topo, phys; merge=DirectSumMerge())
+    O1, _, _ = compile_ttno(H, topo, phys; merge=DirectSumMerge())
     before = sum(dim(virtualspace(O1, c)) for c in 1:nnodes(topo)
                  if c != topo.root)
     stats = @timed compress!(O1; compression_atol=1e-12)
@@ -160,7 +163,7 @@ end
     @test report1.total_after_dimension < before
     @test isfinite(stats.time) && stats.time < 120
 
-    O2, _ = compile_ttno(H, topo, phys; merge=DirectSumMerge())
+    O2, _, _ = compile_ttno(H, topo, phys; merge=DirectSumMerge())
     report2 = compress!(O2; compression_atol=1e-12)
     @test report1.stage_trace == report2.stage_trace
     @test [(e.child, e.input_rank, e.exact_deparallelized_rank,

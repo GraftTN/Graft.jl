@@ -30,9 +30,11 @@ export ttno_from_opsum, THCFactorization, THCReport, isdf_thc, fit_thc,
 # the facade, the kernel selectors, and the reports are public
 # (ADR-0003 decision 6). The legacy ttno_from_opsum remains the default
 # compiler and explicit oracle until the SD7 promotion is approved.
-export compile_ttno, AbelianScalarLowering, DirectSumMerge, StateDiagramMerge,
+export compile_ttno, AbstractOperatorLoweringKernel, AbelianScalarLowering,
+    AbstractTTNOMergeKernel, DirectSumMerge, StateDiagramMerge,
     StructuralOptimizer, GammaCoverOptimizer, SGEOptimizer,
-    TTNOBuildReport, TTNOBuildEdgeReport, compiler_exact_provenance
+    MissingCategoryCapability, TTNOBuildReport, TTNOBuildEdgeReport,
+    compiler_exact_provenance
 
 include("thc.jl")
 include("statediagram.jl")

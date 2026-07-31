@@ -16,16 +16,22 @@ function _sd7_gate(H, topo, phys; kernels, atol=1e-11)
     L = ttno_from_opsum(H, topo, phys)
     dense_L = to_dense(L)
     for merge in kernels
-        O, report = compile_ttno(H, topo, phys; merge)
+        O, report, provenance = compile_ttno(H, topo, phys; merge)
         @test norm(to_dense(O) - dense_L) < atol
+        if merge isa DirectSumMerge
+            @test provenance isa TTNOExactProvenance
+        else
+            @test isnothing(provenance)
+        end
         if merge isa StateDiagramMerge
             for edge in report.edges
                 @test edge.dimension <=
                     dim(virtualspace(L, nodeindex(topo, edge.child)))
             end
         end
-        O2, report2 = compile_ttno(H, topo, phys; merge)
+        O2, report2, provenance2 = compile_ttno(H, topo, phys; merge)
         @test report == report2
+        @test typeof(provenance2) === typeof(provenance)
         @test all(O[i] == O2[i] for i in 1:nnodes(topo))
     end
 end

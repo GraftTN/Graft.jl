@@ -11,12 +11,16 @@
     compile_ttno(H::OpSum, topo::TreeTopology, phys;
                  lowering=AbelianScalarLowering(),
                  merge=StateDiagramMerge(SGEOptimizer()),
-                 hermitian=false, elt=ComplexF64) -> (TTNO, TTNOBuildReport)
+                 hermitian=false, elt=ComplexF64) ->
+        (TTNO, TTNOBuildReport, Union{TTNOExactProvenance,Nothing})
 
 Opt-in typed StateDiagram compiler: normalize the input, lower every term
 through `lowering`, combine channels through `merge`, and realize the TTNO
 producer-independently, returning the operator together with its complete
-build and capability report.
+build and capability report. A [`DirectSumMerge`](@ref) additionally returns
+compiler-certified [`TTNOExactProvenance`](@ref) for exact Stage 1
+compression; optimizing StateDiagram merge plans return `nothing` in the
+third tuple slot.
 
 Supported merge kernels: [`DirectSumMerge`](@ref) (uncompressed correctness
 oracle), and [`StateDiagramMerge`](@ref) with a [`StructuralOptimizer`](@ref)
@@ -40,5 +44,11 @@ function compile_ttno(H::OpSum, topo::TreeTopology,
         hermiticity=hermitian ? AssertedHermitian() : NoHermiticityAssertion())
     expansions = lower_terms(input, lowering)
     plan = merge_channels(input, expansions, merge)
-    return realize_ttno(input, plan; elt)
+    operator, report = realize_ttno(input, plan; elt)
+    provenance = if plan isa DirectSumPlan
+        compiler_exact_provenance(input, plan)
+    else
+        nothing
+    end
+    return operator, report, provenance
 end

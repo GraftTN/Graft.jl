@@ -48,10 +48,15 @@ function _sd6_compare(H, topo, phys; kernels)
     L = ttno_from_opsum(H, topo, phys)
     dense_L = to_dense(L)
     for merge in kernels
-        O, report = compile_ttno(H, topo, phys; merge)
+        O, report, provenance = compile_ttno(H, topo, phys; merge)
         @test norm(to_dense(O) - dense_L) < 1e-11
         @test report isa TTNOBuildReport
         @test TB.is_supported(report.capability)
+        if merge isa DirectSumMerge
+            @test provenance isa TTNOExactProvenance
+        else
+            @test isnothing(provenance)
+        end
         if merge isa StateDiagramMerge
             # Optimizing kernels never exceed the legacy bond layout; the
             # direct-sum oracle is intentionally uncompressed.
@@ -61,10 +66,20 @@ function _sd6_compare(H, topo, phys; kernels)
             end
         end
         # Deterministic reports and bond layout across repeated runs.
-        O2, report2 = compile_ttno(H, topo, phys; merge)
+        O2, report2, provenance2 = compile_ttno(H, topo, phys; merge)
         @test report == report2
+        @test typeof(provenance2) === typeof(provenance)
         @test all(O[i] == O2[i] for i in 1:nnodes(topo))
     end
+end
+
+@graft_testset "SD6 public compiler facade types" begin
+    @test AbstractOperatorLoweringKernel ===
+        Graft.TTNOBuild.AbstractOperatorLoweringKernel
+    @test AbstractTTNOMergeKernel === Graft.TTNOBuild.AbstractTTNOMergeKernel
+    @test MissingCategoryCapability === Graft.TTNOBuild.MissingCategoryCapability
+    @test AbelianScalarLowering() isa AbstractOperatorLoweringKernel
+    @test DirectSumMerge() isa AbstractTTNOMergeKernel
 end
 
 @graft_testset "SD6 opt-in facade over the topology matrix (spin)" begin
@@ -154,8 +169,9 @@ end
     compile_ttno(H, topo, phys)
     legacy = @timed ttno_from_opsum(H, topo, phys)
     typed = @timed compile_ttno(H, topo, phys)
-    O, report = typed.value
+    O, report, provenance = typed.value
     L = legacy.value
+    @test isnothing(provenance)
     println("[sd6-bench] legacy: time=$(round(legacy.time; digits=4))s ",
             "alloc=$(legacy.bytes) bytes")
     println("[sd6-bench] typed(SGE): time=$(round(typed.time; digits=4))s ",
@@ -168,6 +184,7 @@ end
               for e in report.edges)
     @test isfinite(typed.time) && typed.time < 120
     # Report stability across clean repeated runs.
-    _, report2 = compile_ttno(H, topo, phys)
+    _, report2, provenance2 = compile_ttno(H, topo, phys)
     @test report == report2
+    @test isnothing(provenance2)
 end
