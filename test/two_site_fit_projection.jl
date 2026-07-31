@@ -3,7 +3,7 @@ using LinearAlgebra: dot, norm
 using Random: Xoshiro, randn
 using Graft
 using Graft.Backend
-using Graft.TestUtils
+using GraftTestUtils
 
 const _FIT = Graft.Contractions
 const _CON = Graft.Contractions

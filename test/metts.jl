@@ -1,7 +1,7 @@
 using Test
 using Graft
 using Graft.Backend
-using Graft.TestUtils
+using GraftTestUtils
 using LinearAlgebra: norm
 using Random: Xoshiro
 

@@ -1,0 +1,16 @@
+[deps]
+GraftContractions = "4d48fc77-7b13-40f5-b575-37e15910179b"
+GraftFoundation = "b817f51d-645c-48d5-8696-150514b96021"
+GraftNetworks = "9722b9cb-9502-4464-b3ad-04909505de0f"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[sources]
+GraftContractions = {path = ".."}
+GraftFoundation = {path = "../../GraftFoundation"}
+GraftNetworks = {path = "../../GraftNetworks"}
+
+[compat]
+GraftContractions = "0.1.1"
+GraftFoundation = "0.1.1"
+GraftNetworks = "0.1.1"
+julia = "1.11"

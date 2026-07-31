@@ -2,7 +2,7 @@ using Graft
 using MPI
 
 using Graft.Backend: ℂ
-using Graft.TestUtils: random_ttns
+using GraftTestUtils: random_ttns
 using LinearAlgebra: BLAS, norm
 using Random: MersenneTwister
 using Statistics: median

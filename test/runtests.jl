@@ -4,7 +4,7 @@
 using Test
 include("test_harness.jl")
 using Graft
-using Graft.TestUtils
+using GraftTestUtils
 using Graft.Backend: ℂ, ⊗, ←, dim, domain, dual, space, id, numind, numout, numin,
     U1Space, U1Irrep, FermionParity, TensorMap, blocks, oneunit, sectors
 using TensorOperations

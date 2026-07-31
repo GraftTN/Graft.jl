@@ -772,7 +772,7 @@ function eff_h0(cache::EnvCache, ψ::TTNS, H::TTNO, n::Int, m::Int;
     isdual(Cspace[2]) && push!(euclidean_twists, 2)
 
     # `_split_link_down` leaves the center on the parent and represents the
-    # detached gauge link before the `_pivotal_link` used at absorption.  On
+    # detached gauge link before the `pivotal_link` used at absorption.  On
     # a mixed-duality down link the generator therefore acts by the
     # similarity P⁻¹ H₀ P, with P the codomain-leg ribbon twist.  A mixed link
     # produced by `_split_link_up` (center still on the child) is different:

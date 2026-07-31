@@ -2,7 +2,7 @@ include(joinpath(@__DIR__, "hubbard_2x2_common.jl"))
 
 using .Hubbard2x2Common
 using Graft
-using Graft.TestUtils
+using GraftTestUtils
 using Graft.Backend: U1Space
 using LinearAlgebra: dot
 using Printf

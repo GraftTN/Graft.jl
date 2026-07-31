@@ -1,6 +1,6 @@
 using Test
 using Graft
-using Graft.TestUtils
+using GraftTestUtils
 using Graft.Backend: FermionParity, Vect, domain
 using LinearAlgebra: I, norm
 using Random: Xoshiro, randn, randperm

@@ -1,6 +1,6 @@
 using Test
 using Graft
-using Graft.TestUtils
+using GraftTestUtils
 using Graft.Backend
 using LinearAlgebra: dot, norm
 

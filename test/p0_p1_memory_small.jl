@@ -6,7 +6,7 @@ using Test
 using Random
 using LinearAlgebra
 using Graft
-using Graft.TestUtils: random_ttns, to_dense
+using GraftTestUtils: random_ttns, to_dense
 using Graft.Backend: ℂ, ⊗, ←, U1Space, norm, numout, numin
 using Graft.Contractions: env!
 

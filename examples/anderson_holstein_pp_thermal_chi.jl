@@ -1,5 +1,5 @@
 using Graft
-using Graft.TestUtils
+using GraftTestUtils
 using LinearAlgebra
 using Printf
 

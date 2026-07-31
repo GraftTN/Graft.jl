@@ -2,7 +2,7 @@ using Test
 using Graft
 using MPI
 using Graft.Backend: ℂ, AbstractTensorMap
-using Graft.TestUtils: random_ttns, to_dense
+using GraftTestUtils: random_ttns, to_dense
 using LinearAlgebra: BLAS, norm
 using Random: MersenneTwister
 

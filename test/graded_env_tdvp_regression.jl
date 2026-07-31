@@ -3,7 +3,7 @@ using LinearAlgebra: dot, norm
 using Random: Xoshiro, randn
 using Graft
 using Graft.Backend
-using Graft.TestUtils
+using GraftTestUtils
 
 isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
 
@@ -118,7 +118,7 @@ isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
                 @test y_workspace ≈ y atol = 2e-12 rtol = 0
 
                 tensors = copy(state.tensors)
-                pivotal_x = Graft.Networks._pivotal_link(x)
+                pivotal_x = Graft.Networks.pivotal_link(x)
                 if down
                     tensors[child] = child_tensor * pivotal_x
                     embedded = TTNS(topo, tensors, child)

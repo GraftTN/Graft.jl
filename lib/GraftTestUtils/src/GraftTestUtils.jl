@@ -9,16 +9,29 @@ Site-ordering convention for dense references: physical sites appear in
 fastest (Julia column-major). `dense_hamiltonian` follows the same convention,
 so `to_dense(ψ)' * dense_hamiltonian(H, ψ) * to_dense(ψ)` matches `expect`.
 """
-module TestUtils
+module GraftTestUtils
 
 using Random
 using LinearAlgebra: LinearAlgebra, eigen, Hermitian, eigvals, tr
-using ..Backend
-using ..Trees
-using ..Networks
-using ..Contractions: EnvCache, inner
-using ..Symbolic
-using ..Parallel: threaded_foreach
+import GraftFoundation
+import GraftNetworks
+import GraftContractions
+import GraftSymbolic
+import GraftParallel
+
+const Backend = GraftFoundation.Backend
+const Trees = GraftFoundation.Trees
+const Networks = GraftNetworks.Networks
+const Contractions = GraftContractions.Contractions
+const Symbolic = GraftSymbolic.Symbolic
+const Parallel = GraftParallel.Parallel
+
+using .Backend
+using .Trees
+using .Networks
+using .Contractions: EnvCache, inner
+using .Symbolic
+using .Parallel: threaded_foreach
 
 export random_ttns, product_ttns, canonicalize!, to_dense,
     categorical_coordinates, dense_hamiltonian,
@@ -39,7 +52,7 @@ function canonicalize!(ψ::TTNS, center_::Int=ψ.topo.root)
         Q, C = left_orth(ψ.tensors[n])
         ψ.tensors[n] = Q
         p = t.parent[n]
-        C = Networks._pivotal_link(C)
+        C = Networks.pivotal_link(C)
         ψ.tensors[p] = absorb_on_leg(ψ.tensors[p], C, childslot(t, p, n))
     end
     ψ.center = t.root
@@ -615,4 +628,4 @@ function _copy_sector_block!(db, sb, qd, qs, oldV, newV, k)
     end
 end
 
-end # module TestUtils
+end # module GraftTestUtils

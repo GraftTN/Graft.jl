@@ -1,0 +1,10 @@
+[deps]
+GraftFoundation = "b817f51d-645c-48d5-8696-150514b96021"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[sources]
+GraftFoundation = {path = ".."}
+
+[compat]
+GraftFoundation = "0.1.1"
+julia = "1.11"

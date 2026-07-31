@@ -1,6 +1,6 @@
 using Test
 using Graft
-using Graft.TestUtils
+using GraftTestUtils
 using Graft.Backend: U1Irrep, FermionParity, Trivial, SU2Irrep, Vect, ⊗, ←,
     oneunit, codomain, dim, domain, flip, isdual, numind, ℂ, TensorMap
 using LinearAlgebra: norm

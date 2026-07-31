@@ -1,6 +1,6 @@
 using Test
 using Graft
-using Graft.TestUtils
+using GraftTestUtils
 using Graft.Backend: FermionParity, U1Irrep, SU2Irrep, Vect, ⊠, ⊗, ←,
     blocks, domain
 using LinearAlgebra: I, norm

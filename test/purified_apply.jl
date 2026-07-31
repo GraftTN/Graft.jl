@@ -3,7 +3,7 @@ using LinearAlgebra: dot, norm
 using Random: Xoshiro
 using Graft
 using Graft.Backend
-using Graft.TestUtils
+using GraftTestUtils
 using Graft.Contractions: eff_h0
 
 isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
@@ -65,7 +65,7 @@ isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
         h0 = eff_h0(EnvCache(td), s, prob.K, v, td.root;
                     optimize=false, sector_aware=false)
         tensors = copy(s.tensors)
-        tensors[v] = s.tensors[v] * Graft.Networks._pivotal_link(C)
+        tensors[v] = s.tensors[v] * Graft.Networks.pivotal_link(C)
         embedded = TTNS(td, tensors, v)
         ce = categorical_coordinates(embedded)
         @test dot(C, h0(C)) ≈ dot(ce, denseK * ce) atol=1e-12

@@ -1,0 +1,29 @@
+name = "GraftTestUtils"
+uuid = "ca295596-40f3-4873-8d36-314fc3dd78df"
+authors = ["weiyiguo9"]
+license = "Apache-2.0"
+version = "0.1.1"
+
+[deps]
+GraftContractions = "4d48fc77-7b13-40f5-b575-37e15910179b"
+GraftFoundation = "b817f51d-645c-48d5-8696-150514b96021"
+GraftNetworks = "9722b9cb-9502-4464-b3ad-04909505de0f"
+GraftParallel = "3d4f43ef-a709-449c-bf32-dbe6f02e99a3"
+GraftSymbolic = "923ebbca-7fce-40e7-998b-8b588cdf2371"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+
+[sources]
+GraftContractions = {path = "../GraftContractions"}
+GraftFoundation = {path = "../GraftFoundation"}
+GraftNetworks = {path = "../GraftNetworks"}
+GraftParallel = {path = "../GraftParallel"}
+GraftSymbolic = {path = "../GraftSymbolic"}
+
+[compat]
+GraftContractions = "0.1.1"
+GraftFoundation = "0.1.1"
+GraftNetworks = "0.1.1"
+GraftParallel = "0.1.1"
+GraftSymbolic = "0.1.1"
+julia = "1.11"

@@ -1,7 +1,7 @@
 using Test
 using Graft
 using Graft.Spectral
-using Graft.TestUtils
+using GraftTestUtils
 using Graft.Backend: ℂ
 using LinearAlgebra: I, dot, norm
 using Random: Xoshiro

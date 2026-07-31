@@ -5,7 +5,7 @@
 # observables with exact-rank and bounded approximate compression; and
 # runtime/allocation/bond-reduction characterization.
 
-using Graft.TestUtils: to_dense, dense_hamiltonian, exact_groundstate,
+using GraftTestUtils: to_dense, dense_hamiltonian, exact_groundstate,
     exact_evolve, random_ttns, product_ttns
 using Graft.Backend: dim, ℂ
 using Random: Xoshiro

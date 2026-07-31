@@ -21,7 +21,9 @@ the include order below only reflects that `Contractions` operates on the
     FreqDomain     L5d  TaSK resolvent kernel (TODO, M6)
     Checkpoints    ✕    JLD2 checkpoint/restart
     Parallel       ✕    threading + optional MPI.jl extension
-    TestUtils      ✕    random states, dense/ED references
+
+Test infrastructure is provided by the separate, test-only `GraftTestUtils`
+package. Loading `Graft` does not define or load a `TestUtils` namespace.
 
 Dependency direction is monotone (§9.10): L(n) only uses L(<n); companion
 packages depend on `Graft`, never the reverse; upper layers never
@@ -74,7 +76,7 @@ using .FreqDomain
 using .Checkpoints
 using .Parallel
 
-# public surface (re-exports; TestUtils stays namespaced)
+# public runtime surface (test support lives in GraftTestUtils)
 # L0
 export TruncationScheme, FermionSector, AbelianSector
 # L1

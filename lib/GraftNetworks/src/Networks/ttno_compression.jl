@@ -198,7 +198,7 @@ function _absorb_compression_factor!(O::TTNO, child::Int, factor::AbstractTensor
     # `absorb_on_leg` performs the required transpose while reconnecting the
     # TTNO virtual edge.  Unlike a TTNS gauge move, a factorization link here
     # is already oriented as the operator-edge reconstruction factor; applying
-    # `_pivotal_link` a second time would insert a physical fZ2 parity phase.
+    # `pivotal_link` a second time would insert a physical fZ2 parity phase.
     O.tensors[parent] = absorb_on_leg(O.tensors[parent], factor, slot)
     return O
 end
@@ -407,7 +407,7 @@ function _stage3_split_edge!(O::TTNO, parent::Int, child::Int,
     # Downward link transport composes the transposed link on the child's
     # parent domain leg. Unlike a TTNS gauge down-move, a TTNO operator-edge
     # reconstruction link is already correctly oriented: adding the
-    # `_pivotal_link` twist here would insert a physical fZ2 parity phase on
+    # `pivotal_link` twist here would insert a physical fZ2 parity phase on
     # odd blocks (verified on both dual and non-dual edges).
     link = transpose(S * Vᴴ)
     childA = O.tensors[child]

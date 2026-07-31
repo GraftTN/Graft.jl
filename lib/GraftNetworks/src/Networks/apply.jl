@@ -210,14 +210,14 @@ end
 
 `fuse` always hands back a primal edge, so a state bond stored dual bends
 across the edge isomorphism and carries the ribbon pivotal twist of whatever
-sector it holds — the same seam convention as [`_pivotal_link`](@ref) for QR
+sector it holds — the same seam convention as [`pivotal_link`](@ref) for QR
 link factors. Three details are load-bearing:
 
   * the bend belongs to exactly one end of the edge, the child end that turns
     the stored parent leg into the new fused parent leg; twisting the shared
     map would cancel against its own adjoint and change nothing;
   * it applies to the *state* sub-wire only. A dual TTNO virtual bond is
-    already carried by the operator's own link convention (`_pivotal_link` in
+    already carried by the operator's own link convention (`pivotal_link` in
     the compression pipeline), and twisting it here would make the measured
     action depend on whether the TTNO had been compressed;
   * without it, `apply` silently flips every odd-parity block reached through
@@ -234,7 +234,7 @@ function _canonicalize_apply!(ψ::TTNS, target::Int)
         Q, C = left_orth(ψ.tensors[n])
         ψ.tensors[n] = Q
         p = t.parent[n]
-        C = _pivotal_link(C)
+        C = pivotal_link(C)
         ψ.tensors[p] = absorb_on_leg(ψ.tensors[p], C, childslot(t, p, n))
     end
     ψ.center = t.root

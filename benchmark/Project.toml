@@ -1,7 +1,14 @@
 [deps]
 Graft = "917c9ffe-6c79-4950-b61c-1fe8fbfdf188"
+GraftTestUtils = "ca295596-40f3-4873-8d36-314fc3dd78df"
 MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
 
+[sources]
+Graft = {path = ".."}
+GraftTestUtils = {path = "../lib/GraftTestUtils"}
+
 [compat]
+Graft = "0.1.1"
+GraftTestUtils = "0.1.1"
 MPI = "0.20"
-julia = "1.10"
+julia = "1.11"

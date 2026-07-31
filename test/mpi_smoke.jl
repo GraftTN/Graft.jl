@@ -3,7 +3,7 @@ using Graft
 using MPI
 using LinearAlgebra: BLAS
 using Graft.Backend: ℂ, ←, blocks
-using Graft.TestUtils: random_ttns
+using GraftTestUtils: random_ttns
 using LinearAlgebra: norm
 using Random: MersenneTwister, Xoshiro, rand
 

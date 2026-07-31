@@ -12,7 +12,7 @@ The architecture is largely inspired by [PyTreeNet](https://github.com/Drachier/
 ## Quick example
 
 ```julia
-using Graft, Graft.TestUtils, Random
+using Graft, GraftTestUtils, Random
 using Graft.Backend: ℂ
 
 topo = star_topology(3, 2)                       # generic star geometry
@@ -42,21 +42,21 @@ broad or shared low-level changes; full acceptance uses four parallel shards.
 
 ```bash
 # Focused test (replace with the affected test file)
-julia --project=. --startup-file=no test/ttno_compression.jl
+julia --project=test --startup-file=no test/ttno_compression.jl
 
 # Full acceptance: four shards in parallel
 printf '%s\n' 1 2 3 4 | xargs -P4 -I{} env \
   GRAFT_TEST_SHARD_COUNT=4 GRAFT_TEST_SHARD_INDEX={} \
   JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
-  julia --project=. --startup-file=no test/runtests.jl
+  julia --project=test --startup-file=no test/runtests.jl
 ```
 
 M1/M2 focused entrypoints:
 
 ```bash
-julia --project=. --startup-file=no test/spectral.jl
-julia --project=. --startup-file=no test/implicit_log_time.jl
-julia --project=. --startup-file=no test/metts.jl
+julia --project=test --startup-file=no test/spectral.jl
+julia --project=test --startup-file=no test/implicit_log_time.jl
+julia --project=test --startup-file=no test/metts.jl
 ```
 
 Impurity acceptance workflows (finite-mode Anderson-Holstein benchmarks,

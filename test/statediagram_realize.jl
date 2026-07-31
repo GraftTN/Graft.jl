@@ -8,7 +8,7 @@
 # exact legacy equality instead; the legacy fermionic action is itself
 # pinned by the permanent braided-sign regressions).
 
-using Graft.TestUtils: to_dense, dense_hamiltonian
+using GraftTestUtils: to_dense, dense_hamiltonian
 using Graft.Backend: ⊠, ⊗
 
 "Realize `H` through the typed direct-sum pipeline and return (O, report, plan, input, exps)."

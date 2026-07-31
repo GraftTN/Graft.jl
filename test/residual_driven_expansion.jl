@@ -3,7 +3,7 @@ using Test
 using Random: Xoshiro
 using LinearAlgebra: norm, rank
 using Graft
-using Graft.TestUtils:
+using GraftTestUtils:
     categorical_coordinates, product_ttns, random_ttns, to_dense
 using Graft.Backend: FermionParity, oneunit, ℂ, dim, domain
 using Graft.Trees: edges

@@ -1,7 +1,7 @@
 using Graft
 
 using Graft.Backend: ℂ, pair_workload_profile
-using Graft.TestUtils: random_ttns
+using GraftTestUtils: random_ttns
 using LinearAlgebra: BLAS, norm
 using Random: MersenneTwister
 using Statistics: median

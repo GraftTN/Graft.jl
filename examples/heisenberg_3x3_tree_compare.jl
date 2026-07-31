@@ -1,5 +1,5 @@
 using Graft
-using Graft.TestUtils
+using GraftTestUtils
 using Graft.Backend: ComplexSpace, dim, domain
 using Printf
 using Random

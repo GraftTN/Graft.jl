@@ -1,6 +1,6 @@
 using Test
 using Graft
-using Graft.TestUtils
+using GraftTestUtils
 using Graft.Backend: ℂ
 using Graft.Trees: edges
 using LinearAlgebra: I, Hermitian, dot, eigvals, norm

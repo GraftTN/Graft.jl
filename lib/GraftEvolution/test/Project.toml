@@ -1,0 +1,26 @@
+[deps]
+GraftEvolution = "c0b0ae67-2c82-4574-a955-8b13fd9a0fd6"
+GraftFoundation = "b817f51d-645c-48d5-8696-150514b96021"
+GraftSymbolic = "923ebbca-7fce-40e7-998b-8b588cdf2371"
+GraftTTNOBuild = "733c6fe2-fcce-4f2b-b032-39dffcf60a1e"
+GraftTestUtils = "ca295596-40f3-4873-8d36-314fc3dd78df"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[sources]
+GraftEvolution = {path = ".."}
+GraftFoundation = {path = "../../GraftFoundation"}
+GraftSymbolic = {path = "../../GraftSymbolic"}
+GraftTTNOBuild = {path = "../../GraftTTNOBuild"}
+GraftTestUtils = {path = "../../GraftTestUtils"}
+
+[compat]
+GraftEvolution = "0.1.1"
+GraftFoundation = "0.1.1"
+GraftSymbolic = "0.1.1"
+GraftTTNOBuild = "0.1.1"
+GraftTestUtils = "0.1.1"
+LinearAlgebra = "1.11"
+Random = "1.11"
+julia = "1.11"

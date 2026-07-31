@@ -680,7 +680,7 @@ function _rde_splice_selected!(
         rank_added == 0 && continue
 
         ψ.tensors[child] = U
-        link = Networks._pivotal_link(R)
+        link = Networks.pivotal_link(R)
         ψ.tensors[parent] = absorb_on_leg(
             ψ.tensors[parent],
             link,

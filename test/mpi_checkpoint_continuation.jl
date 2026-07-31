@@ -2,7 +2,7 @@ using Test
 using Graft
 using MPI
 
-using Graft.TestUtils: to_dense
+using GraftTestUtils: to_dense
 using LinearAlgebra: BLAS, norm
 using Random: Xoshiro, rand
 
