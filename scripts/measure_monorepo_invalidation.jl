@@ -32,6 +32,11 @@ catch exception
     rethrow()
 end
 """
+const MPI_BOOTSTRAP = """
+import Pkg
+Pkg.offline(false)
+Pkg.add(Pkg.PackageSpec(name="MPI"))
+"""
 
 struct Target
     name::String
@@ -740,7 +745,8 @@ function print_dry_run(options::Options)
     println("baseline: add General registry (network enabled) -> Pkg.resolve -> " *
             "Pkg.instantiate -> Pkg.precompile -> using Graft")
     any(target.load_mpi for target in options.targets) &&
-        println("MPI baseline: using Graft; using MPI")
+        println("MPI baseline: Pkg.add(\"MPI\") in the isolated copy -> " *
+                "using Graft; using MPI")
     println("targets:")
     for target in options.targets
         println("  ", target.name, ": append comment to ", target.source,
@@ -782,6 +788,9 @@ function execute(options::Options, work_root::AbstractString)
     mpi_cache = joinpath(backups, "mpi")
     if any(target.load_mpi for target in options.targets)
         restore_cache_baseline(depot, umbrella_cache)
+        push!(baseline_phases, run_julia_phase(
+            source_root, depot, logs, "install-mpi", MPI_BOOTSTRAP;
+            network_enabled=true))
         push!(baseline_phases, run_julia_phase(
             source_root, depot, logs, "load-graft-mpi", "using Graft; using MPI"))
         mpi_snapshot = snapshot_images(depot)
