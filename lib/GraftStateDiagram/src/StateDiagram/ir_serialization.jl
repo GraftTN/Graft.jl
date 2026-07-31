@@ -62,11 +62,30 @@ function _ir_ser(io::IO, x::Pair)
     print(io, ")")
 end
 
-# Sectors, category profiles, Hermiticity singletons, and other leaf values
-# render through `repr`. A rendering change (for example a TensorKit sector
-# `show` change) alters fixture bytes and therefore surfaces as a schema
-# review, which is the intended visibility.
+# Sectors and other leaf values render through `repr`. A rendering change
+# (for example a TensorKit sector `show` change) alters fixture bytes and
+# therefore surfaces as a schema review, which is the intended visibility.
 _ir_ser(io::IO, x) = print(io, "{", repr(x), "}")
+
+# Schema 1 originally encoded these singletons through their fully qualified
+# `repr` in `Graft.TTNOBuild`. Keep those bytes stable after transferring the
+# implementation to GraftStateDiagram; package ownership is not IR content.
+_ir_ser(io::IO, ::NoHermiticityAssertion) =
+    print(io, "{Graft.TTNOBuild.NoHermiticityAssertion()}")
+_ir_ser(io::IO, ::AssertedHermitian) =
+    print(io, "{Graft.TTNOBuild.AssertedHermitian()}")
+_ir_ser(io::IO, ::UniqueFusionProfile) =
+    print(io, "{Graft.TTNOBuild.UniqueFusionProfile()}")
+_ir_ser(io::IO, ::MultiplicityFreeFusionProfile) =
+    print(io, "{Graft.TTNOBuild.MultiplicityFreeFusionProfile()}")
+_ir_ser(io::IO, ::GenericFusionProfile) =
+    print(io, "{Graft.TTNOBuild.GenericFusionProfile()}")
+_ir_ser(io::IO, ::SymmetricBraidingProfile) =
+    print(io, "{Graft.TTNOBuild.SymmetricBraidingProfile()}")
+_ir_ser(io::IO, ::AnyonicBraidingProfile) =
+    print(io, "{Graft.TTNOBuild.AnyonicBraidingProfile()}")
+_ir_ser(io::IO, ::NoBraidingProfile) =
+    print(io, "{Graft.TTNOBuild.NoBraidingProfile()}")
 
 function _ir_ser_struct(io::IO, x)
     T = typeof(x)

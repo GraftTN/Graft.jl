@@ -498,7 +498,7 @@ if _p0p1_enabled(:m3)
     topo, _, _, ψ, φ = _p0p1_sandwich_fixture(MersenneTwister(20260717))
     root = topo.root
     child = only(topo.children[root])
-    F = Graft.Networks
+    F = Graft.Contractions
 
     # Both directions of the ket-bra fit environment use a fresh retained
     # ncon recursion, so this does not compare a planned value with itself.
@@ -602,7 +602,7 @@ if _p0p1_enabled(:m4)
 @graft_testset "P0/P1: default direct operator-fit contracts" begin
     topo, S, O, ψ, φ = _p0p1_sandwich_fixture(MersenneTwister(2026071901))
     root = topo.root
-    F = Graft.Networks
+    F = Graft.Contractions
 
     # Non-Hermitian left/right order and mixed identity/operator actions feed
     # the exact residual. Keep these unique correctness paths in the default
@@ -634,7 +634,7 @@ end
     topo, S, O, ψ, φ = _p0p1_sandwich_fixture(MersenneTwister(20260719))
     root = topo.root
     child = only(topo.children[root])
-    F = Graft.Networks
+    F = Graft.Contractions
 
     # The planned rank-three cache keeps exact (source ket, operator, target
     # bra) edge order and agrees with an independent retained ncon recursion.
