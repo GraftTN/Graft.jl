@@ -35,7 +35,8 @@ end
 """
     TDVP1_GSE(; ancillary_shift, ancillary_order=2,
               ancillary_trunc=TruncationScheme(maxdim=100),
-              trunc=TruncationScheme(maxdim=100), max_add=8, ...)
+              trunc=TruncationScheme(maxdim=100), max_add=8,
+              eager=true, ...)
 
 Paper-style Yang--White global-subspace-expansion TDVP.  Before each TDVP1
 step, construct the literal global ancillary sequence
@@ -65,6 +66,7 @@ Base.@kwdef mutable struct TDVP1_GSE{S<:Number} <: Evolver
     order::Int = 2
     krylovdim::Int = 30
     tol::Float64 = 1e-12
+    eager::Bool = true
     threaded_channels::Bool = false
     channel_slices::Int = 2
     channel_minbatch::Int = 2
@@ -134,6 +136,7 @@ function step!(ev::TDVP1_GSE, psi::TTNS, H::TTNO, dz::Number)
         order=ev.order,
         krylovdim=ev.krylovdim,
         tol=ev.tol,
+        eager=ev.eager,
         threaded_channels=ev.threaded_channels,
         channel_slices=ev.channel_slices,
         channel_minbatch=ev.channel_minbatch,

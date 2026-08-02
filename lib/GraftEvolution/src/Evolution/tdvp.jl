@@ -18,7 +18,7 @@
 # so nothing here assumes hermiticity or a purely imaginary step (§0.2).
 
 """
-    TDVP1(; order=2, krylovdim=30, tol=1e-12, verbose=true)
+    TDVP1(; order=2, krylovdim=30, tol=1e-12, eager=true, verbose=true)
 
 Single-site TDVP evolver. Constant bond dimension (the tangent-space
 projection never grows bonds) — pair with `TDVP1_CBE` when the state needs to
@@ -32,6 +32,7 @@ Base.@kwdef mutable struct TDVP1 <: Evolver
     order::Int = 2
     krylovdim::Int = 30
     tol::Float64 = 1e-12
+    eager::Bool = true
     threaded_channels::Bool = false
     channel_slices::Int = 2
     channel_minbatch::Int = 2
@@ -44,6 +45,7 @@ end
 
 """
     TDVP2(; order=2, trunc=TruncationScheme(), krylovdim=30, tol=1e-12,
+          eager=true, fuse_turning=true,
           contraction_optimize=true, contraction_sector_aware=true,
           verbose=true)
 
@@ -56,12 +58,19 @@ consecutive bond updates. Bond dimensions adapt up to `trunc.maxdim`. With
 truncation policy and bond growth. `contraction_optimize=false` selects the
 deterministic environment-first plan; `contraction_sector_aware=false` keeps
 optimization enabled but skips the exact sector-aware dynamic program.
+`fuse_turning=true` replaces the consecutive order-two turning-bond half
+steps and their intermediate split by one full step and one split. With active
+truncation this removes one truncation event and therefore is not bit-identical
+to the unfused algorithm; set `fuse_turning=false` to preserve the two
+half-step splits.
 """
 Base.@kwdef mutable struct TDVP2 <: Evolver
     order::Int = 2
     trunc::TruncationScheme = TruncationScheme()
     krylovdim::Int = 30
     tol::Float64 = 1e-12
+    eager::Bool = true
+    fuse_turning::Bool = true
     contraction_optimize::Bool = true
     contraction_sector_aware::Bool = true
     threaded_channels::Bool = false
@@ -97,8 +106,9 @@ function _log_tdvp_step_start(ev::TDVP1, ψ::TTNS, H::TTNO, dz::Number;
     order = ev.order
     krylovdim = ev.krylovdim
     tol = ev.tol
+    eager = ev.eager
     hermitian = ishermitian(H)
-    @info "TDVP1 step start" dz order nodes physical_sites bonds center_site initial_maxbond krylovdim tol hermitian cache_reused
+    @info "TDVP1 step start" dz order nodes physical_sites bonds center_site initial_maxbond krylovdim tol eager hermitian cache_reused
     return nothing
 end
 
@@ -113,6 +123,8 @@ function _log_tdvp_step_start(ev::TDVP2, ψ::TTNS, H::TTNO, dz::Number;
     order = ev.order
     krylovdim = ev.krylovdim
     tol = ev.tol
+    eager = ev.eager
+    fuse_turning = ev.fuse_turning
     hermitian = ishermitian(H)
     trunc_maxdim = ev.trunc.maxdim
     trunc_atol = ev.trunc.atol
@@ -120,7 +132,7 @@ function _log_tdvp_step_start(ev::TDVP2, ψ::TTNS, H::TTNO, dz::Number;
     trunc_discarded_weight = ev.trunc.discarded_weight
     contraction_optimize = ev.contraction_optimize
     contraction_sector_aware = ev.contraction_sector_aware
-    @info "TDVP2 step start" dz order nodes physical_sites bonds center_site initial_maxbond krylovdim tol hermitian cache_reused trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight contraction_optimize contraction_sector_aware
+    @info "TDVP2 step start" dz order nodes physical_sites bonds center_site initial_maxbond krylovdim tol eager fuse_turning hermitian cache_reused trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight contraction_optimize contraction_sector_aware
     return nothing
 end
 
@@ -135,6 +147,7 @@ function _log_tdvp_step_start(ev::TDVP1_CBE, ψ::TTNS, H::TTNO, dz::Number;
     order = ev.order
     krylovdim = ev.krylovdim
     tol = ev.tol
+    eager = ev.eager
     hermitian = ishermitian(H)
     cbe = nameof(typeof(ev.cbe))
     enabled = ev.enabled
@@ -143,7 +156,7 @@ function _log_tdvp_step_start(ev::TDVP1_CBE, ψ::TTNS, H::TTNO, dz::Number;
     trunc_atol = ev.trunc.atol
     trunc_rtol = ev.trunc.rtol
     trunc_discarded_weight = ev.trunc.discarded_weight
-    @info "TDVP1_CBE step start" dz order nodes physical_sites bonds center_site initial_maxbond krylovdim tol hermitian cache_reused cbe enabled max_add trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight
+    @info "TDVP1_CBE step start" dz order nodes physical_sites bonds center_site initial_maxbond krylovdim tol eager hermitian cache_reused cbe enabled max_add trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight
     return nothing
 end
 
@@ -165,8 +178,15 @@ function step!(ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO, dz::Number)
     if ev.order == 1
         _tdvp1_sweep!(ev, ψ, H, dz; rev=false)
     elseif ev.order == 2
-        _tdvp1_sweep!(ev, ψ, H, dz / 2; rev=false)
-        _tdvp1_sweep!(ev, ψ, H, dz / 2; rev=true)
+        fuse_turning = ev isa TDVP1 || !ev.enabled || !(ev.cbe isa LGVDCBE)
+        if fuse_turning
+            _tdvp1_sweep!(ev, ψ, H, dz / 2; rev=false, terminal_dz=dz)
+            _tdvp1_sweep!(ev, ψ, H, dz / 2; rev=true,
+                          skip_initial_site=true)
+        else
+            _tdvp1_sweep!(ev, ψ, H, dz / 2; rev=false)
+            _tdvp1_sweep!(ev, ψ, H, dz / 2; rev=true)
+        end
     else
         throw(ArgumentError("order must be 1 or 2"))
     end
@@ -174,7 +194,10 @@ function step!(ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO, dz::Number)
     return ψ
 end
 
-function _tdvp1_sweep!(ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO, dz::Number; rev::Bool)
+function _tdvp1_sweep!(
+        ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO, dz::Number;
+        rev::Bool, terminal_dz::Union{Nothing,Number}=nothing,
+        skip_initial_site::Bool=false)
     t = ψ.topo
     cache = ev.cache::EnvCache
     order = rev ? reverse(postorder(t)) : postorder(t)
@@ -184,18 +207,24 @@ function _tdvp1_sweep!(ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO, dz::Number
     for i in eachindex(order)
         n = order[i]
         @assert ψ.center == n
-        # forward-evolve the site
-        h1 = eff_h1(cache, ψ, H, n;
-                    threaded_channels=ev.threaded_channels,
-                    channel_slices=ev.channel_slices,
-                    channel_minbatch=ev.channel_minbatch,
-                    channel_min_flops=ev.channel_min_flops,
-                    channel_memory_cap_bytes=ev.channel_memory_cap_bytes,
-                    distributed=ev.distributed)
-        A, _ = _effective_exponentiate(
-            ev.distributed, h1, dz, ψ.tensors[n];
-            ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
-        update_tensor!(ψ, n, A; caches=(cache,))
+        if !(skip_initial_site && i == firstindex(order))
+            # The order-two public step replaces the two consecutive
+            # turning-site half steps by one full step on the forward sweep.
+            site_dz = terminal_dz !== nothing && i == lastindex(order) ?
+                terminal_dz : dz
+            h1 = eff_h1(cache, ψ, H, n;
+                        threaded_channels=ev.threaded_channels,
+                        channel_slices=ev.channel_slices,
+                        channel_minbatch=ev.channel_minbatch,
+                        channel_min_flops=ev.channel_min_flops,
+                        channel_memory_cap_bytes=ev.channel_memory_cap_bytes,
+                        distributed=ev.distributed)
+            A, _ = _effective_exponentiate(
+                ev.distributed, h1, site_dz, ψ.tensors[n];
+                ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol,
+                eager=ev.eager)
+            update_tensor!(ψ, n, A; caches=(cache,))
+        end
         # walk to the next update site, backward-evolving the links that the
         # splitting assigns to this sweep direction
         i == lastindex(order) && break
@@ -212,7 +241,7 @@ function _tdvp1_sweep!(ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO, dz::Number
     if ev.verbose
         name = _tdvp_name(ev)
         direction = rev ? :reverse : :forward
-        site_updates = length(order)
+        site_updates = length(order) - Int(skip_initial_site)
         link_updates = nnodes(t) - 1
         center_site = _tdvp_center_site(ψ)
         maxbond_after = _tdvp_max_bond_dim(ψ)
@@ -234,8 +263,10 @@ function _evolve_link_and_move!(ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO,
         C = _split_link_up(ev, ψ, H, u, v, dz)      # installs isometry at u; C :: V_new ← V_e
         invalidate_node!(cache, u)
         k0 = eff_h0(cache, ψ, H, u, v)              # env(u→v) rebuilt from the new isometry
-        C, _ = exponentiate(workspace_map(k0), -dz, C;
-                            ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
+        C, _ = evolution_exponentiate_backend(
+            workspace_map(k0), -dz, C;
+            ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol,
+            eager=ev.eager)
         C = Networks.pivotal_link(C)
         ψ.tensors[v] = absorb_on_leg(ψ.tensors[v], C, childslot(t, v, u))
     else
@@ -244,8 +275,10 @@ function _evolve_link_and_move!(ev::Union{TDVP1,TDVP1_CBE}, ψ::TTNS, H::TTNO,
         C = _split_link_down(ev, ψ, H, u, v, dz)
         invalidate_node!(cache, u)
         k0 = eff_h0(cache, ψ, H, v, u)              # env(v→u) untouched, env(u→v) rebuilt
-        C, _ = exponentiate(workspace_map(k0), -dz, C;
-                            ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
+        C, _ = evolution_exponentiate_backend(
+            workspace_map(k0), -dz, C;
+            ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol,
+            eager=ev.eager)
         C = Networks.pivotal_link(C)
         ψ.tensors[v] = ψ.tensors[v] * C
     end
@@ -278,6 +311,10 @@ function step!(ev::TDVP2, ψ::TTNS, H::TTNO, dz::Number)
     ev.verbose && _log_tdvp_step_start(ev, ψ, H, dz; cache_reused)
     if ev.order == 1
         _tdvp2_sweep!(ev, ψ, H, dz; rev=false)
+    elseif ev.order == 2 && ev.fuse_turning
+        _tdvp2_sweep!(ev, ψ, H, dz / 2; rev=false, terminal_dz=dz)
+        _tdvp2_sweep!(ev, ψ, H, dz / 2; rev=true,
+                      skip_initial_bond=true)
     elseif ev.order == 2
         _tdvp2_sweep!(ev, ψ, H, dz / 2; rev=false)
         _tdvp2_sweep!(ev, ψ, H, dz / 2; rev=true)
@@ -293,8 +330,14 @@ end
 # parent in between. Reverse: mirror — single-site(-dz) at the parent *before*
 # the two-site(+dz) update. The turning-point bond (last in forward, first in
 # reverse) gets no intervening single-site backward step, matching the Strang
-# structure of PyTreeNet's secondordertwosite.py.
-function _tdvp2_sweep!(ev::TDVP2, ψ::TTNS, H::TTNO, dz::Number; rev::Bool)
+# structure of PyTreeNet's secondordertwosite.py. The order-two public step
+# supplies `terminal_dz` and skips that same bond on the reverse sweep, fusing
+# the consecutive turning exponentials and their intermediate split. Default
+# keyword values retain the unfused half-sweep as a test/reference oracle.
+function _tdvp2_sweep!(
+        ev::TDVP2, ψ::TTNS, H::TTNO, dz::Number;
+        rev::Bool, terminal_dz::Union{Nothing,Number}=nothing,
+        skip_initial_bond::Bool=false)
     t = ψ.topo
     cache = ev.cache::EnvCache
     herm = ishermitian(H)
@@ -302,6 +345,7 @@ function _tdvp2_sweep!(ev::TDVP2, ψ::TTNS, H::TTNO, dz::Number; rev::Bool)
     B = lastindex(bonds)
     maxbond_before = ev.verbose ? _tdvp_max_bond_dim(ψ) : 0
     for j in (rev ? reverse(eachindex(bonds)) : eachindex(bonds))
+        rev && skip_initial_bond && j == B && continue
         n = bonds[j]
         m = t.parent[n]
         if rev
@@ -314,14 +358,16 @@ function _tdvp2_sweep!(ev::TDVP2, ψ::TTNS, H::TTNO, dz::Number; rev::Bool)
             # bending its link factor through a dual fermionic ancilla can
             # insert a pivotal sign before the block is merged again.
             move_center!(ψ, m; cache)
-            _bond_forward!(ev, ψ, H, n, m, dz; herm, center_on=:m)
+            bond_dz = terminal_dz !== nothing && j == B ? terminal_dz : dz
+            center_on = terminal_dz !== nothing && j == B ? :n : :m
+            _bond_forward!(ev, ψ, H, n, m, bond_dz; herm, center_on)
             j == B || _site_backward!(ev, ψ, H, m, dz; herm)
         end
     end
     if ev.verbose
         direction = rev ? :reverse : :forward
-        bond_updates = length(bonds)
-        backward_site_updates = max(bond_updates - 1, 0)
+        bond_updates = length(bonds) - Int(rev && skip_initial_bond && B > 0)
+        backward_site_updates = max(length(bonds) - 1, 0)
         center_site = _tdvp_center_site(ψ)
         maxbond_after = _tdvp_max_bond_dim(ψ)
         @info "TDVP2 sweep complete" direction dz bond_updates backward_site_updates center_site maxbond_before maxbond_after
@@ -345,7 +391,8 @@ Base.@noinline function _bond_forward!(
                 distributed=ev.distributed)
     Θ, _ = _effective_exponentiate(
         ev.distributed, h2, dz, Θ;
-        ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
+        ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol,
+        eager=ev.eager)
     invalidate_edge!(cache, n, m)
     split_two_site!(ψ, Θ, n, m; trunc=ev.trunc, center_on)
     return ψ
@@ -377,7 +424,8 @@ Base.@noinline function _site_backward!(
     end
     A, _ = _effective_exponentiate(
         ev.distributed, h1, -dz, ψ.tensors[m];
-        ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
+        ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol,
+        eager=ev.eager)
     update_tensor!(ψ, m, A; caches=(cache,))
     return ψ
 end

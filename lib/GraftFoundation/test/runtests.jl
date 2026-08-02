@@ -1,6 +1,25 @@
 using GraftFoundation
 using Test
 
+@testset "GraftFoundation TensorKit transformer adapter" begin
+    transformer_threads =
+        GraftFoundation.Backend.tensor_transformer_threads
+    set_transformer_threads! =
+        GraftFoundation.Backend.set_tensor_transformer_threads!
+    original = transformer_threads()
+    requested = Base.Threads.nthreads() > 1 && original == 1 ? 2 : 1
+    try
+        @test set_transformer_threads!(requested) == requested
+        @test transformer_threads() == requested
+        @test_throws ArgumentError set_transformer_threads!(0)
+        @test_throws ArgumentError set_transformer_threads!(
+            Base.Threads.nthreads() + 1)
+        @test transformer_threads() == requested
+    finally
+        set_transformer_threads!(original)
+    end
+end
+
 @testset "GraftFoundation topology and T3NS geometry" begin
     star = star_topology(3, 2)
 

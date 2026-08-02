@@ -2,7 +2,8 @@
 Cross-cutting — parallelization (architecture §8).
 
 Roll-out order (per-milestone plan §12):
-1. sector-block threading — free via TensorKit block sparsity;
+1. graded/fusion-tree transformer threading — configured explicitly through
+   the backend adapter; TensorKit v0.17 sector-block `mul!` remains serial;
 2. operator-channel MPI reduction of H_eff·ψ — implemented in `GraftMPIExt`
    and shared by DMRG and TDVP through root-driven adaptive solvers;
 3. subtree-environment-level MPI — ownership validation is implemented;
@@ -19,6 +20,7 @@ module Parallel
 import Base.Threads
 using LinearAlgebra: BLAS
 using TensorOperations: TensorOperations
+using ..Backend: tensor_transformer_threads, set_tensor_transformer_threads!
 using ..Trees: TreeTopology, nnodes, neighbors
 
 export ParallelRuntimeConfig, ParallelRuntimeConfigurationError,
@@ -172,6 +174,7 @@ struct ParallelRuntimeConfig
     blas_vendor::Symbol
     blas_threads::Int
     strided_threads::Int
+    transformer_threads::Int
     configured::Bool
     generation::UInt64
     active_regions::Int
@@ -317,6 +320,7 @@ function _parallel_runtime_config_unlocked()
         BLAS.vendor(),
         BLAS.get_num_threads(),
         TensorOperations.Strided.get_num_threads(),
+        tensor_transformer_threads(),
         _PARALLEL_RUNTIME_CONFIGURED[],
         _PARALLEL_RUNTIME_GENERATION[],
         _PARALLEL_RUNTIME_ACTIVE_REGIONS[],
@@ -326,9 +330,10 @@ end
 """
     parallel_runtime_config() -> ParallelRuntimeConfig
 
-Return the effective Julia, BLAS, and Strided thread counts together with the
-backend vendor, process identity, explicit-configuration generation, and
-active Graft fan-out count. This function never mutates runtime state.
+Return the effective Julia, BLAS, Strided, and TensorKit transformer thread
+counts together with the backend vendor, process identity,
+explicit-configuration generation, and active Graft fan-out count. This
+function never mutates runtime state.
 """
 function parallel_runtime_config()
     lock(_PARALLEL_RUNTIME_LOCK)
@@ -340,31 +345,82 @@ function parallel_runtime_config()
 end
 
 """
-    configure_parallel_runtime!(; blas_threads=1, strided_threads=1)
+    configure_parallel_runtime!(; blas_threads=1, strided_threads=1,
+                                 transformer_threads=1)
         -> ParallelRuntimeConfig
 
 Configure process-global backend thread pools before entering Graft's outer
-Julia-thread fan-out regions. The defaults prevent BLAS and Strided from
-nested threading inside each Graft task. Equal settings are idempotent and do
-not advance the configuration generation. A different setting is rejected
-before mutation while a Graft task fan-out region is active.
+Julia-thread fan-out regions. The defaults prevent BLAS, Strided, and
+TensorKit coordinate-transform threading from nesting inside each Graft task.
+TensorKit transformer threads cover graded/fusion-tree transforms only;
+sector-block `mul!` remains serial. Equal settings are idempotent and do not
+advance the configuration generation. A different setting is rejected before
+mutation while a Graft task fan-out region is active.
 
 This function changes global runtime state and should be called once during
 process setup, before concurrent work starts.
 """
+function _validated_runtime_thread_count(name::Symbol, threads::Integer)
+    threads >= 1 || throw(ArgumentError("$(name) must be positive"))
+    return Int(threads)
+end
+
+function _validated_transformer_thread_count(threads::Integer)
+    value = _validated_runtime_thread_count(:transformer_threads, threads)
+    value <= Threads.nthreads() || throw(ArgumentError(
+        "transformer_threads must not exceed Julia thread count " *
+        "$(Threads.nthreads())",
+    ))
+    return value
+end
+
+function _apply_runtime_thread_counts!(
+    current::NamedTuple{(:blas_threads, :strided_threads,
+                         :transformer_threads)},
+    requested::NamedTuple{(:blas_threads, :strided_threads,
+                           :transformer_threads)},
+    setters::NamedTuple{(:blas, :strided, :transformer)},
+)
+    try
+        setters.blas(requested.blas_threads)
+        setters.strided(requested.strided_threads)
+        setters.transformer(requested.transformer_threads)
+    catch original_error
+        rollback_errors = Any[]
+        for (setter, value) in (
+            (setters.transformer, current.transformer_threads),
+            (setters.strided, current.strided_threads),
+            (setters.blas, current.blas_threads),
+        )
+            try
+                setter(value)
+            catch rollback_error
+                push!(rollback_errors, rollback_error)
+            end
+        end
+        isempty(rollback_errors) && rethrow()
+        throw(Base.CompositeException(Any[original_error; rollback_errors]))
+    end
+    return nothing
+end
+
 function configure_parallel_runtime!(; blas_threads::Integer=1,
-                                     strided_threads::Integer=1)
-    blas_threads >= 1 || throw(ArgumentError("blas_threads must be positive"))
-    strided_threads >= 1 || throw(ArgumentError("strided_threads must be positive"))
+                                     strided_threads::Integer=1,
+                                     transformer_threads::Integer=1)
     requested = (;
-        blas_threads=Int(blas_threads),
-        strided_threads=Int(strided_threads),
+        blas_threads=_validated_runtime_thread_count(
+            :blas_threads, blas_threads),
+        strided_threads=_validated_runtime_thread_count(
+            :strided_threads, strided_threads),
+        transformer_threads=_validated_transformer_thread_count(
+            transformer_threads),
     )
     lock(_PARALLEL_RUNTIME_LOCK)
     try
         current = (;
             blas_threads=BLAS.get_num_threads(),
             strided_threads=TensorOperations.Strided.get_num_threads(),
+            transformer_threads=tensor_transformer_threads(),
         )
         changed = current != requested
         if changed && _PARALLEL_RUNTIME_ACTIVE_REGIONS[] > 0
@@ -376,16 +432,12 @@ function configure_parallel_runtime!(; blas_threads::Integer=1,
         end
         first_configuration = !_PARALLEL_RUNTIME_CONFIGURED[]
         if changed
-            try
-                BLAS.set_num_threads(requested.blas_threads)
-                TensorOperations.Strided.set_num_threads(
-                    requested.strided_threads)
-            catch
-                BLAS.set_num_threads(current.blas_threads)
-                TensorOperations.Strided.set_num_threads(
-                    current.strided_threads)
-                rethrow()
-            end
+            setters = (;
+                blas=BLAS.set_num_threads,
+                strided=TensorOperations.Strided.set_num_threads,
+                transformer=set_tensor_transformer_threads!,
+            )
+            _apply_runtime_thread_counts!(current, requested, setters)
         end
         if first_configuration || changed
             _PARALLEL_RUNTIME_GENERATION[] += 1

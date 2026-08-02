@@ -246,27 +246,200 @@ function _with_candidate_failures(
 end
 
 """
-Callable effective Hamiltonian. `statics` owns W, cached environments and an
-optional root cap; slot 1 is supplied afresh by KrylovKit on every invocation.
-`input_twists` and `output_twists` implement local pivotal coordinate changes
-without mutating KrylovKit's input vector.
+Immutable execution-only layout for an `EffectiveMap`.
+
+`prepared` replaces only non-identity original static leaves with a tensor
+permuted once into the matrix partition used by the leaf's unique `PairStep`.
+`execution_plan` is a private copy whose corresponding leaf partitions are
+identities. Identity leaves reuse their original tensor and plan partition.
+The public cached plan and original static tuple are retained unchanged for
+diagnostics and cache identity. `retained_bytes` is a conservative upper bound
+on additional static payload retained by non-identity preparation.
 """
-struct EffectiveMap{T<:Tuple,I<:Tuple,O<:Tuple}
+struct StaticLayout{T<:Tuple,S<:Tuple}
+    prepared::T
+    execution_plan::ContractionPlan
+    retained_bytes::Int
+    prepared_slots::S
+end
+
+@inline function _identity_partition(first_count::Int, second_count::Int)
+    return (Tuple(1:first_count),
+            Tuple((first_count + 1):(first_count + second_count)))
+end
+
+@inline function _partition_is_identity(partition::Tuple, ninds::Int)
+    return (partition[1]..., partition[2]...) == Tuple(1:ninds)
+end
+
+function _copy_plan_with_steps(plan::ContractionPlan, steps::Vector{PairStep})
+    return ContractionPlan(
+        plan.nslots,
+        plan.output_slot,
+        steps;
+        strategy=plan.strategy,
+        flops=plan.flops,
+        peak_elements=plan.peak_elements,
+        sector_flops=plan.sector_flops,
+        sector_peak_elements=plan.sector_peak_elements,
+        sector_peak_block_elements=plan.sector_peak_block_elements,
+        scalar_bytes=plan.scalar_bytes,
+        operand_bytes=plan.operand_bytes,
+        live_peak_bytes=plan.live_peak_bytes,
+        known_temporary_peak_bytes=plan.known_temporary_peak_bytes,
+        known_permutation_peak_bytes=plan.known_permutation_peak_bytes,
+        sector_operand_bytes=plan.sector_operand_bytes,
+        sector_live_peak_bytes=plan.sector_live_peak_bytes,
+        sector_known_temporary_peak_bytes=plan.sector_known_temporary_peak_bytes,
+        sector_known_permutation_peak_bytes=plan.sector_known_permutation_peak_bytes,
+        scalar_output=plan.scalar_output,
+        candidate_failures=plan.candidate_failures,
+    )
+end
+
+@inline function _static_payload_bytes(tensor::AbstractTensorMap)
+    elements = Int(Backend.dim(tensor))
+    scalar_bytes = sizeof(Backend.scalartype(tensor))
+    return Base.checked_mul(elements, scalar_bytes)
+end
+
+function _static_leaf_uses(plan::ContractionPlan, ninputs::Int)
+    uses = Vector{Union{Nothing,Tuple{Int,Symbol}}}(nothing, ninputs)
+    for (step_index, step) in enumerate(plan.steps)
+        for (side, slot) in ((:a, step.a), (:b, step.b))
+            slot <= ninputs || continue
+            uses[slot] === nothing ||
+                throw(ArgumentError("compiled contraction plan consumes original slot $slot more than once"))
+            uses[slot] = (step_index, side)
+        end
+    end
+    for slot in 2:ninputs
+        uses[slot] === nothing &&
+            throw(ArgumentError("compiled contraction plan does not consume original slot $slot"))
+    end
+    return uses
+end
+
+function _static_layout(plan::ContractionPlan, statics::Tuple,
+                        cap_bytes::Real)
+    ninputs = plan.nslots - length(plan.steps)
+    length(statics) == ninputs - 1 ||
+        throw(ArgumentError("compiled contraction plan expects $(ninputs - 1) static operands, got $(length(statics))"))
+    isfinite(cap_bytes) || cap_bytes == Inf ||
+        throw(ArgumentError("static layout cap must be finite or Inf"))
+    cap_bytes >= 0 || throw(ArgumentError("static layout cap must be nonnegative"))
+    uses = _static_leaf_uses(plan, ninputs)
+
+    partitions = Vector{Tuple}(undef, length(statics))
+    retained_bytes = 0
+    fixed_width_payloads = true
+    for static_index in eachindex(statics)
+        tensor = statics[static_index]
+        tensor isa AbstractTensorMap ||
+            throw(ArgumentError("static operand $static_index is not an AbstractTensorMap"))
+        fixed_width = isbitstype(Backend.scalartype(tensor))
+        fixed_width_payloads &= fixed_width
+        slot = static_index + 1
+        step_index, side = uses[slot]
+        step = plan.steps[step_index]
+        partition = side === :a ? (step.oindA, step.cindA) :
+                                  (step.cindB, step.oindB)
+        partitions[static_index] = partition
+        if fixed_width &&
+           !_partition_is_identity(partition, Backend.numind(tensor))
+            retained_bytes = Base.checked_add(retained_bytes,
+                                               _static_payload_bytes(tensor))
+        end
+    end
+
+    # Heap-owned scalar payload cannot be bounded by `sizeof(T)`. Preserve the
+    # public map constructor and execute the untouched plan instead of
+    # publishing an undercounted retained-byte diagnostic.
+    fixed_width_payloads || return StaticLayout(statics, plan, 0, ())
+
+    # Admission is all-or-nothing: a rejected layout keeps both the original
+    # operands and original plan, so no partially prepared tuple can escape.
+    if retained_bytes > cap_bytes
+        return StaticLayout(statics, plan, 0, ())
+    end
+
+    prepared_static_indices = Int[
+        static_index for static_index in eachindex(statics)
+        if !_partition_is_identity(partitions[static_index],
+                                   Backend.numind(statics[static_index]))
+    ]
+    isempty(prepared_static_indices) &&
+        return StaticLayout(statics, plan, 0, ())
+
+    prepared_values = Any[statics...]
+    for static_index in prepared_static_indices
+        prepared_values[static_index] = Backend.permute(
+            statics[static_index], partitions[static_index])
+    end
+    prepared = Tuple(prepared_values)
+
+    steps = copy(plan.steps)
+    prepared_slots = Tuple(static_index + 1 for static_index in prepared_static_indices)
+    for slot in prepared_slots
+        step_index, side = uses[slot]
+        step = steps[step_index]
+        if side === :a
+            p = _identity_partition(length(step.oindA), length(step.cindA))
+            steps[step_index] = PairStep(
+                step.a, step.b, step.dst, p[1], p[2], step.oindB, step.cindB,
+                step.conjA, step.conjB, step.out)
+        else
+            p = _identity_partition(length(step.cindB), length(step.oindB))
+            steps[step_index] = PairStep(
+                step.a, step.b, step.dst, step.oindA, step.cindA, p[2], p[1],
+                step.conjA, step.conjB, step.out)
+        end
+    end
+    return StaticLayout(prepared, _copy_plan_with_steps(plan, steps),
+                        retained_bytes, prepared_slots)
+end
+
+"""
+Callable effective Hamiltonian. `statics` owns the original W, cached
+environments and optional root cap; slot 1 is supplied afresh by KrylovKit on
+every invocation. Static leaves are pre-permuted once at construction and the
+hot path uses `layout.execution_plan`. `input_twists` and `output_twists`
+implement local pivotal coordinate changes without mutating KrylovKit's input
+vector.
+"""
+struct EffectiveMap{T<:Tuple,I<:Tuple,O<:Tuple,L<:StaticLayout}
     plan::ContractionPlan
     statics::T
     input_twists::I
     output_twists::O
+    layout::L
 end
 
-EffectiveMap(plan::ContractionPlan, statics::T) where {T<:Tuple} =
-    EffectiveMap(plan, statics, (), ())
-EffectiveMap(plan::ContractionPlan, statics::T, output_twists::O) where
-        {T<:Tuple,O<:Tuple} =
-    EffectiveMap(plan, statics, (), output_twists)
+function EffectiveMap(plan::ContractionPlan, statics::T,
+                      input_twists::I, output_twists::O;
+                      static_layout_cap_bytes::Real=Inf) where
+        {T<:Tuple,I<:Tuple,O<:Tuple}
+    layout = _static_layout(plan, statics, static_layout_cap_bytes)
+    return EffectiveMap{T,I,O,typeof(layout)}(
+        plan, statics, input_twists, output_twists, layout)
+end
+
+EffectiveMap(plan::ContractionPlan, statics::T;
+             static_layout_cap_bytes::Real=Inf) where {T<:Tuple} =
+    EffectiveMap(plan, statics, (), (); static_layout_cap_bytes)
+EffectiveMap(plan::ContractionPlan, statics::T, output_twists::O;
+             static_layout_cap_bytes::Real=Inf) where {T<:Tuple,O<:Tuple} =
+    EffectiveMap(plan, statics, (), output_twists; static_layout_cap_bytes)
+
+"""Static-preparation memory and admission diagnostics for an effective map."""
+static_layout_stats(f::EffectiveMap) =
+    (prepared_slots=f.layout.prepared_slots,
+     retained_bytes=f.layout.retained_bytes,
+     admitted=f.layout.execution_plan !== f.plan)
 
 function (f::EffectiveMap)(x::AbstractTensorMap)
     x′ = isempty(f.input_twists) ? x : Backend.twist(x, f.input_twists)
-    y = execute(f.plan, x′, f.statics)
+    y = execute(f.layout.execution_plan, x′, f.layout.prepared)
     isempty(f.output_twists) || Backend.twist!(y, f.output_twists)
     return y
 end
@@ -387,12 +560,13 @@ struct WorkspaceMap{F<:EffectiveMap}
 end
 
 workspace_map(effective::EffectiveMap) =
-    WorkspaceMap(effective, PlanWorkspace(effective.plan))
+    WorkspaceMap(effective, PlanWorkspace(effective.layout.execution_plan))
 
 function (map::WorkspaceMap)(x::AbstractTensorMap)
     x′ = isempty(map.effective.input_twists) ?
         x : Backend.twist(x, map.effective.input_twists)
-    y = execute(map.effective.plan, x′, map.effective.statics;
+    y = execute(map.effective.layout.execution_plan, x′,
+                map.effective.layout.prepared;
                 workspace=map.workspace)
     isempty(map.effective.output_twists) ||
         Backend.twist!(y, map.effective.output_twists)

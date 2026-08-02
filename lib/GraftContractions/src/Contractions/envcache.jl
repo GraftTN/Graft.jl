@@ -61,6 +61,10 @@ owns its `PlanWorkspace`, and staged values commit in fixed neighbor order.
 mutable struct EnvCache
     topo::TreeTopology
     envs::Dict{Tuple{Int,Int},AbstractTensorMap}
+    env_entry_bytes::Dict{Tuple{Int,Int},Int}
+    env_payload_size_counts::Dict{Int,Int}
+    env_payload_bytes::Int
+    env_largest_entry_bytes::Int
     plans::Dict{PlanKey,ContractionPlan}
     rootcaps::Dict{Tuple,AbstractTensorMap}
     plan_hits::Int
@@ -212,23 +216,38 @@ function _env_payload_bytes(E::AbstractTensorMap)
     return bytes
 end
 
-function _reconcile_env_metadata!(c::EnvCache)
-    filter!(p -> haskey(c.envs, p.first), c.env_touches)
-    filter!(p -> haskey(c.envs, p.first), c.env_stamps)
-    return c
+function _register_env_payload_locked!(
+        c::EnvCache,
+        key::Tuple{Int,Int},
+        bytes::Int)
+    bytes >= 0 || throw(ArgumentError("environment payload bytes must be nonnegative"))
+    haskey(c.env_entry_bytes, key) &&
+        throw(ArgumentError("environment payload key $key is already registered"))
+    c.env_entry_bytes[key] = bytes
+    c.env_payload_size_counts[bytes] = get(c.env_payload_size_counts, bytes, 0) + 1
+    c.env_payload_bytes += bytes
+    c.env_largest_entry_bytes = max(c.env_largest_entry_bytes, bytes)
+    c.env_high_water_bytes = max(c.env_high_water_bytes, c.env_payload_bytes)
+    return nothing
 end
 
-function _env_payload_summary!(c::EnvCache)
-    _reconcile_env_metadata!(c)
-    total = 0
-    largest = 0
-    for E in values(c.envs)
-        bytes = _env_payload_bytes(E)
-        total += bytes
-        largest = max(largest, bytes)
+function _unregister_env_payload_locked!(c::EnvCache, key::Tuple{Int,Int})
+    bytes = pop!(c.env_entry_bytes, key)
+    count = c.env_payload_size_counts[bytes]
+    if count == 1
+        delete!(c.env_payload_size_counts, bytes)
+        if bytes == c.env_largest_entry_bytes
+            c.env_largest_entry_bytes =
+                isempty(c.env_payload_size_counts) ? 0 :
+                maximum(keys(c.env_payload_size_counts))
+        end
+    else
+        c.env_payload_size_counts[bytes] = count - 1
     end
-    c.env_high_water_bytes = max(c.env_high_water_bytes, total)
-    return total, largest
+    c.env_payload_bytes -= bytes
+    c.env_payload_bytes >= 0 ||
+        throw(ArgumentError("environment payload accounting underflow"))
+    return bytes
 end
 
 function _touch_env!(c::EnvCache, key::Tuple{Int,Int})
@@ -239,11 +258,16 @@ end
 
 function _seed_env_metadata!(c::EnvCache)
     empty!(c.env_touches)
+    empty!(c.env_entry_bytes)
+    empty!(c.env_payload_size_counts)
+    c.env_payload_bytes = 0
+    c.env_largest_entry_bytes = 0
+    c.env_high_water_bytes = 0
     c.env_clock = 0
     for key in sort!(collect(keys(c.envs)))
         _touch_env!(c, key)
+        _register_env_payload_locked!(c, key, _env_payload_bytes(c.envs[key]))
     end
-    _env_payload_summary!(c)
     return c
 end
 
@@ -300,7 +324,10 @@ function EnvCache(topo::TreeTopology, envs::Dict{Tuple{Int,Int},AbstractTensorMa
     threaded_envs && staging_cap === nothing &&
         throw(ArgumentError(
             "threaded_envs=true requires env_staging_memory_cap_bytes"))
-    c = EnvCache(topo, envs, plans, rootcaps, Int(plan_hits), Int(plan_misses),
+    copied_envs = copy(envs)
+    c = EnvCache(topo, copied_envs,
+                 Dict{Tuple{Int,Int},Int}(), Dict{Int,Int}(), 0, 0,
+                 plans, rootcaps, Int(plan_hits), Int(plan_misses),
                  cap, policy, Dict{Tuple{Int,Int},Int}(), 0,
                  0, 0, 0, 0, 0, 0,
                  threaded_envs, Int(env_staging_minbatch), staging_cap,
@@ -310,7 +337,7 @@ function EnvCache(topo::TreeTopology, envs::Dict{Tuple{Int,Int},AbstractTensorMa
                      Tuple{Int,Int},
                      Union{Nothing,_EnvironmentDependencyStamp},
                  }(
-                     key => nothing for key in keys(envs)
+                     key => nothing for key in keys(copied_envs)
                  ),
                  0, 0, 0, 0, 0, 0, 0, 0,
                  0, 0, 0, 0,
@@ -358,6 +385,56 @@ function _fresh_env_cache_with_plans(source::EnvCache, topo::TreeTopology)
     )
 end
 
+function _set_environment_locked!(
+        c::EnvCache,
+        key::Tuple{Int,Int},
+        E::AbstractTensorMap,
+        bytes::Int;
+        stamp::Union{Nothing,_EnvironmentDependencyStamp}=nothing)
+    if haskey(c.envs, key)
+        _unregister_env_payload_locked!(c, key)
+    elseif haskey(c.env_entry_bytes, key)
+        throw(ArgumentError("orphan environment payload metadata for key $key"))
+    end
+    c.envs[key] = E
+    _register_env_payload_locked!(c, key, bytes)
+    c.env_stamps[key] = stamp
+    _touch_env!(c, key)
+    return E
+end
+
+function _delete_environment_locked!(c::EnvCache, key::Tuple{Int,Int})
+    if haskey(c.envs, key)
+        _unregister_env_payload_locked!(c, key)
+        delete!(c.envs, key)
+    elseif haskey(c.env_entry_bytes, key)
+        throw(ArgumentError("orphan environment payload metadata for key $key"))
+    end
+    delete!(c.env_touches, key)
+    delete!(c.env_stamps, key)
+    return c
+end
+
+function _clear_value_environments_locked!(c::EnvCache)
+    empty!(c.envs)
+    empty!(c.env_entry_bytes)
+    empty!(c.env_payload_size_counts)
+    c.env_payload_bytes = 0
+    c.env_largest_entry_bytes = 0
+    empty!(c.env_touches)
+    empty!(c.env_stamps)
+    c.env_clock = 0
+    return c
+end
+
+function _clear_value_environments!(c::EnvCache)
+    return _with_cache_lock(c) do
+        _clear_value_environments_locked!(c)
+        c.cache_generation[] += UInt64(1)
+        c
+    end
+end
+
 Base.haskey(c::EnvCache, key::Tuple{Int,Int}) =
     _with_cache_lock(c) do
         haskey(c.envs, key)
@@ -371,14 +448,11 @@ function Base.getindex(c::EnvCache, key::Tuple{Int,Int})
 end
 function Base.empty!(c::EnvCache)
     return _with_cache_lock(c) do
-        empty!(c.envs)
+        _clear_value_environments_locked!(c)
         empty!(c.plans)
         empty!(c.rootcaps)
         c.cache_generation[] += UInt64(1)
         fill!(c.node_generations, UInt64(0))
-        empty!(c.env_touches)
-        empty!(c.env_stamps)
-        c.env_clock = 0
         c.plan_hits = 0
         c.plan_misses = 0
         c.env_hits = 0
@@ -469,7 +543,8 @@ plans are reported separately and are intentionally outside value eviction.
 """
 function env_cache_stats(c::EnvCache)
     return _with_cache_lock(c) do
-        payload_bytes, largest_entry_bytes = _env_payload_summary!(c)
+        payload_bytes = c.env_payload_bytes
+        largest_entry_bytes = c.env_largest_entry_bytes
         (; payload_bytes, largest_entry_bytes, entry_count=length(c.envs),
          plan_count=length(c.plans), hits=c.env_hits, misses=c.env_misses,
          rebuilds=c.env_rebuilds, high_water_bytes=c.env_high_water_bytes,
@@ -509,15 +584,11 @@ function _enforce_env_cap!(c::EnvCache)
     cap = c.max_env_bytes
     cap === nothing && return c
     c.eviction === :lru || throw(ArgumentError("unsupported EnvCache eviction policy"))
-    payload_bytes, _ = _env_payload_summary!(c)
-    while payload_bytes > cap && !isempty(c.envs)
+    while c.env_payload_bytes > cap && !isempty(c.envs)
         victim = _lru_victim(c)
         victim === nothing && break
-        delete!(c.envs, victim)
-        delete!(c.env_touches, victim)
-        delete!(c.env_stamps, victim)
+        _delete_environment_locked!(c, victim)
         c.env_evictions += 1
-        payload_bytes, _ = _env_payload_summary!(c)
     end
     return c
 end
@@ -543,12 +614,10 @@ function _store_env!(
         key::Tuple{Int,Int},
         E::AbstractTensorMap;
         stamp::Union{Nothing,_EnvironmentDependencyStamp}=nothing)
+    bytes = _env_payload_bytes(E)
     return _with_cache_lock(c) do
-        c.envs[key] = E
-        c.env_stamps[key] = stamp
-        _touch_env!(c, key)
+        _set_environment_locked!(c, key, E, bytes; stamp)
         c.env_rebuilds += 1
-        _env_payload_summary!(c)
         E
     end
 end
@@ -647,7 +716,18 @@ Base.@noinline function _effective_map!(
         effective_lookup=true, optimize, memory_weight, sector_aware,
         memory_cap_bytes,
     )
-    return EffectiveMap(plan, statics, input_twists, output_twists)
+    static_layout_cap_bytes = if memory_cap_bytes === nothing
+        Inf
+    else
+        dense_live = plan.live_peak_bytes
+        sector_live = isfinite(plan.sector_live_peak_bytes) ?
+                      plan.sector_live_peak_bytes : dense_live
+        max(0.0, Float64(memory_cap_bytes) - max(dense_live, sector_live))
+    end
+    return EffectiveMap(
+        plan, statics, input_twists, output_twists;
+        static_layout_cap_bytes,
+    )
 end
 
 # is node `n` on the `u`-side of the directed edge (u, v)?
@@ -723,13 +803,6 @@ function _environment_stamp_is_current(
     end
 end
 
-function _delete_environment_locked!(c::EnvCache, key::Tuple{Int,Int})
-    delete!(c.envs, key)
-    delete!(c.env_touches, key)
-    delete!(c.env_stamps, key)
-    return c
-end
-
 """
     invalidate_node!(cache::EnvCache, n) -> cache
 
@@ -740,8 +813,10 @@ function invalidate_node!(c::EnvCache, n::Int)
     return _with_cache_lock(c) do
         checkbounds(c.node_generations, n)
         c.node_generations[n] += UInt64(1)
-        filter!(p -> !_on_side(c.topo, n, p.first[1], p.first[2]), c.envs)
-        _reconcile_env_metadata!(c)
+        for key in collect(keys(c.envs))
+            _on_side(c.topo, n, key[1], key[2]) &&
+                _delete_environment_locked!(c, key)
+        end
         c
     end
 end
@@ -758,9 +833,12 @@ function invalidate_edge!(c::EnvCache, n::Int, m::Int)
         checkbounds(c.node_generations, m)
         c.node_generations[n] += UInt64(1)
         n == m || (c.node_generations[m] += UInt64(1))
-        filter!(p -> !(_on_side(c.topo, n, p.first[1], p.first[2]) ||
-                       _on_side(c.topo, m, p.first[1], p.first[2])), c.envs)
-        _reconcile_env_metadata!(c)
+        for key in collect(keys(c.envs))
+            if _on_side(c.topo, n, key[1], key[2]) ||
+               _on_side(c.topo, m, key[1], key[2])
+                _delete_environment_locked!(c, key)
+            end
+        end
         c
     end
 end
@@ -1333,6 +1411,7 @@ function _commit_environment_candidate!(
         ket::TTNS,
         O::Union{TTNO,Nothing},
         bra::TTNS)
+    candidate_bytes = _env_payload_bytes(candidate)
     return _with_cache_lock(c) do
         if !_environment_stamp_is_current_locked(c, stamp, ket, O, bra)
             c.env_stale_build_discards += 1
@@ -1351,11 +1430,9 @@ function _commit_environment_candidate!(
             _delete_environment_locked!(c, key)
             c.env_stale_build_discards += 1
         end
-        c.envs[key] = candidate
-        c.env_stamps[key] = stamp
-        _touch_env!(c, key)
+        _set_environment_locked!(
+            c, key, candidate, candidate_bytes; stamp)
         c.env_rebuilds += 1
-        _env_payload_summary!(c)
         return (status=:committed, env=candidate)
     end
 end

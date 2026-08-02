@@ -94,7 +94,8 @@ and real-time purification with auxiliary `:backward`/custom evolution.
 ## Parallel runtime
 
 When using Julia-level fan-out, launch Julia with one BLAS thread and configure
-the Strided backend once before starting work:
+the Strided and TensorKit transformer backends once during process startup,
+before starting solver or fan-out work:
 
 ```bash
 JULIA_NUM_THREADS=24 OPENBLAS_NUM_THREADS=1 julia --project=.
@@ -102,16 +103,19 @@ JULIA_NUM_THREADS=24 OPENBLAS_NUM_THREADS=1 julia --project=.
 
 ```julia
 using Graft
-configure_parallel_runtime!()  # BLAS = 1, Strided = 1
+configure_parallel_runtime!()  # BLAS = Strided = transformer = 1
 ```
 
-This avoids nested BLAS/Strided threading inside each Graft task. Benchmark a
-different backend thread count explicitly for workloads dominated by one large
-contraction; sector-rich workloads with many small blocks should keep both at
-one. On multi-socket hosts, choose thread count and CPU affinity so work is
-balanced across NUMA domains. Thermal correlators and dense thermal references
-keep fan-out off by default because each active item retains its own state and
-environments; opt in with `threaded=true` after budgeting that per-item memory.
+This avoids nested backend threading inside each Graft task. TensorKit's
+transformer pool applies only to graded/fusion-tree coordinate transforms;
+TensorKit v0.17 sector-block `mul!` remains serial. Benchmark different backend
+thread counts explicitly for workloads dominated by one large contraction or
+coordinate transform; sector-rich workloads with many small blocks should keep
+the three backend pools at one. On multi-socket hosts, choose thread count and
+CPU affinity so work is balanced across NUMA domains. Thermal correlators and
+dense thermal references keep fan-out off by default because each active item
+retains its own state and environments; opt in with `threaded=true` after
+budgeting that per-item memory.
 They and RSVD probe generation accept `threaded`/`minbatch` or
 `rsvd_threaded`/`rsvd_minbatch` controls for serial A/B runs and
 workload-specific granularity.
@@ -134,18 +138,20 @@ them and otherwise falls back to the dense estimate. On the current 24-thread
 star benchmarks, one-site maps cross break-even near χ=32 and reach about
 1.25× at χ=64. Two-site maps use a cost model to choose between internal and
 external TTNO edges; the 3×1 star is 0.63–0.67× at χ=16 but 1.22–1.53× at χ=64.
-Keep BLAS and Strided at one thread when this outer fan-out is active.
+Keep BLAS, Strided, and TensorKit transformer pools at one thread when this
+outer fan-out is active.
 
 ### MPI extension
 
 MPI support is loaded only when MPI.jl is present in the application
-environment. Construct one explicit context and pass it to the operation that
-should be distributed; Graft does not consult a global communicator:
+environment. Construct one explicit context during process startup and pass it
+to the operation that should be distributed; Graft does not consult a global
+communicator:
 
 ```julia
 using Graft, MPI
 
-context = mpi_context() # COMM_WORLD; also sets BLAS/Strided threads to 1
+context = mpi_context() # COMM_WORLD; also sets all three backend pools to 1
 
 ev = TDVP1(
     distributed=context,

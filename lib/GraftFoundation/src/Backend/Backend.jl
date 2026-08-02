@@ -100,6 +100,38 @@ function sector_braiding_symbol(::Type{Q}) where {Q<:TensorKit.Sector}
     return :none
 end
 
+# ---------------------------------------------------------------------------
+# TensorKit runtime adapter
+# ---------------------------------------------------------------------------
+
+"""
+    tensor_transformer_threads() -> Int
+
+Return TensorKit's process-global transformer thread count. Transformer
+threads apply only to graded/fusion-tree coordinate transforms; TensorKit
+v0.17 sector-block `mul!` execution remains serial.
+
+This unexported adapter is the only Graft location that calls TensorKit's
+internal transformer-thread API.
+"""
+tensor_transformer_threads() = TensorKit.get_num_transformer_threads()
+
+"""
+    set_tensor_transformer_threads!(threads::Int) -> Int
+
+Set TensorKit's process-global transformer thread count. Callers must treat
+this as process-startup configuration, not solver-local state.
+"""
+function set_tensor_transformer_threads!(threads::Int)
+    threads >= 1 ||
+        throw(ArgumentError("transformer threads must be positive"))
+    threads <= Base.Threads.nthreads() || throw(ArgumentError(
+        "transformer threads must not exceed Julia thread count " *
+        "$(Base.Threads.nthreads())",
+    ))
+    return TensorKit.set_num_transformer_threads(threads)
+end
+
 """
     ones_tensor(T, cod::ProductSpace) -> Tensor
 

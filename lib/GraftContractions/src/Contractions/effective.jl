@@ -95,7 +95,7 @@ function DistributedChannelEffectiveMap(
     _require_nonempty_distributed_ranks(context, length(effective.maps))
     indices = collect((rank + 1):size:length(effective.maps))
     bytes = ceil(Int, sum(
-        _slice_live_bytes(effective.maps[i].plan) for i in indices;
+        _slice_live_bytes(effective.maps[i]) for i in indices;
         init=0.0))
     return DistributedChannelEffectiveMap(
         effective, context, indices, bytes)
@@ -426,10 +426,14 @@ function _slice_live_bytes(plan::ContractionPlan)
     return isfinite(bytes) ? bytes : plan.live_peak_bytes
 end
 
+_slice_live_bytes(map_::EffectiveMap) =
+    _slice_live_bytes(map_.plan) +
+    Planning.static_layout_stats(map_).retained_bytes
+
 function _concurrent_slice_bytes(maps)
     # Completed roots remain live until the fixed-order reduction. Summing all
     # plan peaks is conservative even when slices outnumber Julia threads.
-    return ceil(Int, sum(map_ -> _slice_live_bytes(map_.plan), maps))
+    return ceil(Int, sum(_slice_live_bytes, maps))
 end
 
 function _channel_plan_flops(plan::ContractionPlan)

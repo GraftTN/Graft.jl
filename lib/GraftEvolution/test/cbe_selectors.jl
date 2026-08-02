@@ -106,14 +106,16 @@ end
         policy(0x0ac1e), (; M, Θ=M), 2)
     @test oracle_info.solver === :exact_svd_oracle
     @test norm(oracle * oracle' - exact_projector) < 1e-12
-    sampled1, _ = _CBE._cbe_implicit_rsvd_directions(
+    sampled1, sampled_exact1 = _CBE._cbe_implicit_rsvd_directions(
         policy(0x51eed), factors, 2)
-    sampled2, _ = _CBE._cbe_implicit_rsvd_directions(
+    sampled2, sampled_exact2 = _CBE._cbe_implicit_rsvd_directions(
         policy(0x51eed), factors, 2)
     sampled_projector = sampled1 * sampled1'
 
     # Projector distance is the sine-principal-angle oracle and is invariant
     # under singular-vector phases and rotations inside degenerate subspaces.
+    @test sampled_exact1 isa _CBE.CBEExactLeftSVD
+    @test sampled_exact1.values ≈ sampled_exact2.values rtol=1e-13 atol=1e-13
     @test norm(sampled_projector - sampled2 * sampled2') < 1e-13
     @test norm(sampled_projector - exact_projector) < 1e-10
 
@@ -128,6 +130,106 @@ end
     finally
         copy!(global_rng, saved_global_rng)
     end
+end
+
+@testset "reusable exact CBE spectra and thresholded projectors" begin
+    rng = Xoshiro(2026080303)
+    even, odd = FermionParity(0), FermionParity(1)
+    maps = (
+        dense=_cbe_random_map(rng, ℂ^7, ℂ^5),
+        fermion_parity=_cbe_random_map(
+            rng,
+            Vect[FermionParity](even => 4, odd => 3),
+            Vect[FermionParity](even => 3, odd => 2)),
+    )
+
+    for (label, M) in pairs(maps)
+        @testset "$label spectrum and projector" begin
+            exact = _CBE.CBEExactLeftSVD(M)
+            reference_values = sort!(
+                Float64.(collect(GraftFoundation.svd_vals(M))); rev=true)
+            @test exact.values ≈ reference_values rtol=1e-13 atol=1e-13
+
+            cutoff = (reference_values[2] + reference_values[3]) / 2
+            directions = _CBE._cbe_exact_directions(
+                exact, length(reference_values); atol=cutoff)
+            reference, _, _ = GraftFoundation.split_svd(
+                M,
+                GraftFoundation.TruncationScheme(
+                    maxdim=length(reference_values), atol=cutoff))
+            expected_rank = count(>(cutoff), reference_values)
+
+            @test dim(domain(directions)) == expected_rank
+            @test norm(directions * directions' - reference * reference') < 1e-12
+        end
+    end
+
+    graded = maps.fermion_parity
+    exact = _CBE.CBEExactLeftSVD(graded)
+    cutoff = (exact.values[2] + exact.values[3]) / 2
+    dz = -0.25im
+    spawn_threshold = cutoff * abs(dz) / norm(graded)
+    predictor, info = _CBE._cbe_predictor_directions(
+        PredictorCBE(
+            max_add=length(exact.values),
+            spawn_threshold=spawn_threshold,
+            neigs=length(exact.values),
+            krylovdim=length(exact.values)),
+        (; M=graded, Θ=graded), dz, length(exact.values))
+    reference = _CBE._cbe_exact_directions(
+        exact, length(exact.values); atol=cutoff)
+
+    @test info.solver === :exact_svd_sector_fallback
+    @test info.singular_threshold ≈ cutoff rtol=1e-13
+    @test info.selected_rank == count(>(cutoff), exact.values)
+    @test info.score_max ≈ abs(dz) * first(exact.values) / norm(graded)
+    @test norm(predictor * predictor' - reference * reference') < 1e-12
+
+    dense = maps.dense
+    exact = _CBE.CBEExactLeftSVD(dense)
+    final_cutoff = (exact.values[2] + exact.values[3]) / 2
+    pre_cutoff = (exact.values[3] + exact.values[4]) / 2
+    naive = NaiveCBE(
+        rng=Xoshiro(2026080304), max_add=length(exact.values), rsvd=false,
+        enr_atol=final_cutoff, enr_rtol=0)
+    naive_directions, naive_info = _CBE._cbe_naive_exact_oracle(
+        naive, (; M=dense, Θ=dense), length(exact.values))
+    factors = (
+        Na=GraftFoundation.id(codomain(dense)),
+        Np=GraftFoundation.id(domain(dense)),
+        Zs=dense,
+        injection=GraftFoundation.id(domain(dense)),
+        Θ=dense,
+    )
+    production_directions, production_info = _CBE._cbe_naive_directions(
+        naive, factors, length(exact.values))
+    reference = _CBE._cbe_exact_directions(
+        exact, length(exact.values); atol=final_cutoff)
+
+    @test naive_info.solver === :exact_svd_oracle
+    @test naive_info.singular_threshold == final_cutoff
+    @test naive_info.selected_rank == count(>(final_cutoff), exact.values)
+    @test naive_info.score_max ≈ first(exact.values)
+    @test norm(naive_directions * naive_directions' -
+               reference * reference') < 1e-12
+    @test production_info.solver === :exact_svd
+    @test production_info.selected_rank == naive_info.selected_rank
+    @test production_info.score_max ≈ naive_info.score_max
+    @test norm(production_directions * production_directions' -
+               reference * reference') < 1e-12
+
+    lgvd = LGVDCBE(
+        max_add=length(exact.values),
+        preselection_threshold=pre_cutoff / first(exact.values),
+        final_selection_threshold=final_cutoff / first(exact.values))
+    lgvd_directions, lgvd_info = _CBE._lgvd_c1_directions(
+        lgvd, (; M=dense), length(exact.values))
+
+    @test lgvd_info.selector === :full_c1
+    @test lgvd_info.preselected_rank == count(>(pre_cutoff), exact.values)
+    @test lgvd_info.selected_rank == count(>(final_cutoff), exact.values)
+    @test norm(lgvd_directions * lgvd_directions' -
+               reference * reference') < 1e-12
 end
 
 @testset "exact selector and strict LGVD topology guard" begin

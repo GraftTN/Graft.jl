@@ -21,17 +21,22 @@ end
 
 """
     mpi_context(; comm=MPI.COMM_WORLD, root=0, initialize=true,
-                configure_runtime=true, blas_threads=1, strided_threads=1)
+                configure_runtime=true, blas_threads=1, strided_threads=1,
+                transformer_threads=1)
 
 Create a distributed context. MPI is initialized with `THREAD_FUNNELED` when
 needed: Julia worker threads may perform local contractions, while collectives
-run only after those workers have joined.
+run only after those workers have joined. With `configure_runtime=true`,
+construct this context during process startup before concurrent solver work;
+pass `configure_runtime=false` when the application has already configured the
+three backend thread pools explicitly.
 """
 function mpi_context(; comm=MPI.COMM_WORLD, root::Integer=0,
                      initialize::Bool=true,
                      configure_runtime::Bool=true,
                      blas_threads::Integer=1,
-                     strided_threads::Integer=1)
+                     strided_threads::Integer=1,
+                     transformer_threads::Integer=1)
     if !MPI.Initialized()
         initialize || throw(ArgumentError(
             "MPI is not initialized; call MPI.Init or pass initialize=true"))
@@ -46,7 +51,7 @@ function mpi_context(; comm=MPI.COMM_WORLD, root::Integer=0,
     0 <= root < size ||
         throw(ArgumentError("root must lie in 0:$(size - 1)"))
     configure_runtime && configure_parallel_runtime!(
-        ; blas_threads, strided_threads)
+        ; blas_threads, strided_threads, transformer_threads)
     return MPIContext(comm, Int(root), threadlevel)
 end
 

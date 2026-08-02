@@ -1,6 +1,30 @@
 const _CP = Graft.Contractions
 const _Planning = Graft.Contractions.Planning
 
+function _assert_env_payload_accounting(cache::EnvCache)
+    scan = _CP._with_cache_lock(cache) do
+        entry_bytes = Dict(
+            key => _CP._env_payload_bytes(E) for (key, E) in cache.envs)
+        size_counts = Dict{Int,Int}()
+        for bytes in values(entry_bytes)
+            size_counts[bytes] = get(size_counts, bytes, 0) + 1
+        end
+        total = sum(values(entry_bytes); init=0)
+        largest = maximum(values(entry_bytes); init=0)
+        (; entry_bytes, size_counts, total, largest,
+         cached_entry_bytes=copy(cache.env_entry_bytes),
+         cached_size_counts=copy(cache.env_payload_size_counts),
+         cached_total=cache.env_payload_bytes,
+         cached_largest=cache.env_largest_entry_bytes)
+    end
+    stats = env_cache_stats(cache)
+    @test scan.cached_entry_bytes == scan.entry_bytes
+    @test scan.cached_size_counts == scan.size_counts
+    @test scan.cached_total == scan.total == stats.payload_bytes
+    @test scan.cached_largest == scan.largest == stats.largest_entry_bytes
+    return nothing
+end
+
 struct _PlanningDistributedContext <: AbstractDistributedContext
     rank::Int
     size::Int
@@ -672,7 +696,8 @@ end
     # exact cache-key check.
     ψwide = random_ttns(MersenneTwister(1502), ComplexF64, topo, phys, ℂ^3)
     h1_plans_before_shape_change = count(key -> key.kind === :h1, keys(cache.plans))
-    empty!(cache.envs)
+    _CP._clear_value_environments!(cache)
+    _assert_env_payload_accounting(cache)
     _ = eff_h1(cache, ψwide, O, n)
     @test count(key -> key.kind === :h1, keys(cache.plans)) ==
           h1_plans_before_shape_change + 1
@@ -854,6 +879,7 @@ end
     )
     staged = _CP.env!(staged_cache, ket, O, bra, key...)
     @test norm(staged - serial) <= 1e-12 * max(norm(serial), 1)
+    _assert_env_payload_accounting(staged_cache)
     staged_diag = cache_diagnostics(staged_cache).environments
     if Base.Threads.nthreads() > 1
         @test staged_diag.staged_batches >= 1
@@ -894,8 +920,10 @@ end
         @test failure_diag.staged_tasks == 0
         @test failure_diag.serial_fallbacks == 1
         @test failure_diag.last_fallback == :worker_failure
+        _assert_env_payload_accounting(failure_cache)
         recovered = _CP.env!(failure_cache, ket, O, bra, key...)
         @test norm(recovered - serial) <= 1e-12 * max(norm(serial), 1)
+        _assert_env_payload_accounting(failure_cache)
     end
 
     capped_cache = EnvCache(
@@ -932,6 +960,7 @@ end
     stress_diag = cache_diagnostics(stress_cache).environments
     @test stress_diag.retry_exhaustions == 0
     @test stress_diag.entries == length(stress_cache.envs)
+    _assert_env_payload_accounting(stress_cache)
 
     # An invalidation outside the dependency component does not invalidate its
     # captured stamp; a relevant node update does.
@@ -960,11 +989,13 @@ end
         leaf_cache, leaf_key, copy(leaf_env), leaf_stamp, ket, O, bra)
     @test rejected.status == :stale
     @test !haskey(leaf_cache, leaf_key)
+    _assert_env_payload_accounting(leaf_cache)
     rebuilt = _CP.env!(leaf_cache, ket, O, bra, leaf_key...)
     rebuilt_ref = _CP._build_env_ncon_reference(
         ket, O, bra, leaf_key..., leaf_cache.envs)
     @test norm(rebuilt - rebuilt_ref) <=
           1e-12 * max(norm(rebuilt_ref), 1)
+    _assert_env_payload_accounting(leaf_cache)
 
     # Tensor identity is checked in addition to explicit generations, closing
     # the write-before-invalidate window and rejecting unannounced replacement.
@@ -975,6 +1006,7 @@ end
     @test identity_new !== identity_old
     identity_diag = cache_diagnostics(identity_cache).environments
     @test identity_diag.stale_build_discards >= 1
+    _assert_env_payload_accounting(identity_cache)
 
     # Cache-wide clear generations reject a candidate captured before clear.
     clear_cache = EnvCache(topo)
@@ -989,6 +1021,7 @@ end
     clear_diag = cache_diagnostics(clear_cache).environments
     @test clear_diag.stale_build_discards == 1
     @test clear_diag.retry_exhaustions == 0
+    _assert_env_payload_accounting(clear_cache)
 
     # Clearing inside an overlapping outer transaction invalidates staged work
     # without corrupting the active-transaction count.
@@ -1007,6 +1040,7 @@ end
     fetch(transaction)
     @test transaction_cache.transaction_depth == 0
     @test isempty(transaction_cache.envs)
+    _assert_env_payload_accounting(transaction_cache)
 end
 
 @graft_testset "compiled contraction plans: repeated matvec allocation flatness" begin

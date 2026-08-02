@@ -10,7 +10,7 @@ const _GKInfo = NamedTuple{(:converged, :normres, :numiter, :numops),
 """
     GlobalKrylov(; krylovdim=30, maxiter=100, tol=1e-12,
                  fit_nsweeps=4, fit_tol=1e-10, fit_verbose=false,
-                 eager=false)
+                 eager=true)
 
 Full-state Krylov evolver (§5b) using KrylovKit's Lanczos/Arnoldi exponential
 and the public operator-aware `fit!(; Hs=...)` compression primitive. The
@@ -24,7 +24,7 @@ Base.@kwdef mutable struct GlobalKrylov <: Evolver
     fit_nsweeps::Int = 4
     fit_tol::Float64 = 1e-10
     fit_verbose::Bool = false
-    eager::Bool = false
+    eager::Bool = true
     last_info::Union{Nothing,_GKInfo} = nothing
 end
 
@@ -49,12 +49,13 @@ function step!(ev::GlobalKrylov, ψ::TTNS, H::TTNO, dz::Number)
     template = copy(ψ)
     x0 = _GKState(copy(ψ), template, ev.fit_nsweeps, ev.fit_tol, ev.fit_verbose)
     op = _GKOperator(H, template, ev.fit_nsweeps, ev.fit_tol, ev.fit_verbose)
-    y, info = exponentiate(op, dz, x0;
-                           ishermitian=ishermitian(H),
-                           krylovdim=ev.krylovdim,
-                           maxiter=ev.maxiter,
-                           tol=ev.tol,
-                           eager=ev.eager)
+    y, info = evolution_exponentiate_backend(
+        op, dz, x0;
+        ishermitian=ishermitian(H),
+        krylovdim=ev.krylovdim,
+        maxiter=ev.maxiter,
+        tol=ev.tol,
+        eager=ev.eager)
     ev.last_info = (; converged=info.converged,
                     normres=Float64(info.normres),
                     numiter=info.numiter,

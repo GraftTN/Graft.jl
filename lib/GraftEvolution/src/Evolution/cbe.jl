@@ -228,7 +228,8 @@ function LGVDCBE(; max_add::Integer=32,
 end
 
 """
-    TDVP1_CBE(; cbe=PredictorCBE(), order=2, trunc=TruncationScheme(maxdim=100), ...)
+    TDVP1_CBE(; cbe=PredictorCBE(), order=2,
+              trunc=TruncationScheme(maxdim=100), eager=true, ...)
 
 One-site projector-splitting TDVP whose bond-expansion mathematics is selected
 by the concrete `cbe::AbstractCBE` strategy. CBE strategies are consumed only
@@ -241,6 +242,7 @@ Base.@kwdef mutable struct TDVP1_CBE{C<:AbstractCBE} <: Evolver
     enabled::Bool = true
     krylovdim::Int = 30
     tol::Float64 = 1e-12
+    eager::Bool = true
     threaded_channels::Bool = false
     channel_slices::Int = 2
     channel_minbatch::Int = 2
@@ -336,15 +338,48 @@ function _cbe_projected_core(ev::TDVP1_CBE, ψ::TTNS, H::TTNO,
 end
 
 _cbe_rank(A::AbstractTensorMap) = dim(domain(A))
-_cbe_singular_values(A::AbstractTensorMap) = sort!(Float64.(collect(svd_vals(A))); rev=true)
+
+"""
+Cached exact left SVD for selectors that need both the full spectrum and a
+truncated left range. The expensive factorization is performed only when this
+object is constructed; subsequent truncations act on the diagonal factor.
+"""
+struct CBEExactLeftSVD{TU<:AbstractTensorMap,TS<:AbstractTensorMap}
+    U::TU
+    S::TS
+    values::Vector{Float64}
+end
+
+function _cbe_diagonal_values(S::AbstractTensorMap)
+    singular_values = Float64[]
+    for (_, block) in blocks(S)
+        append!(singular_values, Float64.(LinearAlgebra.diag(block)))
+    end
+    return sort!(singular_values; rev=true)
+end
+
+function CBEExactLeftSVD(M::AbstractTensorMap)
+    U, S, _ = split_svd(M)
+    return CBEExactLeftSVD(U, S, _cbe_diagonal_values(S))
+end
+
+function _cbe_exact_directions(factorization::CBEExactLeftSVD, maxrank::Int;
+                               atol::Real=0, rtol::Real=0)
+    maxrank <= 0 && return nothing
+    selector, _, _ = split_svd(
+        factorization.S,
+        TruncationScheme(; maxdim=maxrank,
+                         atol=Float64(atol),
+                         rtol=Float64(rtol)))
+    directions = factorization.U * selector
+    return _cbe_rank(directions) == 0 ? nothing : directions
+end
 
 function _cbe_exact_directions(M::AbstractTensorMap, maxrank::Int;
                                atol::Real=0, rtol::Real=0)
     maxrank <= 0 && return nothing
-    U, _, _ = split_svd(M, TruncationScheme(; maxdim=maxrank,
-                                             atol=Float64(atol),
-                                             rtol=Float64(rtol)))
-    return _cbe_rank(U) == 0 ? nothing : U
+    return _cbe_exact_directions(
+        CBEExactLeftSVD(M), maxrank; atol, rtol)
 end
 
 _cbe_projected_apply(factors, x::AbstractTensorMap) =
@@ -426,8 +461,9 @@ function _cbe_predictor_directions(strategy::PredictorCBE,
         (nothing, Float64[], :krylov_svd)
     end
     if startswith(String(solver), "exact_svd") && isfinite(cutoff) && budget > 0
-        sigmas = _cbe_singular_values(core.M)
-        directions = _cbe_exact_directions(core.M, budget; atol=cutoff)
+        exact = CBEExactLeftSVD(core.M)
+        sigmas = exact.values
+        directions = _cbe_exact_directions(exact, budget; atol=cutoff)
     end
     score_max = isempty(sigmas) ? 0.0 : Float64(abs(dz)) * first(sigmas) / denom
     selected = directions === nothing ? 0 : _cbe_rank(directions)
@@ -455,29 +491,33 @@ function _cbe_implicit_rsvd_directions(strategy::NaiveCBE, factors, budget::Int)
     # Only this rank-sketch-by-partner-complement core is materialized. The
     # full active-complement-by-partner-complement map is never formed.
     small = (sketch' * factors.Na') * factors.Zs * factors.injection
+    exact = CBEExactLeftSVD(small)
     localdirs = _cbe_exact_directions(
-        small, budget; atol=strategy.enr_atol, rtol=strategy.enr_rtol)
-    return localdirs === nothing ? nothing : sketch * localdirs, small
+        exact, budget; atol=strategy.enr_atol, rtol=strategy.enr_rtol)
+    return localdirs === nothing ? nothing : sketch * localdirs, exact
 end
 
 function _cbe_naive_directions(strategy::NaiveCBE, factors, room::Int)
     budget = min(room, strategy.max_add)
-    directions, small, solver = if budget <= 0
+    directions, exact, solver = if budget <= 0
         (nothing, nothing, strategy.rsvd ? :implicit_rsvd : :exact_svd)
     elseif strategy.rsvd
-        dirs, sketched = _cbe_implicit_rsvd_directions(strategy, factors, budget)
-        (dirs, sketched, :implicit_rsvd)
+        dirs, sketched_exact = _cbe_implicit_rsvd_directions(
+            strategy, factors, budget)
+        (dirs, sketched_exact, :implicit_rsvd)
     else
         M = factors.Na' * factors.Zs * factors.injection
-        (_cbe_exact_directions(M, budget;
+        full_exact = CBEExactLeftSVD(M)
+        (_cbe_exact_directions(full_exact, budget;
                                atol=strategy.enr_atol,
-                               rtol=strategy.enr_rtol), M, :exact_svd)
+                               rtol=strategy.enr_rtol),
+         full_exact, :exact_svd)
     end
-    sigmas = small === nothing ? Float64[] : _cbe_singular_values(small)
+    sigmas = exact === nothing ? Float64[] : exact.values
     selected = directions === nothing ? 0 : _cbe_rank(directions)
     available = min(dim(domain(factors.Na)), dim(domain(factors.Np)))
     info = CBESelectionInfo(:naive, solver, available, selected, selected,
-                            small === nothing ? 0.0 : Float64(norm(small)),
+                            exact === nothing ? 0.0 : Float64(norm(exact.S)),
                             Float64(norm(factors.Θ)), strategy.enr_atol,
                             isempty(sigmas) ? 0.0 : first(sigmas), true)
     return directions, info
@@ -486,9 +526,10 @@ end
 """Private full-SVD oracle for validating the implicit Naive range finder."""
 function _cbe_naive_exact_oracle(strategy::NaiveCBE, core, room::Int)
     budget = min(room, strategy.max_add)
-    sigmas = _cbe_singular_values(core.M)
+    exact = CBEExactLeftSVD(core.M)
+    sigmas = exact.values
     directions = budget <= 0 ? nothing :
-        _cbe_exact_directions(core.M, budget;
+        _cbe_exact_directions(exact, budget;
                               atol=strategy.enr_atol, rtol=strategy.enr_rtol)
     selected = directions === nothing ? 0 : _cbe_rank(directions)
     info = CBESelectionInfo(:naive, :exact_svd_oracle,
@@ -501,13 +542,14 @@ end
 
 """Exact full-C1 dense reference selector for strict LGVD integration tests."""
 function _lgvd_c1_directions(strategy::LGVDCBE, core, room::Int)
-    sigmas = _cbe_singular_values(core.M)
+    exact = CBEExactLeftSVD(core.M)
+    sigmas = exact.values
     scale = isempty(sigmas) ? 0.0 : first(sigmas)
     pre_cut = strategy.preselection_threshold * scale
     final_cut = strategy.final_selection_threshold * scale
     preselected = count(>=(pre_cut), sigmas)
     budget = min(room, strategy.max_add)
-    directions = _cbe_exact_directions(core.M, budget; atol=final_cut)
+    directions = _cbe_exact_directions(exact, budget; atol=final_cut)
     selected = directions === nothing ? 0 : _cbe_rank(directions)
     info = LGVDCBEInfo(:full_c1, length(sigmas), preselected, selected,
                        selected, Float64(norm(core.M)),
@@ -630,7 +672,7 @@ function _cbe_legacy_predictor(strategy::PredictorLegacyCBE,
                 distributed=ev.distributed)
     Θ, _ = _effective_exponentiate(
         ev.distributed, h2, dz, Θ; ishermitian=ishermitian(H),
-        krylovdim=ev.krylovdim, tol=ev.tol)
+        krylovdim=ev.krylovdim, tol=ev.tol, eager=ev.eager)
     pn = numout(ψ.tensors[n])
     NΘ = numind(Θ)
     Θs = permute(Θ, (ntuple(identity, pn),
@@ -789,7 +831,8 @@ function _lgvd_site_forward!(ev::TDVP1_CBE{LGVDCBE}, ψ::TTNS, H::TTNO,
                 distributed=ev.distributed)
     A, _ = _effective_exponentiate(
         ev.distributed, h1, dz, ψ.tensors[site];
-        ishermitian=hermitian, krylovdim=ev.krylovdim, tol=ev.tol)
+        ishermitian=hermitian, krylovdim=ev.krylovdim, tol=ev.tol,
+        eager=ev.eager)
     update_tensor!(ψ, site, A; caches=(cache,))
     return ψ
 end
@@ -839,7 +882,8 @@ function _lgvd_backward_link_move!(ev::TDVP1_CBE{LGVDCBE}, ψ::TTNS,
     k0 = eff_h0(cache, ψ, H, n, m)
     evolved, _ = _effective_exponentiate(
         ev.distributed, k0, -dz, link;
-        ishermitian=hermitian, krylovdim=ev.krylovdim, tol=ev.tol)
+        ishermitian=hermitian, krylovdim=ev.krylovdim, tol=ev.tol,
+        eager=ev.eager)
     evolved = Networks.pivotal_link(evolved)
     next_tensor = if current == n
         absorb_on_leg(ψ.tensors[next], evolved, childslot(t, next, current))

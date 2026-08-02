@@ -4,7 +4,7 @@
 
 """
     TDVP1_LSE(; order=2, trunc, max_add=8, mixing=1.0,
-             expand_scheme=:exact, rng=nothing, verbose=true, ...)
+              expand_scheme=:exact, rng=nothing, eager=true, verbose=true, ...)
 
 Local-subspace-expansion TDVP: expand bonds before each TDVP1 sweep direction.
 This keeps the same one-site projector-splitting skeleton as TDVP1 while
@@ -31,6 +31,7 @@ Base.@kwdef mutable struct TDVP1_LSE <: Evolver
     enr_atol::Float64 = 1e-12
     krylovdim::Int = 30
     tol::Float64 = 1e-12
+    eager::Bool = true
     contraction_optimize::Bool = true
     contraction_sector_aware::Bool = true
     threaded_channels::Bool = false
@@ -49,6 +50,7 @@ function step!(ev::TDVP1_LSE, ψ::TTNS, H::TTNO, dz::Number)
     cache = _prepare_subspace_expansion!(ev, ψ, H, dz, "TDVP1_LSE")
     ev.verbose && _log_subspace_tdvp_start("TDVP1_LSE", ev, ψ, H, dz; cache_reused)
     base = TDVP1(; order=1, krylovdim=ev.krylovdim, tol=ev.tol,
+                 eager=ev.eager,
                  threaded_channels=ev.threaded_channels,
                  channel_slices=ev.channel_slices,
                  channel_minbatch=ev.channel_minbatch,
@@ -92,6 +94,7 @@ function _log_subspace_tdvp_start(name::String, ev, ψ::TTNS, H::TTNO,
     order = ev.order
     krylovdim = ev.krylovdim
     tol = ev.tol
+    eager = ev.eager
     hermitian = ishermitian(H)
     expand_scheme = ev.expand_scheme
     max_add = ev.max_add
@@ -108,7 +111,7 @@ function _log_subspace_tdvp_start(name::String, ev, ψ::TTNS, H::TTNO,
     trunc_atol = ev.trunc.atol
     trunc_rtol = ev.trunc.rtol
     trunc_discarded_weight = ev.trunc.discarded_weight
-    @info "$name step start" dz order nodes physical_sites bonds center_site initial_maxbond krylovdim tol hermitian cache_reused expand_scheme max_add mixing enr_rtol enr_atol rsvd_oversample rsvd_poweriter rsvd_threaded rsvd_minbatch rsvd_memory_cap_bytes rsvd_task_workspace_bytes trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight
+    @info "$name step start" dz order nodes physical_sites bonds center_site initial_maxbond krylovdim tol eager hermitian cache_reused expand_scheme max_add mixing enr_rtol enr_atol rsvd_oversample rsvd_poweriter rsvd_threaded rsvd_minbatch rsvd_memory_cap_bytes rsvd_task_workspace_bytes trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight
     return nothing
 end
 
