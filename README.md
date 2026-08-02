@@ -31,9 +31,19 @@ O = ttno_from_opsum(H, topo, phys; hermitian=true)
 ψ = random_ttns(Xoshiro(1), ComplexF64, topo, phys, ℂ^2)
 ψ, energies = dmrg2!(ψ, O; trunc=TruncationScheme(maxdim=32))
 
-ev = TDVP1_CBE(trunc=TruncationScheme(maxdim=64), d_tilde_max=16)
+ev = TDVP1_CBE(
+    cbe=PredictorCBE(max_add=16),
+    trunc=TruncationScheme(maxdim=64),
+)
 evolve!(ev, ψ, O, -0.05im, 100)                  # real-time evolution, bond-adaptive
 ```
+
+`TDVP1_CBE` accepts TDVP-only strategies: the projected-variance
+`PredictorCBE()` default, `PredictorLegacyCBE()` for the former finite-step
+predictor, `NaiveCBE(rng=...)` for explicit-RNG randomized selection, and the
+strict chain-only `LGVDCBE()` implementation with factorized C2/C3 selection.
+`TDVP1_GSE(ancillary_shift=...)` is the global Yang--White ancillary-Krylov
+bootstrap; `TDVP1_LSE` retains the local effective-two-site expansion schedule.
 
 ## Tests
 
@@ -228,6 +238,13 @@ does not imply that every variant in the paper is implemented.
 
    **Provenance:** Informs the package's tree-network organization, terminology, and parts of its TDVP implementation lineage.
 
+3. **pyTTN adaptive tree dynamics** — *implemented; CBE predictor basis*
+
+   L. P. Lindoy, D. Rodrigo-Albert, Y. Rath, and I. Rungger, “pyTTN: An Open Source Toolbox for Open and Closed System Quantum Dynamics Simulations Using Tree Tensor Networks,” arXiv:2503.15460 (2025).
+   [arXiv](https://arxiv.org/abs/2503.15460)
+
+   **Provenance:** Basis for the projected two-site energy-variance selector used by the default TDVP-only CBE predictor on tree tensor networks.
+
 ### Ground-State and Time-Evolution Algorithms
 
 1. **Tree TDVP / ForkTPS** — *implemented; algorithmic basis*
@@ -238,15 +255,30 @@ does not imply that every variant in the paper is implemented.
 
    **Provenance:** Basis for TDVP sweeps and local time evolution on tree tensor networks.
 
-2. **CBE-TDVP** — *implemented; adapted algorithmic basis*
+2. **CBE-TDVP** — *implemented; algorithmic basis*
 
    J.-W. Li, A. Gleis, and J. von Delft, “Time-dependent variational principle with controlled bond expansion for matrix product states,” *Physical Review Letters* **133**, 026401 (2024).
    [DOI](https://doi.org/10.1103/PhysRevLett.133.026401) ·
    [arXiv](https://arxiv.org/abs/2208.10972)
 
-   **Provenance:** Basis for controlled bond expansion, adapted from chains to tree tensor networks.
+   **Provenance:** Basis for the strict chain `LGVDCBE` update. The
+   factorized C2/C3 selection, state-preserving expansion, expanded-center
+   evolution, post-evolution trim, saturated-bond basis rotation, and
+   alternating sweep composition. Tree predictor variants have separate pyTTN
+   provenance.
 
-3. **DMRG3S** — *implemented; algorithmic basis*
+3. **CBE shrewd selection** — *implemented; algorithmic basis*
+
+   A. Gleis, J.-W. Li, and J. von Delft, “Controlled bond expansion for DMRG ground state search at single-site costs,” *Physical Review Letters* **130**, 246402 (2023).
+   [DOI](https://doi.org/10.1103/PhysRevLett.130.246402) ·
+   [arXiv PDF](https://arxiv.org/pdf/2207.14712)
+
+   **Provenance:** Basis for the factorized two-stage preselection and
+   final-selection construction used by `LGVDCBE`; the full-C1 implementation
+   remains an independent test oracle, and the CBE strategy types remain
+   TDVP-only.
+
+4. **DMRG3S** — *implemented; algorithmic basis*
 
    C. Hubig, I. P. McCulloch, U. Schollwöck, and F. A. Wolf, “A Strictly Single-Site DMRG Algorithm with Subspace Expansion,” *Physical Review B*
    **91**, 155115 (2015).
@@ -255,14 +287,14 @@ does not imply that every variant in the paper is implemented.
 
    **Provenance:** Design reference for single-site DMRG with subspace expansion.
 
-4. **RSVD post-expansion** — *implemented; algorithmic basis*
+5. **RSVD post-expansion** — *implemented; algorithmic basis*
 
    I. P. McCulloch and J. J. Osborne, “Comment on ‘Controlled Bond Expansion for Density Matrix Renormalization Group Ground State Search at Single-Site Costs’ (Extended Version),” arXiv:2403.00562 (2024).
    [arXiv](https://arxiv.org/abs/2403.00562)
 
    **Provenance:** Design reference for randomized-SVD post-expansion choices.
 
-5. **Global Krylov** — *design reference*
+6. **Global Krylov** — *design reference*
 
    S. Paeckel, T. Köhler, A. Swoboda, S. R. Manmana, U. Schollwöck, and C. Hubig, “Time-evolution methods for matrix-product states,” *Annals of
    Physics* **411**, 167998 (2019).
@@ -271,15 +303,18 @@ does not imply that every variant in the paper is implemented.
 
    **Provenance:** Design reference for global Krylov time evolution.
 
-6. **GSE/LSE TDVP** — *algorithmic basis*
+7. **GSE/LSE TDVP** — *implemented; algorithmic basis*
 
    M. Yang and S. R. White, “Time Dependent Variational Principle with Ancillary Krylov Subspace,” *Physical Review B* **102**, 094315 (2020).
    [DOI](https://doi.org/10.1103/PhysRevB.102.094315) ·
    [arXiv](https://arxiv.org/abs/2005.06104)
 
-   **Provenance:** Global ancillary-Krylov foundation for the planned GSE/LSE expansion family.
+   **Provenance:** Global ancillary-Krylov foundation for `TDVP1_GSE`, which
+   constructs explicit `(I - shift*H)^n ψ` reference states and installs their
+   selected complements through synchronized network sweeps. `TDVP1_LSE`
+   remains the separate local effective-two-site expansion schedule.
 
-7. **Implicit logarithmic-time evolution** — *implemented; algorithmic basis*
+8. **Implicit logarithmic-time evolution** — *implemented; algorithmic basis*
 
    J. P. Zima, E. M. Stoudenmire, S. R. White, O. Parcollet, and J. Kaye, “Fast Tensor Network Imaginary Time Evolution by Implicit Stepping on Logarithmic Grids,” arXiv:2606.02930 (2026).
    [arXiv](https://arxiv.org/abs/2606.02930)

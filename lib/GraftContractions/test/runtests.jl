@@ -1,8 +1,13 @@
 using Test
-using GraftFoundation: ℂ, TensorMap, mps_topology, ←, ⊗
+import GraftContractions
+using GraftFoundation: ℂ, FermionParity, TensorMap, Vect, dim, domain, id,
+    mps_topology, norm, sectors, ←, ⊗
 using GraftNetworks: TTNS, check_arrows
 using GraftContractions: EnvCache, cache_diagnostics, env!, env_cache_stats,
     inner, invalidate_node!
+using Random: Xoshiro, randn
+
+const _C = GraftContractions.Contractions
 
 function two_site_product_state(
         child_entries::AbstractVector{<:Number},
@@ -19,6 +24,54 @@ function two_site_product_state(
     child = TensorMap(
         reshape(ComplexF64.(child_entries), 2, 1), physical ← bond)
     return TTNS(topo, [root, child], topo.root)
+end
+
+include("two_site_factor_frame.jl")
+
+@testset "subspace predictor range finders" begin
+    dense = randn(Xoshiro(2026080201), ComplexF64, ℂ^10 ← ℂ^18)
+
+    direct = _C._directqr_predictor_basis(dense)
+    @test norm(direct' * direct - id(domain(direct))) < 1e-12
+    @test dim(domain(direct)) == 10
+
+    range_serial = _C._rangefinder_predictor_basis(
+        dense, 4;
+        rng=Xoshiro(2026080202), rsvd_oversample=2, rsvd_poweriter=1,
+        threaded=false,
+    )
+    range_parallel = _C._rangefinder_predictor_basis(
+        dense, 4;
+        rng=Xoshiro(2026080202), rsvd_oversample=2, rsvd_poweriter=1,
+        threaded=true, minbatch=1, memory_cap_bytes=1_000_000,
+        task_workspace_memory_bytes=0,
+    )
+    @test norm(range_serial' * range_serial - id(domain(range_serial))) < 1e-12
+    @test range_serial == range_parallel
+
+    rsvd = _C._rsvd_predictor_basis(
+        dense, 4;
+        rng=Xoshiro(2026080203), rsvd_oversample=2, rsvd_poweriter=0,
+        threaded=false,
+    )
+    @test norm(rsvd' * rsvd - id(domain(rsvd))) < 1e-12
+    @test dim(domain(rsvd)) == 4
+
+    even, odd = FermionParity(0), FermionParity(1)
+    graded_codomain = Vect[FermionParity](even => 3, odd => 2)
+    graded_domain = Vect[FermionParity](even => 5, odd => 4)
+    graded = randn(
+        Xoshiro(2026080204), ComplexF64, graded_codomain ← graded_domain)
+    graded_direct = _C._directqr_predictor_basis(graded)
+    graded_range = _C._rangefinder_predictor_basis(
+        graded, 2;
+        rng=Xoshiro(2026080205), rsvd_oversample=1, rsvd_poweriter=1,
+        threaded=false,
+    )
+    @test norm(graded_direct' * graded_direct - id(domain(graded_direct))) < 1e-12
+    @test norm(graded_range' * graded_range - id(domain(graded_range))) < 1e-12
+    @test collect(sectors(domain(graded_direct)[1])) == [even, odd]
+    @test collect(sectors(domain(graded_range)[1])) == [even, odd]
 end
 
 @testset "GraftContractions overlap environments and plan pool" begin

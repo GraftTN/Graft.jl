@@ -31,8 +31,11 @@ using ..Parallel: AbstractDistributedContext, distributed_exponentiate
 
 export Evolver, step!, evolve!, CorrelatorSeries, correlator, correlator_series,
     supports_complex_step,
-    TDVP1, TDVP2, TDVP1_CBE, GlobalKrylov, DirectKrylovBootstrap,
-    DirectKrylovInfo, GSE_TDVP, LSE_TDVP, TEBD, BUG, FixedBUG,
+    TDVP1, TDVP2, TDVP1_CBE, AbstractCBE, PredictorCBE,
+    PredictorLegacyCBE, NaiveCBE, LGVDCBE, CBESelectionInfo, LGVDCBEInfo,
+    GlobalKrylov, DirectKrylovBootstrap, DirectKrylovInfo,
+    TDVP1_GSE, GSEInfo, GlobalSubspaceEdgeInfo,
+    GlobalSubspaceExpansionInfo, gse_enrich!, TDVP1_LSE, TEBD, BUG, FixedBUG,
     ImplicitLogScheme, LogBackwardEuler, LogTrapezoid,
     LogGaussLegendre, ImplicitLogTime, logarithmic_time_grid, linsolve!,
     ResidualDrivenExpansion, LinearResidualReport,
@@ -192,10 +195,12 @@ Trait (§10.3): whether the scheme is valid for arbitrary complex `dz`.
 """
 supports_complex_step(::Type{<:Evolver}) = true
 
+include("cbe.jl")
 include("tdvp.jl")
 include("global_krylov.jl")
 include("direct_krylov.jl")
 include("linear_solve.jl")
+include("gse_bootstrap.jl")
 include("subspace_expansion.jl")
 
 # ---------------------------------------------------------------------------

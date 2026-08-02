@@ -74,38 +74,6 @@ Base.@kwdef mutable struct TDVP2 <: Evolver
     cache::Union{Nothing,EnvCache} = nothing
 end
 
-"""
-    TDVP1_CBE(; order=2, trunc, d_tilde_max=32, enr_rtol=1e-10, enr_atol=1e-12,
-              enabled=true, krylovdim=30, tol=1e-12, verbose=true)
-
-Single-site TDVP with controlled bond expansion (local PyTreeNet fork's
-1TDVP-CBE; see the implementation notes further down). `trunc` is the main
-`TruncationScheme` (its `maxdim` caps the final bond); `d_tilde_max` caps how
-many *new* directions are proposed per bond per step; `enr_rtol`/`enr_atol`
-are the enrichment singular-value tolerances (PyTreeNet
-`enrichment_rel_tol`/`enrichment_total_tol`). With `verbose=true`, emits the
-TDVP1 step and half-sweep records together with the CBE enrichment policy and
-observed bond growth.
-"""
-Base.@kwdef mutable struct TDVP1_CBE <: Evolver
-    order::Int = 2
-    trunc::TruncationScheme = TruncationScheme(; maxdim=100)
-    d_tilde_max::Int = 32
-    enr_rtol::Float64 = 1e-10
-    enr_atol::Float64 = 1e-12
-    enabled::Bool = true
-    krylovdim::Int = 30
-    tol::Float64 = 1e-12
-    threaded_channels::Bool = false
-    channel_slices::Int = 2
-    channel_minbatch::Int = 2
-    channel_min_flops::Real = 1_000_000
-    channel_memory_cap_bytes::Union{Nothing,Real} = nothing
-    distributed::Union{Nothing,AbstractDistributedContext} = nothing
-    verbose::Bool = true
-    cache::Union{Nothing,EnvCache} = nothing
-end
-
 _tdvp_name(::TDVP1) = "TDVP1"
 _tdvp_name(::TDVP2) = "TDVP2"
 _tdvp_name(::TDVP1_CBE) = "TDVP1_CBE"
@@ -168,15 +136,14 @@ function _log_tdvp_step_start(ev::TDVP1_CBE, ψ::TTNS, H::TTNO, dz::Number;
     krylovdim = ev.krylovdim
     tol = ev.tol
     hermitian = ishermitian(H)
+    cbe = nameof(typeof(ev.cbe))
     enabled = ev.enabled
-    d_tilde_max = ev.d_tilde_max
-    enr_rtol = ev.enr_rtol
-    enr_atol = ev.enr_atol
+    max_add = _cbe_max_add(ev.cbe)
     trunc_maxdim = ev.trunc.maxdim
     trunc_atol = ev.trunc.atol
     trunc_rtol = ev.trunc.rtol
     trunc_discarded_weight = ev.trunc.discarded_weight
-    @info "TDVP1_CBE step start" dz order nodes physical_sites bonds center_site initial_maxbond krylovdim tol hermitian cache_reused enabled d_tilde_max enr_rtol enr_atol trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight
+    @info "TDVP1_CBE step start" dz order nodes physical_sites bonds center_site initial_maxbond krylovdim tol hermitian cache_reused cbe enabled max_add trunc_maxdim trunc_atol trunc_rtol trunc_discarded_weight
     return nothing
 end
 
@@ -413,109 +380,4 @@ Base.@noinline function _site_backward!(
         ishermitian=herm, krylovdim=ev.krylovdim, tol=ev.tol)
     update_tensor!(ψ, m, A; caches=(cache,))
     return ψ
-end
-
-# ---------------------------------------------------------------------------
-# TDVP1-CBE — controlled bond expansion (port of the local PyTreeNet fork:
-# cbe_onesitetdvp.py + cbe_util.py). The sweep is TDVP1's, verbatim; only the
-# link split is replaced:
-#   1. two-site predictor: forward-evolve the bond's two-site block (throwaway
-#      probe; the sweep state is untouched), SVD-split it back with the *main*
-#      TruncationScheme — its node-side isometry P spans the bond directions
-#      the true dynamics wants;
-#   2. "shrewd selection": project P onto the orthogonal complement of the
-#      current site tensor's bond space (left_null), SVD the projection, keep
-#      the top `d_tilde_max` directions above the enrichment tolerances;
-#   3. split [A | enrichment]: SVD of the concatenation, truncated by the main
-#      TruncationScheme (hard `maxdim` cap), new site isometry U, link
-#      R = U† A on the *old* edge space (not square — this is what grows the
-#      bond); backward link evolution and absorption proceed as in TDVP1.
-# With `enabled=false` this reproduces TDVP1 exactly (QR split path).
-# ---------------------------------------------------------------------------
-
-function _split_link_up(ev::TDVP1_CBE, ψ::TTNS, H::TTNO, u::Int, v::Int, dz::Number)
-    ev.enabled || return _split_link_up(TDVP1(), ψ, H, u, v, dz)
-    A = ψ.tensors[u]                                # :: cod ← V_e (bond = domain)
-    P = _cbe_predictor(ev, ψ, H, u, v, dz)          # :: cod ← V_pred
-    U, R = _cbe_enrich_split(ev, A, P)              # U :: cod ← V_new, R :: V_new ← V_e
-    ψ.tensors[u] = U
-    return R
-end
-
-function _split_link_down(ev::TDVP1_CBE, ψ::TTNS, H::TTNO, u::Int, v::Int, dz::Number)
-    ev.enabled || return _split_link_down(TDVP1(), ψ, H, u, v, dz)
-    t = ψ.topo
-    k = childslot(t, u, v)
-    A = ψ.tensors[u]
-    P = _cbe_predictor(ev, ψ, H, u, v, dz)
-    # work in the bond-leg frame: permute slot k to the domain
-    N, No = numind(A), numout(A)
-    frame = (Backend._others(N, k), (k,))
-    U, R = _cbe_enrich_split(ev, permute(A, frame), permute(P, frame))
-    ψ.tensors[u] = permute(U, Backend._restore_perm(N, No, k))
-    return transpose(R)                             # :: V_e ← dual(V_new)
-end
-
-# Two-site predictor (PyTreeNet _predict_site_tensor_two_site): forward-evolve
-# the (child, parent) block across the crossed edge, split back with the main
-# truncation, return the u-side isometry (S is contracted away from u, matching
-# PyTreeNet's ContractionMode.VCONTR / u_identifier = node_id convention).
-# Our eff_h2/two_site_tensor are non-mutating, so no scratch copies are needed.
-function _cbe_predictor(ev::TDVP1_CBE, ψ::TTNS, H::TTNO, u::Int, v::Int, dz::Number)
-    t = ψ.topo
-    n, m = t.parent[u] == v ? (u, v) : (v, u)       # (child, parent) of the edge
-    cache = ev.cache::EnvCache
-    Θ = two_site_tensor(ψ, n, m)
-    h2 = eff_h2(cache, ψ, H, n, m;
-                threaded_channels=ev.threaded_channels,
-                channel_slices=ev.channel_slices,
-                channel_minbatch=ev.channel_minbatch,
-                channel_min_flops=ev.channel_min_flops,
-                channel_memory_cap_bytes=ev.channel_memory_cap_bytes,
-                distributed=ev.distributed)
-    Θ, _ = _effective_exponentiate(
-        ev.distributed, h2, dz, Θ;
-        ishermitian=ishermitian(H), krylovdim=ev.krylovdim,
-        tol=ev.tol)
-    pn = numout(ψ.tensors[n])
-    NΘ = numind(Θ)
-    Θs = permute(Θ, (ntuple(identity, pn), ntuple(j -> pn + j, NΘ - pn)))
-    U, S, Vh = split_svd(Θs, ev.trunc)
-    if u == n
-        return U                                    # child side: (n legs) ← V_pred
-    else
-        # parent side: rebuild the m-layout tensor from Vh (slot k = V_pred)
-        k = childslot(t, m, n)
-        Km = numind(ψ.tensors[m]) - 1
-        p1 = ntuple(j -> j == k ? 1 : 1 + (j < k ? j : j - 1), Km)
-        return permute(Vh, (p1, (numind(Vh),)))
-    end
-end
-
-# Shrewd selection + enriched split, in the bond-leg frame:
-# tA :: rest ← X (current site, bond X), tP :: rest ← X_pred (predictor).
-# Returns (U :: rest ← X_new, R :: X_new ← X). Falls back to the plain
-# SVD-split of tA alone when no enrichment directions survive (PyTreeNet
-# returns enrichment=None but still SVD-splits with the main truncation).
-function _cbe_enrich_split(ev::TDVP1_CBE, tA::AbstractTensorMap, tP::AbstractTensorMap)
-    expanded = tA
-    room = min(ev.d_tilde_max, ev.trunc.maxdim - dim(domain(tA)))
-    if room > 0 && dim(codomain(tA)) > dim(domain(tA))
-        N = left_null(tA)                           # rest ← Y⊥,  N†·tA = 0
-        if dim(domain(N)) > 0
-            M = N' * tP                             # project predictor on the complement
-            Um, _, _ = svd_trunc(M; trunc=truncrank(room) &
-                                        trunctol(; atol=ev.enr_atol, rtol=ev.enr_rtol))
-            if dim(domain(Um)) > 0
-                E = N * Um                          # rest ← V_add (orthonormal, ⊥ tA)
-                if isdual(domain(tA)[1]) != isdual(domain(E)[1])
-                    E = flip(E, numind(E))
-                end
-                expanded = catdomain(tA, E)         # [A | enrichment]
-            end
-        end
-    end
-    U, _, _ = split_svd(expanded, ev.trunc)         # main truncation: hard maxdim cap
-    R = U' * tA                                     # link on the OLD edge space
-    return U, R
 end

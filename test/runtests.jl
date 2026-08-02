@@ -710,6 +710,12 @@ end
     @test_throws ArgumentError expand!(copy(ψr), O, (leaf, topo.parent[leaf]);
                                        scheme=:rsvd,
                                        trunc=TruncationScheme(maxdim=4), max_add=1)
+    @test_throws ArgumentError expand!(copy(ψr), O, (leaf, topo.parent[leaf]);
+                                       scheme=:rangefinder,
+                                       trunc=TruncationScheme(maxdim=4), max_add=1)
+    @test_throws ArgumentError expand!(copy(ψr), O, (leaf, topo.parent[leaf]);
+                                       scheme=:unknown,
+                                       trunc=TruncationScheme(maxdim=4), max_add=1)
     ψr1, ψr2 = copy(ψr), copy(ψr)
     expand!(ψr1, O, (leaf, topo.parent[leaf]); scheme=:rsvd,
             rng=MersenneTwister(2202), trunc=TruncationScheme(maxdim=4),
@@ -721,6 +727,25 @@ end
     @test norm(to_dense(ψr1) - to_dense(ψr)) < 1e-10
     @test norm(to_dense(ψr1) - to_dense(ψr2)) < 1e-12
     @test maximum(bonddims(ψr1)) > 1
+
+    ψq = copy(ψr)
+    expand!(ψq, O, (leaf, topo.parent[leaf]); scheme=:directqr,
+            trunc=TruncationScheme(maxdim=4), max_add=3)
+    @test norm(to_dense(ψq) - to_dense(ψr)) < 1e-10
+    @test 1 < maximum(bonddims(ψq)) ≤ 4
+
+    ψf1, ψf2 = copy(ψr), copy(ψr)
+    expand!(ψf1, O, (leaf, topo.parent[leaf]); scheme=:rangefinder,
+            rng=MersenneTwister(3303), trunc=TruncationScheme(maxdim=4),
+            max_add=3, rsvd_oversample=2, rsvd_poweriter=1,
+            rsvd_threaded=false)
+    expand!(ψf2, O, (leaf, topo.parent[leaf]); scheme=:rangefinder,
+            rng=MersenneTwister(3303), trunc=TruncationScheme(maxdim=4),
+            max_add=3, rsvd_oversample=2, rsvd_poweriter=1,
+            rsvd_threaded=true, rsvd_minbatch=1)
+    @test norm(to_dense(ψf1) - to_dense(ψr)) < 1e-10
+    @test norm(to_dense(ψf1) - to_dense(ψf2)) < 1e-12
+    @test 1 < maximum(bonddims(ψf1)) ≤ 4
 
 end
 
@@ -807,7 +832,7 @@ end
                TDVP2(trunc=TruncationScheme(maxdim=16, atol=1e-12),
                      verbose=TEST_VERBOSE),
                TDVP1_CBE(trunc=TruncationScheme(maxdim=16, atol=1e-12),
-                         d_tilde_max=4, enr_rtol=1e-12, enr_atol=1e-12,
+                         cbe=PredictorCBE(max_add=4, spawn_threshold=1e-12),
                          verbose=TEST_VERBOSE))
         ψe = copy(ψt)
         for _ in 1:nsteps
@@ -875,11 +900,10 @@ end
     @test TDVP2().contraction_sector_aware
     @test TDVP1_CBE().verbose
     @test !TDVP1_CBE().threaded_channels
-    @test GSE_TDVP().verbose
-    @test GSE_TDVP().contraction_optimize
-    @test !GSE_TDVP().threaded_channels
-    @test GSE_TDVP().contraction_sector_aware
-    @test LSE_TDVP().verbose
+    @test TDVP1_GSE(ancillary_shift=0.01).verbose
+    @test TDVP1_GSE(ancillary_shift=0.01).optimize
+    @test !TDVP1_GSE(ancillary_shift=0.01).threaded_channels
+    @test TDVP1_LSE().verbose
 
     topo = star_topology(3, 2)
     phys = allspin(topo)
@@ -914,7 +938,7 @@ end
     @test maximum(bonddims(ψ2)) > 1
 
     evc = TDVP1_CBE(trunc=TruncationScheme(maxdim=16, atol=1e-12),
-                    d_tilde_max=8, enr_rtol=1e-10, enr_atol=1e-12,
+                    cbe=PredictorCBE(max_add=8, spawn_threshold=1e-10),
                     verbose=TEST_VERBOSE)
     for _ in 1:10
         step!(evc, ψ3, O, -im * dt)
@@ -1002,10 +1026,11 @@ end
     dz = -0.02im
     vex = exact_evolve(Hd, v0, dz)
 
-    for ev in (GSE_TDVP(order=2, trunc=TruncationScheme(maxdim=4, atol=1e-12),
+    for ev in (TDVP1_GSE(ancillary_shift=0.05, order=2,
+                        trunc=TruncationScheme(maxdim=4, atol=1e-12),
                         max_add=3, krylovdim=8, tol=1e-10,
                         verbose=TEST_VERBOSE),
-               LSE_TDVP(order=2, trunc=TruncationScheme(maxdim=4, atol=1e-12),
+               TDVP1_LSE(order=2, trunc=TruncationScheme(maxdim=4, atol=1e-12),
                         max_add=3, krylovdim=8, tol=1e-10,
                         verbose=TEST_VERBOSE))
         ψ = copy(ψ0)
@@ -1016,7 +1041,7 @@ end
     end
 
     ψr = random_ttns(RNG, Float64, topo, phys, ℂ^1)
-    @test_throws ArgumentError step!(GSE_TDVP(), ψr, O, dz)
+    @test_throws ArgumentError step!(TDVP1_GSE(ancillary_shift=0.05), ψr, O, dz)
 end
 
 @graft_testset "imaginary time (complex-step contract §5b)" begin

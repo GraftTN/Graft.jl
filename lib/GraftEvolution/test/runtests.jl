@@ -1,5 +1,7 @@
-using GraftEvolution: ImplicitLogTime, LogGaussLegendre, LogTrapezoid,
-    logarithmic_time_grid, step!, supports_complex_step
+import GraftEvolution
+using GraftEvolution: TDVP1_CBE, TDVP1_GSE, TDVP1_LSE, ImplicitLogTime,
+    LogGaussLegendre, LogTrapezoid, logarithmic_time_grid, step!,
+    supports_complex_step
 using GraftFoundation: mps_topology, ℂ
 using GraftSymbolic: OpSum, SiteOp, Term, spin_ops
 using GraftTestUtils: dense_hamiltonian, random_ttns, to_dense
@@ -7,6 +9,15 @@ using GraftTTNOBuild: ttno_from_opsum
 using LinearAlgebra: I, norm
 using Random: Xoshiro
 using Test
+
+@testset "TDVP1 expansion-family names" begin
+    @test TDVP1_CBE() isa TDVP1_CBE
+    @test TDVP1_GSE(ancillary_shift=0.01) isa TDVP1_GSE
+    @test_throws UndefKeywordError TDVP1_GSE()
+    @test TDVP1_LSE() isa TDVP1_LSE
+    @test !isdefined(GraftEvolution, :GSE_TDVP)
+    @test !isdefined(GraftEvolution, :LSE_TDVP)
+end
 
 @testset "implicit-log one-site trapezoid contract" begin
     @test logarithmic_time_grid(0.01, 0.07) ==
@@ -44,3 +55,33 @@ using Test
     @test evolver.last_info.normres < 1e-10
     @test norm(to_dense(state) - reference) < 2e-7
 end
+
+@testset "subspace expansion selector contract" begin
+    topology = mps_topology(1)
+    spin = spin_ops()
+    physical_spaces = Dict(:site1 => spin.P)
+    hamiltonian = OpSum() + Term(0.25, SiteOp(:site1, :Z, spin.Z))
+    operator = ttno_from_opsum(
+        hamiltonian, topology, physical_spaces; hermitian=true)
+    state = random_ttns(
+        Xoshiro(2026080202), ComplexF64, topology, physical_spaces, ℂ^1)
+    prepare! = GraftEvolution.Evolution._prepare_subspace_expansion!
+
+    @test_throws ArgumentError prepare!(
+        TDVP1_LSE(expand_scheme=:unknown), copy(state), operator, -0.01,
+        "TDVP1_LSE",
+    )
+    @test_throws ArgumentError prepare!(
+        TDVP1_LSE(expand_scheme=:rangefinder), copy(state), operator, -0.01,
+        "TDVP1_LSE",
+    )
+    @test prepare!(
+        TDVP1_LSE(expand_scheme=:directqr), copy(state), operator, -0.01,
+        "TDVP1_LSE",
+    ) !== nothing
+end
+
+include("cbe_selectors.jl")
+include("lgvd_cbe.jl")
+include("lgvd_shrewd_cbe.jl")
+include("gse_bootstrap.jl")

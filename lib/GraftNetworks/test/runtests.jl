@@ -35,3 +35,5 @@ end
     @test_throws ArgumentError exact_linear_combination(
         [first_state, second_state], coefficients; max_payload=1)
 end
+
+include("global_subspace_expansion.jl")

@@ -3,53 +3,17 @@
 # on the same lower-layer implementation.
 
 """
-    GSE_TDVP(; order=2, trunc, max_add=8, mixing=1.0,
-             expand_scheme=:exact, rng=nothing, verbose=true, ...)
-
-Global-subspace-expansion TDVP: expand every bond once, then run a TDVP1 step
-on the enlarged manifold. `expand_scheme=:rsvd` requires an explicit `rng`.
-With `verbose=true`, emits step and expansion-stage `@info` records.
-"""
-Base.@kwdef mutable struct GSE_TDVP <: Evolver
-    order::Int = 2
-    trunc::TruncationScheme = TruncationScheme(; maxdim=100)
-    max_add::Int = 8
-    mixing::Float64 = 1.0
-    expand_scheme::Symbol = :exact
-    rng::Union{Nothing,AbstractRNG} = nothing
-    rsvd_oversample::Int = 8
-    rsvd_poweriter::Int = 0
-    rsvd_threaded::Bool = Base.Threads.nthreads() > 1
-    rsvd_minbatch::Int = max(2, Base.Threads.nthreads())
-    rsvd_memory_cap_bytes::Union{Nothing,Int} = nothing
-    rsvd_task_workspace_bytes::Union{Nothing,Int} = nothing
-    rsvd_fanout_diagnostics::Union{Nothing,Base.RefValue} = nothing
-    enr_rtol::Float64 = 1e-10
-    enr_atol::Float64 = 1e-12
-    krylovdim::Int = 30
-    tol::Float64 = 1e-12
-    contraction_optimize::Bool = true
-    contraction_sector_aware::Bool = true
-    threaded_channels::Bool = false
-    channel_slices::Int = 2
-    channel_minbatch::Int = 2
-    channel_min_flops::Real = 1_000_000
-    channel_memory_cap_bytes::Union{Nothing,Real} = nothing
-    distributed::Union{Nothing,AbstractDistributedContext} = nothing
-    verbose::Bool = true
-    cache::Union{Nothing,EnvCache} = nothing
-end
-
-"""
-    LSE_TDVP(; order=2, trunc, max_add=8, mixing=1.0,
+    TDVP1_LSE(; order=2, trunc, max_add=8, mixing=1.0,
              expand_scheme=:exact, rng=nothing, verbose=true, ...)
 
 Local-subspace-expansion TDVP: expand bonds before each TDVP1 sweep direction.
 This keeps the same one-site projector-splitting skeleton as TDVP1 while
-refreshing the manifold locally at every half step. With `verbose=true`, emits
-step and per-direction expansion `@info` records.
+refreshing the manifold locally at every half step. `:rsvd` and `:rangefinder`
+share the `rsvd_*` sketch controls and require an explicit `rng`; `:directqr`
+does not. With `verbose=true`, emits step and per-direction expansion `@info`
+records.
 """
-Base.@kwdef mutable struct LSE_TDVP <: Evolver
+Base.@kwdef mutable struct TDVP1_LSE <: Evolver
     order::Int = 2
     trunc::TruncationScheme = TruncationScheme(; maxdim=100)
     max_add::Int = 8
@@ -79,35 +43,11 @@ Base.@kwdef mutable struct LSE_TDVP <: Evolver
     cache::Union{Nothing,EnvCache} = nothing
 end
 
-function step!(ev::GSE_TDVP, ψ::TTNS, H::TTNO, dz::Number)
+function step!(ev::TDVP1_LSE, ψ::TTNS, H::TTNO, dz::Number)
     cache_reused = ev.cache !== nothing && ev.cache.topo == ψ.topo
     initial_maxbond = ev.verbose ? _tdvp_max_bond_dim(ψ) : 0
-    cache = _prepare_subspace_expansion!(ev, ψ, H, dz, "GSE_TDVP")
-    ev.verbose && _log_subspace_tdvp_start("GSE_TDVP", ev, ψ, H, dz; cache_reused)
-    expansion_maxbond_before = ev.verbose ? _tdvp_max_bond_dim(ψ) : 0
-    _expand_all_bonds!(ev, ψ, H, cache; rev=false)
-    ev.verbose && _log_subspace_expansion("GSE_TDVP", ψ;
-                                          rev=false,
-                                          maxbond_before=expansion_maxbond_before)
-    base = TDVP1(; order=ev.order, krylovdim=ev.krylovdim, tol=ev.tol,
-                 threaded_channels=ev.threaded_channels,
-                 channel_slices=ev.channel_slices,
-                 channel_minbatch=ev.channel_minbatch,
-                 channel_min_flops=ev.channel_min_flops,
-                 channel_memory_cap_bytes=ev.channel_memory_cap_bytes,
-                 distributed=ev.distributed,
-                 verbose=false, cache)
-    step!(base, ψ, H, dz)
-    ev.cache = base.cache
-    ev.verbose && _log_subspace_tdvp_complete("GSE_TDVP", ψ; initial_maxbond)
-    return ψ
-end
-
-function step!(ev::LSE_TDVP, ψ::TTNS, H::TTNO, dz::Number)
-    cache_reused = ev.cache !== nothing && ev.cache.topo == ψ.topo
-    initial_maxbond = ev.verbose ? _tdvp_max_bond_dim(ψ) : 0
-    cache = _prepare_subspace_expansion!(ev, ψ, H, dz, "LSE_TDVP")
-    ev.verbose && _log_subspace_tdvp_start("LSE_TDVP", ev, ψ, H, dz; cache_reused)
+    cache = _prepare_subspace_expansion!(ev, ψ, H, dz, "TDVP1_LSE")
+    ev.verbose && _log_subspace_tdvp_start("TDVP1_LSE", ev, ψ, H, dz; cache_reused)
     base = TDVP1(; order=1, krylovdim=ev.krylovdim, tol=ev.tol,
                  threaded_channels=ev.threaded_channels,
                  channel_slices=ev.channel_slices,
@@ -119,25 +59,25 @@ function step!(ev::LSE_TDVP, ψ::TTNS, H::TTNO, dz::Number)
     if ev.order == 1
         maxbond_before = ev.verbose ? _tdvp_max_bond_dim(ψ) : 0
         _expand_all_bonds!(ev, ψ, H, cache; rev=false)
-        ev.verbose && _log_subspace_expansion("LSE_TDVP", ψ;
+        ev.verbose && _log_subspace_expansion("TDVP1_LSE", ψ;
                                               rev=false, maxbond_before)
         _tdvp1_sweep!(base, ψ, H, dz; rev=false)
     elseif ev.order == 2
         maxbond_before = ev.verbose ? _tdvp_max_bond_dim(ψ) : 0
         _expand_all_bonds!(ev, ψ, H, cache; rev=false)
-        ev.verbose && _log_subspace_expansion("LSE_TDVP", ψ;
+        ev.verbose && _log_subspace_expansion("TDVP1_LSE", ψ;
                                               rev=false, maxbond_before)
         _tdvp1_sweep!(base, ψ, H, dz / 2; rev=false)
         maxbond_before = ev.verbose ? _tdvp_max_bond_dim(ψ) : 0
         _expand_all_bonds!(ev, ψ, H, cache; rev=true)
-        ev.verbose && _log_subspace_expansion("LSE_TDVP", ψ;
+        ev.verbose && _log_subspace_expansion("TDVP1_LSE", ψ;
                                               rev=true, maxbond_before)
         _tdvp1_sweep!(base, ψ, H, dz / 2; rev=true)
     else
         throw(ArgumentError("order must be 1 or 2"))
     end
     ev.cache = base.cache
-    ev.verbose && _log_subspace_tdvp_complete("LSE_TDVP", ψ; initial_maxbond)
+    ev.verbose && _log_subspace_tdvp_complete("TDVP1_LSE", ψ; initial_maxbond)
     return ψ
 end
 
@@ -202,6 +142,16 @@ function _prepare_subspace_expansion!(ev, ψ::TTNS, H::TTNO, dz::Number, name::S
     end
     ev.max_add >= 0 || throw(ArgumentError("$name: max_add must be nonnegative"))
     ev.mixing >= 0 || throw(ArgumentError("$name: mixing must be nonnegative"))
+    ev.expand_scheme in (:exact, :rsvd, :directqr, :rangefinder) ||
+        throw(ArgumentError(
+            "$name: expand_scheme must be :exact, :rsvd, :directqr, or :rangefinder"))
+    ev.expand_scheme in (:rsvd, :rangefinder) && ev.rng === nothing &&
+        throw(ArgumentError(
+            "$name: expand_scheme=$(ev.expand_scheme) requires an explicit rng (§9.6)"))
+    ev.rsvd_oversample >= 0 ||
+        throw(ArgumentError("$name: rsvd_oversample must be nonnegative"))
+    ev.rsvd_poweriter >= 0 ||
+        throw(ArgumentError("$name: rsvd_poweriter must be nonnegative"))
     ev.rsvd_minbatch >= 1 || throw(ArgumentError("$name: rsvd_minbatch must be positive"))
     ev.rsvd_memory_cap_bytes === nothing ||
         ev.rsvd_memory_cap_bytes >= 0 ||

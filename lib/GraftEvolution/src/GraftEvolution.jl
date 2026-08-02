@@ -18,8 +18,11 @@ using .Evolution
 export Evolution
 export Evolver, step!, evolve!, CorrelatorSeries, correlator, correlator_series,
     supports_complex_step,
-    TDVP1, TDVP2, TDVP1_CBE, GlobalKrylov, DirectKrylovBootstrap,
-    DirectKrylovInfo, GSE_TDVP, LSE_TDVP, TEBD, BUG, FixedBUG,
+    TDVP1, TDVP2, TDVP1_CBE, AbstractCBE, PredictorCBE,
+    PredictorLegacyCBE, NaiveCBE, LGVDCBE, CBESelectionInfo, LGVDCBEInfo,
+    GlobalKrylov, DirectKrylovBootstrap, DirectKrylovInfo,
+    TDVP1_GSE, GSEInfo, GlobalSubspaceEdgeInfo,
+    GlobalSubspaceExpansionInfo, gse_enrich!, TDVP1_LSE, TEBD, BUG, FixedBUG,
     ImplicitLogScheme, LogBackwardEuler, LogTrapezoid,
     LogGaussLegendre, ImplicitLogTime, logarithmic_time_grid, linsolve!,
     ResidualDrivenExpansion, LinearResidualReport,

@@ -14,7 +14,8 @@ using ..Trees
 export TTNS, TTNO, TTNDO, topology, center, hasphys, physleg, parentleg,
     physspace, virtualspace, check_arrows, move_center!, update_tensor!,
     normalize!, apply, fit!, exact_linear_combination,
-    truncated_linear_combination, truncate_sweep!, apply_local, ishermitian,
+    truncated_linear_combination, truncate_sweep!, global_subspace_expand!,
+    apply_local, ishermitian,
     invalidate_node!, invalidate_edge!, pivotal_link, compress!,
     TTNOCompressionSectorReport,
     TTNOCompressionEdgeReport, TTNOCompressionReport,
@@ -28,6 +29,7 @@ include("ttno.jl")
 include("ttno_compression.jl")
 include("apply.jl")
 include("linear_combination.jl")
+include("global_subspace_expansion.jl")
 
 # ---------------------------------------------------------------------------
 # Generic operations implemented here: `apply(O::TTNO, ψ::TTNS)` and

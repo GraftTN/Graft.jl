@@ -1,5 +1,5 @@
 using GraftFoundation: mps_topology, ℂ
-using GraftGroundState: dmrg1!
+using GraftGroundState: dmrg1!, dmrg1_3s!
 using GraftSymbolic: OpSum, SiteOp, Term, spin_ops
 using GraftTestUtils: dense_hamiltonian, exact_groundstate, random_ttns, to_dense
 using GraftTTNOBuild: ttno_from_opsum
@@ -29,4 +29,19 @@ using Test
     @test only(energies) ≈ exact_energy atol=1e-12
     @test norm(dense_operator * vector - exact_energy * vector) /
           norm(vector) < 1e-11
+
+    @test_throws ArgumentError dmrg1_3s!(
+        copy(state), operator;
+        nsweeps=0, expand_scheme=:unknown, verbose=false,
+    )
+    @test_throws ArgumentError dmrg1_3s!(
+        copy(state), operator;
+        nsweeps=0, expand_scheme=:rangefinder, verbose=false,
+    )
+    direct_state, direct_energies = dmrg1_3s!(
+        copy(state), operator;
+        nsweeps=0, expand_scheme=:directqr, verbose=false,
+    )
+    @test isempty(direct_energies)
+    @test to_dense(direct_state) == to_dense(state)
 end

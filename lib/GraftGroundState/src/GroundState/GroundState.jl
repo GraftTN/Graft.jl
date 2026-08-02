@@ -150,10 +150,13 @@ Single-site DMRG with 3S-style subspace expansion between sweeps. The local
 optimization is `dmrg1!`'s one-site Lanczos update; the bond growth step is the
 shared [`expand!`](@ref) primitive and therefore uses `TruncationScheme` as the
 single truncation entry point. `mixing` may be a number, vector, or function
-`sweep -> α`; `α == 0` skips expansion for that sweep. If
-`expand_scheme=:rsvd`, pass an explicit `rng`. With `verbose=true`, emits setup
-and per-sweep `@info` records with topology, solver, expansion, truncation,
-energy, convergence, center, and bond statistics.
+`sweep -> α`; `α == 0` skips expansion for that sweep. For
+`expand_scheme=:rsvd` or `:rangefinder`, pass an explicit `rng`.
+`rsvd_oversample`, `rsvd_poweriter`, and the `rsvd_*` fan-out controls configure
+both randomized sketching schemes; `:directqr` is deterministic and needs no
+RNG. With `verbose=true`, emits setup and per-sweep `@info` records with
+topology, solver, expansion, truncation, energy, convergence, center, and bond
+statistics.
 """
 function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(; maxdim=100),
                    nsweeps::Int=10, tol::Float64=1e-10, krylovdim::Int=20,
@@ -173,6 +176,16 @@ function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(;
                    enr_rtol::Float64=1e-10, enr_atol::Float64=1e-12,
                    verbose::Bool=true)
     ishermitian(H) || throw(ArgumentError("dmrg1_3s!: DMRG requires ishermitian(H) == true (§9.8)"))
+    expand_scheme in (:exact, :rsvd, :directqr, :rangefinder) ||
+        throw(ArgumentError(
+            "dmrg1_3s!: expand_scheme must be :exact, :rsvd, :directqr, or :rangefinder"))
+    expand_scheme in (:rsvd, :rangefinder) && rng === nothing &&
+        throw(ArgumentError(
+            "dmrg1_3s!: expand_scheme=$expand_scheme requires an explicit rng (§9.6)"))
+    rsvd_oversample >= 0 ||
+        throw(ArgumentError("dmrg1_3s!: rsvd_oversample must be nonnegative"))
+    rsvd_poweriter >= 0 ||
+        throw(ArgumentError("dmrg1_3s!: rsvd_poweriter must be nonnegative"))
     t = ψ.topo
     cache = EnvCache(t)
     energies = Float64[]

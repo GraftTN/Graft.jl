@@ -120,17 +120,13 @@ function main()
             TDVP1_CBE(;
                 order=2,
                 trunc,
-                d_tilde_max=2,
-                enr_rtol=1e-12,
-                enr_atol=1e-12,
+                cbe=PredictorCBE(max_add=2, spawn_threshold=1e-12),
                 krylovdim=8,
                 tol=1e-12,
                 verbose=false),
             TDVP1_CBE(;
                 trunc,
-                d_tilde_max=2,
-                enr_rtol=1e-12,
-                enr_atol=1e-12,
+                cbe=PredictorCBE(max_add=2, spawn_threshold=1e-12),
                 tdvp_kwargs(context, size)...))
     end
 

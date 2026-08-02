@@ -55,20 +55,21 @@ PrecompileTools.@compile_workload begin
         )
         Evolution.step!(
             Evolution.TDVP1_CBE(
-                order=1, trunc=truncation, d_tilde_max=1,
+                cbe=Evolution.PredictorCBE(max_add=1),
+                order=1, trunc=truncation,
                 krylovdim=4, tol=1e-8, verbose=false,
             ),
             copy(state), operator, -0.01im,
         )
         Evolution.step!(
-            Evolution.GSE_TDVP(
-                order=1, trunc=truncation, max_add=1,
+            Evolution.TDVP1_GSE(
+                ancillary_shift=0.01, order=1, trunc=truncation, max_add=1,
                 krylovdim=4, tol=1e-8, verbose=false,
             ),
             copy(state), operator, -0.01im,
         )
         Evolution.step!(
-            Evolution.LSE_TDVP(
+            Evolution.TDVP1_LSE(
                 order=1, trunc=truncation, max_add=1,
                 krylovdim=4, tol=1e-8, verbose=false,
             ),

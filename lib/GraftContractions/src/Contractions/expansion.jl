@@ -15,9 +15,14 @@
 
 Shared bond-expansion primitive (§5a/§11.7). `edge` is `(child, parent)` or
 `child => parent` using node ids or indices. `scheme=:exact` forms the
-predictor basis with a deterministic SVD. `scheme=:rsvd` uses explicit-RNG
-blockwise randomized probes on the fused rest space and never touches global
-randomness. Probe-block RNG seeds are derived serially from `rng`, so
+predictor basis with a deterministic truncated SVD. `scheme=:directqr` forms
+the complete predictor image with a deterministic sector-aware compact QR.
+The randomized schemes use explicit-RNG blockwise Gaussian probes on the fused
+rest space and never touch global randomness: `scheme=:rsvd` extracts the
+sampled image with a truncated SVD, while `scheme=:rangefinder` uses compact QR
+and QR-reorthogonalized power iterations. The `rsvd_*` keywords configure the
+shared sketch generation and power policy for both randomized schemes.
+Probe-block RNG seeds are derived serially from `rng`, so
 `rsvd_threaded=true` is bitwise-equivalent to the serial probe generation.
 Actual threaded probe filling requires both `rsvd_memory_cap_bytes` and the
 measured conservative per-task scratch allowance
@@ -44,8 +49,9 @@ function expand!(ψ::TTNS, H::TTNO, edge; scheme::Symbol=:exact,
                  channel_min_flops::Real=0,
                  channel_memory_cap_bytes::Union{Nothing,Real}=nothing,
                  distributed::Union{Nothing,AbstractDistributedContext}=nothing)
-    scheme in (:exact, :rsvd) ||
-        throw(ArgumentError("expand!: scheme must be :exact or :rsvd"))
+    scheme in (:exact, :rsvd, :directqr, :rangefinder) ||
+        throw(ArgumentError(
+            "expand!: scheme must be :exact, :rsvd, :directqr, or :rangefinder"))
     max_add >= 0 || throw(ArgumentError("expand!: max_add must be nonnegative"))
     rsvd_oversample >= 0 || throw(ArgumentError("expand!: rsvd_oversample must be nonnegative"))
     rsvd_poweriter >= 0 || throw(ArgumentError("expand!: rsvd_poweriter must be nonnegative"))
@@ -56,8 +62,9 @@ function expand!(ψ::TTNS, H::TTNO, edge; scheme::Symbol=:exact,
         rsvd_task_workspace_bytes >= 0 ||
         throw(ArgumentError(
             "expand!: rsvd_task_workspace_bytes must be nonnegative"))
-    scheme === :rsvd && rng === nothing &&
-        throw(ArgumentError("expand!: scheme=:rsvd requires an explicit rng (§9.6)"))
+    scheme in (:rsvd, :rangefinder) && rng === nothing &&
+        throw(ArgumentError(
+            "expand!: scheme=$scheme requires an explicit rng (§9.6)"))
     iszero(mixing) && return ψ
     t = ψ.topo
     n, m = _edge_child_parent(t, edge)
@@ -132,9 +139,47 @@ function _child_predictor_basis(ψ::TTNS, PΘ::AbstractTensorMap, n::Int, maxdim
                                      task_workspace_memory_bytes=
                                          rsvd_task_workspace_bytes,
                                      fanout_diagnostics=rsvd_fanout_diagnostics)
+    elseif scheme === :directqr
+        return _directqr_predictor_basis(Ps)
+    elseif scheme === :rangefinder
+        return _rangefinder_predictor_basis(
+            Ps, maxdim; rng, rsvd_oversample, rsvd_poweriter,
+            threaded=rsvd_threaded, minbatch=rsvd_minbatch,
+            memory_cap_bytes=rsvd_memory_cap_bytes,
+            task_workspace_memory_bytes=rsvd_task_workspace_bytes,
+            fanout_diagnostics=rsvd_fanout_diagnostics)
     end
     U, _, _ = split_svd(Ps, TruncationScheme(; maxdim))
     return U
+end
+
+function _directqr_predictor_basis(Ps::AbstractTensorMap)
+    Q, _ = left_orth(Ps; alg=:qr)
+    return Q
+end
+
+function _rangefinder_predictor_basis(Ps::AbstractTensorMap, maxdim::Int;
+                                      rng::AbstractRNG,
+                                      rsvd_oversample::Int,
+                                      rsvd_poweriter::Int,
+                                      threaded::Bool=Base.Threads.nthreads() > 1,
+                                      minbatch::Integer=max(2, Base.Threads.nthreads()),
+                                      memory_cap_bytes::Union{Nothing,Integer}=nothing,
+                                      task_workspace_memory_bytes::Union{Nothing,Integer}=nothing,
+                                      fanout_diagnostics::Union{Nothing,Base.RefValue}=nothing)
+    Vrest = fuse(domain(Ps))
+    budget = min(dim(Vrest), maxdim + rsvd_oversample)
+    K = _rsvd_probe_space(Vrest, budget)
+    Ω = _rsvd_random_probe(rng, scalartype(Ps), domain(Ps) ← K;
+                           threaded, minbatch, memory_cap_bytes,
+                           task_workspace_memory_bytes,
+                           fanout_diagnostics)
+    Q, _ = left_orth(Ps * Ω; alg=:qr)
+    for _ in 1:rsvd_poweriter
+        Z, _ = left_orth(Ps' * Q; alg=:qr)
+        Q, _ = left_orth(Ps * Z; alg=:qr)
+    end
+    return Q
 end
 
 function _rsvd_predictor_basis(Ps::AbstractTensorMap, maxdim::Int;

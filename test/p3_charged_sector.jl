@@ -91,7 +91,7 @@ isdefined(@__MODULE__, Symbol("@graft_testset")) || include("test_harness.jl")
             TDVP1_CBE(
                 order=1, enabled=true,
                 trunc=TruncationScheme(maxdim=16, atol=1e-12),
-                d_tilde_max=8, verbose=false))
+                cbe=PredictorCBE(max_add=8), verbose=false))
         trial = copy(psi)
         step!(ev, trial, prob.K, dz)
         evolved = categorical_coordinates(trial)
