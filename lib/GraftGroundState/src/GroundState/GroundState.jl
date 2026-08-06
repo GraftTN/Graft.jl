@@ -13,7 +13,7 @@ DMRG requires a hermitian TTNO — enforced via the `ishermitian` trait (§9.8).
 module GroundState
 
 using KrylovKit: eigsolve
-using Random: AbstractRNG
+using Random: AbstractRNG, Xoshiro
 using ..Backend
 using ..Trees
 using ..Networks
@@ -143,15 +143,20 @@ function dmrg2!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(),
 end
 
 """
-    dmrg1_3s!(ψ, H; trunc, nsweeps=10, mixing=1.0, max_add=8, kwargs...)
+    dmrg1_3s!(ψ, H; trunc, nsweeps=10, mixing=1.0, max_add=8,
+             expand_scheme=:rangefinder, rng=Xoshiro(...), kwargs...)
         -> (ψ, energies)
 
 Single-site DMRG with 3S-style subspace expansion between sweeps. The local
 optimization is `dmrg1!`'s one-site Lanczos update; the bond growth step is the
 shared [`expand!`](@ref) primitive and therefore uses `TruncationScheme` as the
 single truncation entry point. `mixing` may be a number, vector, or function
-`sweep -> α`; `α == 0` skips expansion for that sweep. For
-`expand_scheme=:rsvd` or `:rangefinder`, pass an explicit `rng`.
+`sweep -> α`; `α == 0` skips expansion for that sweep. Post-expansion defaults
+to the factorized `:rangefinder` path. Its default RNG
+is a fresh, fixed-seed `Xoshiro` owned by the call, so repeated default calls
+are reproducible and never consume global RNG state. Pass an explicit `rng` to
+select a distinct randomized stream. For `expand_scheme=:rsvd` or
+`:rangefinder`, explicitly passing `rng=nothing` is rejected.
 `rsvd_oversample`, `rsvd_poweriter`, and the `rsvd_*` fan-out controls configure
 both randomized sketching schemes; `:directqr` is deterministic and needs no
 RNG. With `verbose=true`, emits setup and per-sweep `@info` records with
@@ -160,8 +165,10 @@ statistics.
 """
 function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(; maxdim=100),
                    nsweeps::Int=10, tol::Float64=1e-10, krylovdim::Int=20,
-                   mixing=1.0, max_add::Int=8, expand_scheme::Symbol=:exact,
-                   rng::Union{Nothing,AbstractRNG}=nothing,
+                   mixing=1.0, max_add::Int=8,
+                   expand_scheme::Symbol=:rangefinder,
+                   rng::Union{Nothing,AbstractRNG}=
+                       Xoshiro(0xd3a63f1e5eed0001),
                    rsvd_oversample::Int=8, rsvd_poweriter::Int=0,
                    rsvd_threaded::Bool=Base.Threads.nthreads() > 1,
                    rsvd_minbatch::Int=max(2, Base.Threads.nthreads()),
@@ -217,6 +224,7 @@ function dmrg1_3s!(ψ::TTNS, H::TTNO; trunc::TruncationScheme=TruncationScheme(;
             for n in bonds
                 expand!(ψ, H, (n, t.parent[n]); scheme=expand_scheme, cache,
                         rng, trunc, max_add, mixing=α, enr_rtol, enr_atol,
+                        factorized=true,
                         rsvd_oversample, rsvd_poweriter,
                         rsvd_threaded, rsvd_minbatch,
                         rsvd_memory_cap_bytes, rsvd_task_workspace_bytes,

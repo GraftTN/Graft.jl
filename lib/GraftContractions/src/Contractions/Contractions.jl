@@ -35,6 +35,7 @@ import Base.Threads
 using LinearAlgebra: axpy!
 using Random: AbstractRNG, Xoshiro, rand, randn!
 using ..Backend
+using ..Backend: SpaceMismatch
 using ..Trees
 using ..Networks
 using ..Planning
@@ -60,7 +61,8 @@ export EnvCache, env!, build_env, invalidate_node!, invalidate_edge!,
     eff_h0, eff_h2, two_site_tensor, two_site_space, split_two_site!, expand!,
     OrientedTwoSiteFactorFrame, oriented_two_site_factor_frame,
     contract_oriented_two_site, contract_source_factor,
-    contract_target_factor, contract_projected_two_site
+    contract_target_factor, contract_projected_two_site,
+    contract_biprojected_two_site
 
 using ..Planning: ContractionSpec, ContractionPlan, EffectiveMap, PlanWorkspace,
     PlanKey, PlannerCandidateFailure, PlannerDiagnostics, plan_diagnostics,

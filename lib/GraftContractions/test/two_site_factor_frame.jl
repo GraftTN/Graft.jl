@@ -1,6 +1,10 @@
-using GraftContractions: EnvCache, contract_oriented_two_site, eff_h2,
+import GraftContractions
+using GraftContractions: DistributedChannelAdmissionError, EnvCache,
+    contract_biprojected_two_site,
+    contract_oriented_two_site, contract_projected_two_site, eff_h2,
     oriented_two_site_factor_frame, two_site_tensor
-using GraftFoundation: FermionParity, mps_topology, norm, numout, permute, ℂ
+using GraftFoundation: FermionParity, left_null, left_orth, mps_topology,
+    norm, numout, permute, ℂ
 using GraftNetworks: move_center!
 using GraftSymbolic: OpSum, SiteOp, Term, fermion_ops_z2, spin_ops
 using GraftTestUtils: product_ttns, random_ttns
@@ -56,6 +60,30 @@ function _factor_c1_error(psi, H, source, target)
     return norm(factorized - reference), norm(reference)
 end
 
+function _factor_biprojected_error(psi, H, source, target)
+    cache = EnvCache(psi.topo)
+    source_tensor, _ = GraftContractions.Contractions._oriented_site_tensor(
+        psi, source, target)
+    target_tensor, _ = GraftContractions.Contractions._oriented_site_tensor(
+        psi, target, source)
+    source_basis, link = left_orth(source_tensor)
+    frame = oriented_two_site_factor_frame(
+        cache, psi, H, source, target; source_tensor=source_basis)
+    target_basis = left_null(target_tensor)
+    source_projection = left_null(source_basis)
+    reference = source_projection' * contract_projected_two_site(
+        cache, frame, link, target_basis)
+    factorized = contract_biprojected_two_site(
+        cache, frame, link, source_projection, target_basis)
+    channelized = contract_biprojected_two_site(
+        cache, frame, link, source_projection, target_basis;
+        threaded_channels=true, channel_slices=2, channel_minbatch=1,
+        channel_min_flops=0,
+        channel_memory_cap_bytes=1_000_000_000)
+    return norm(factorized - reference), norm(channelized - reference),
+           norm(reference)
+end
+
 @testset "oriented two-site factor frame dense C1 both directions" begin
     psi, H = _factor_dense_fixture()
     for (source, target) in ((1, 2), (2, 1))
@@ -72,4 +100,118 @@ end
         error, scale = _factor_c1_error(psi, H, source, target)
         @test error <= 1e-11 * max(scale, 1.0)
     end
+end
+
+
+@testset "oriented two-site biprojection dense and graded" begin
+    for (psi, H) in (_factor_dense_fixture(), _factor_graded_fixture())
+        for (source, target) in ((1, 2), (2, 1))
+            move_center!(psi, source)
+            error, channel_error, scale = _factor_biprojected_error(
+                psi, H, source, target)
+            @test error <= 1e-11 * max(scale, 1.0)
+            @test channel_error <= 1e-11 * max(scale, 1.0)
+        end
+    end
+end
+
+struct _FactorDistributedContext <: GraftContractions.Parallel.AbstractDistributedContext
+    rank::Int
+    size::Int
+end
+GraftContractions.Parallel.distributed_rank(context::_FactorDistributedContext) =
+    context.rank
+GraftContractions.Parallel.distributed_size(context::_FactorDistributedContext) =
+    context.size
+
+mutable struct _ReplayFactorContext <: GraftContractions.Parallel.AbstractDistributedContext
+    remote::Any
+end
+GraftContractions.Parallel.distributed_rank(::_ReplayFactorContext) = 0
+GraftContractions.Parallel.distributed_size(::_ReplayFactorContext) = 2
+function GraftContractions.Parallel.distributed_allreduce_sum!(
+        context::_ReplayFactorContext, value)
+    value isa AbstractArray ||
+        GraftContractions.Contractions.axpy!(1, context.remote, value)
+    return value
+end
+GraftContractions.Parallel.distributed_broadcast!(
+    ::_ReplayFactorContext, value) = value
+
+function _factor_remote_rank_slices(cache, frame, link,
+                                    source_basis, target_basis)
+    contractions = GraftContractions.Contractions
+    source_projected = source_basis' * frame.source_action
+    target_projected = target_basis' * frame.target_action
+    spec = contractions._biprojected_two_site_spec(
+        source_projected, target_projected)
+    operands = (source_projected, link, target_projected)
+    operator_space = contractions.space(
+        source_projected, contractions.numind(source_projected))
+    groups = contractions._biprojected_channel_groups(
+        operator_space, max(2, 2 * Threads.nthreads()))
+    indices = collect(2:2:length(groups))
+    sliced_operands = Vector{Any}(undef, length(groups))
+    plans = Vector{Any}(undef, length(groups))
+    for slice in indices
+        sliced_operands[slice] = contractions._biprojected_slice_operands(
+            operands, groups[slice])
+        plans[slice] = contractions._cache_get_or_plan!(
+            cache, Symbol("test_remote_biprojected_channel_", slice),
+            spec, sliced_operands[slice],
+            contractions.scalartype(source_projected);
+            optimize=true, sector_aware=true)
+    end
+    return contractions._sum_biprojected_slices(
+        plans, sliced_operands, indices; threaded=false, minbatch=1)
+end
+
+@testset "factorized distributed channel admission has no materialized fallback" begin
+    psi, H = _factor_dense_fixture(seed=2026080714)
+    move_center!(psi, 1)
+    cache = EnvCache(psi.topo)
+    source_tensor, _ = GraftContractions.Contractions._oriented_site_tensor(
+        psi, 1, 2)
+    target_tensor, _ = GraftContractions.Contractions._oriented_site_tensor(
+        psi, 2, 1)
+    source_basis, link = left_orth(source_tensor)
+    target_basis, _ = left_orth(target_tensor)
+    frame = oriented_two_site_factor_frame(
+        cache, psi, H, 1, 2; source_tensor=source_basis)
+    contractions = GraftContractions.Contractions
+    source_projected = source_basis' * frame.source_action
+    operator_space = contractions.space(
+        source_projected, contractions.numind(source_projected))
+    impossible_ranks = contractions.dim(operator_space) + 1
+    @test_throws DistributedChannelAdmissionError contract_biprojected_two_site(
+        cache, frame, link, source_basis, target_basis;
+        channel_slices=2,
+        channel_memory_cap_bytes=1_000_000_000,
+        distributed=_FactorDistributedContext(0, impossible_ranks))
+end
+
+@testset "factorized distributed channel reduction matches unsliced" begin
+    psi, H = _factor_dense_fixture(seed=2026080716)
+    move_center!(psi, 1)
+    cache = EnvCache(psi.topo)
+    source_tensor, _ = GraftContractions.Contractions._oriented_site_tensor(
+        psi, 1, 2)
+    target_tensor, _ = GraftContractions.Contractions._oriented_site_tensor(
+        psi, 2, 1)
+    source_basis, link = left_orth(source_tensor)
+    target_basis, _ = left_orth(target_tensor)
+    frame = oriented_two_site_factor_frame(
+        cache, psi, H, 1, 2; source_tensor=source_basis)
+    reference = contract_biprojected_two_site(
+        cache, frame, link, source_basis, target_basis)
+    remote = _factor_remote_rank_slices(
+        cache, frame, link, source_basis, target_basis)
+    distributed = contract_biprojected_two_site(
+        cache, frame, link, source_basis, target_basis;
+        channel_slices=2,
+        channel_memory_cap_bytes=1_000_000_000,
+        distributed=_ReplayFactorContext(remote))
+
+    @test norm(distributed - reference) <=
+        1e-12 * max(norm(reference), 1.0)
 end

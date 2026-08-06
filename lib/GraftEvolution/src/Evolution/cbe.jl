@@ -71,7 +71,9 @@ end
 Diagnostics for Predictor, legacy, and naive selectors. Predictor reports
 `solver=:krylov_svd` only for a converged dense TensorMap solve. Nontrivial
 symmetry sectors use the honest `:exact_svd_sector_fallback`; no cross-sector
-ordering of independently seeded Ritz problems is guessed.
+ordering of independently seeded Ritz problems is guessed. On a matrix-free
+Krylov path, `projection_norm` is the norm of the converged Ritz singular
+values; exact fallbacks retain the full Frobenius norm.
 """
 struct CBESelectionInfo <: AbstractCBEInfo
     strategy::Symbol
@@ -303,38 +305,59 @@ function _cbe_right_injection(Np::AbstractTensorMap)
                     ntuple(i -> no + i, ni)))
 end
 
+struct CBEProjectedFactors{F,Q,NA,NP,L,H,C<:EnvCache,D}
+    frames::F
+    Q::Q
+    Na::NA
+    Np::NP
+    link::L
+    factor_frame::H
+    cache::C
+    threaded_channels::Bool
+    channel_slices::Int
+    channel_minbatch::Int
+    channel_min_flops::Float64
+    channel_memory_cap_bytes::Union{Nothing,Float64}
+    distributed::D
+    core_norm::Float64
+end
+
 """
-Construct the factors of the canonical double-complement map without yet
-materializing `M`. `Z = h2(two_site_tensor(...))`; no finite-step evolution is
-performed. Naive RSVD sketches these factors directly.
+Construct the factorized canonical double-complement operator. The source
+tensor is split once as `Q * link`; the local Hamiltonian halves retain the
+source and partner site frames. Neither the two-site ket nor `H_eff(Θ)` is
+materialized. The active endpoint must be the TTNS orthogonality center, which
+also makes `norm(frames.active) == norm(Θ)` for threshold diagnostics.
 """
 function _cbe_projected_factors(ev::TDVP1_CBE, ψ::TTNS, H::TTNO,
                                 u::Int, v::Int)
+    center(ψ) == u || throw(ArgumentError(
+        "factorized CBE selection requires the active endpoint to be the orthogonality center"))
     frames = _cbe_edge_frames(ψ, u, v)
-    Q, _ = left_orth(frames.active)
+    Q, link = left_orth(frames.active)
     Na = left_null(Q)
     Np = left_null(frames.partner)
-    Θ = two_site_tensor(ψ, frames.n, frames.m)
-    h2 = eff_h2(ev.cache::EnvCache, ψ, H, frames.n, frames.m;
-                threaded_channels=ev.threaded_channels,
-                channel_slices=ev.channel_slices,
-                channel_minbatch=ev.channel_minbatch,
-                channel_min_flops=ev.channel_min_flops,
-                channel_memory_cap_bytes=ev.channel_memory_cap_bytes,
-                distributed=ev.distributed)
-    Z = h2(Θ)
-    Zs = permute(Z, (frames.active_legs, frames.partner_legs))
-    injection = _cbe_right_injection(Np)
-    return (; frames, Q, Na, Np, Θ, Zs, injection)
+    factor_frame = oriented_two_site_factor_frame(
+        ev.cache::EnvCache, ψ, H, u, v;
+        source_tensor=Q, target_tensor=frames.partner)
+    return CBEProjectedFactors(
+        frames, Q, Na, Np, link, factor_frame, ev.cache::EnvCache,
+        ev.threaded_channels, ev.channel_slices, ev.channel_minbatch,
+        Float64(ev.channel_min_flops),
+        ev.channel_memory_cap_bytes === nothing ? nothing :
+            Float64(ev.channel_memory_cap_bytes),
+        ev.distributed,
+        Float64(norm(frames.active)))
 end
 
 """Materialize `M = Na' * Zs * injection` for exact/reference selectors."""
 function _cbe_projected_core(ev::TDVP1_CBE, ψ::TTNS, H::TTNO,
                              u::Int, v::Int)
     factors = _cbe_projected_factors(ev, ψ, H, u, v)
-    (; Na, Zs, injection) = factors
-    M = Na' * Zs * injection
-    return merge(factors, (; M))
+    M = _cbe_projected_materialize(factors)
+    return (; frames=factors.frames, Q=factors.Q,
+            Na=factors.Na, Np=factors.Np,
+            core_norm=factors.core_norm, M)
 end
 
 _cbe_rank(A::AbstractTensorMap) = dim(domain(A))
@@ -382,10 +405,51 @@ function _cbe_exact_directions(M::AbstractTensorMap, maxrank::Int;
         CBEExactLeftSVD(M), maxrank; atol, rtol)
 end
 
-_cbe_projected_apply(factors, x::AbstractTensorMap) =
-    factors.Na' * (factors.Zs * (factors.injection * x))
-_cbe_projected_adjoint_apply(factors, x::AbstractTensorMap) =
-    factors.injection' * (factors.Zs' * (factors.Na * x))
+_cbe_projected_apply(M::AbstractTensorMap, x::AbstractTensorMap) = M * x
+_cbe_projected_adjoint_apply(M::AbstractTensorMap, x::AbstractTensorMap) = M' * x
+_cbe_projected_materialize(M::AbstractTensorMap) = M
+_cbe_projected_small(M::AbstractTensorMap, sketch::AbstractTensorMap) = sketch' * M
+_cbe_projected_domain(M::AbstractTensorMap) = domain(M)
+_cbe_projected_codomain(M::AbstractTensorMap) = codomain(M)
+_cbe_projected_eltype(M::AbstractTensorMap) = scalartype(M)
+_cbe_projected_core_norm(M::AbstractTensorMap) = Float64(norm(M))
+_cbe_projected_distributed(::AbstractTensorMap) = nothing
+
+function _cbe_biprojected(factors::CBEProjectedFactors,
+                          source_basis::AbstractTensorMap,
+                          target_basis::AbstractTensorMap)
+    return contract_biprojected_two_site(
+        factors.cache, factors.factor_frame, factors.link,
+        source_basis, target_basis;
+        threaded_channels=factors.threaded_channels,
+        channel_slices=factors.channel_slices,
+        channel_minbatch=factors.channel_minbatch,
+        channel_min_flops=factors.channel_min_flops,
+        channel_memory_cap_bytes=factors.channel_memory_cap_bytes,
+        distributed=factors.distributed)
+end
+
+function _cbe_projected_apply(factors::CBEProjectedFactors,
+                              x::AbstractTensorMap)
+    return _cbe_biprojected(factors, factors.Na, factors.Np * x)
+end
+function _cbe_projected_adjoint_apply(factors::CBEProjectedFactors,
+                                      x::AbstractTensorMap)
+    return _cbe_biprojected(factors, factors.Na * x, factors.Np)
+end
+function _cbe_projected_materialize(factors::CBEProjectedFactors)
+    return _cbe_biprojected(factors, factors.Na, factors.Np)
+end
+function _cbe_projected_small(factors::CBEProjectedFactors,
+                              sketch::AbstractTensorMap)
+    return _cbe_biprojected(factors, factors.Na * sketch, factors.Np)
+end
+_cbe_projected_domain(factors::CBEProjectedFactors) = domain(factors.Np)
+_cbe_projected_codomain(factors::CBEProjectedFactors) = domain(factors.Na)
+_cbe_projected_eltype(factors::CBEProjectedFactors) =
+    scalartype(factors.factor_frame.source_action)
+_cbe_projected_core_norm(factors::CBEProjectedFactors) = factors.core_norm
+_cbe_projected_distributed(factors::CBEProjectedFactors) = factors.distributed
 
 function _cbe_dense_krylov_directions(M::AbstractTensorMap, maxrank::Int,
                                       krylovdim::Int, cutoff::Real)
@@ -422,6 +486,86 @@ function _cbe_dense_krylov_directions(M::AbstractTensorMap, maxrank::Int,
     isempty(keep) && return nothing, Float64.(vals), :krylov_svd
     directions = reduce(catdomain, lefts[keep])
     return directions, Float64.(vals), :krylov_svd
+end
+
+function _cbe_dense_krylov_directions(
+        operator::CBEProjectedFactors,
+        maxrank::Int, krylovdim::Int, cutoff::Real)
+    maxrank <= 0 && return nothing, Float64[], :krylov_svd
+    Vcod = fuse(_cbe_projected_codomain(operator))
+    Vdom = fuse(_cbe_projected_domain(operator))
+    sectortype(Vcod) === Trivial && sectortype(Vdom) === Trivial ||
+        return nothing, Float64[], :exact_svd_sector_fallback
+
+    K = Contractions._rsvd_probe_space(Vdom, 1)
+    Ω = Contractions._rsvd_random_probe(
+        Xoshiro(0xcbe2503154600001), _cbe_projected_eltype(operator),
+        _cbe_projected_domain(operator) ← K; threaded=false)
+    operator.distributed === nothing ||
+        distributed_broadcast!(operator.distributed, Ω)
+    x0 = _cbe_projected_apply(operator, Ω)
+    norm(x0) > eps(Float64) * max(_cbe_projected_core_norm(operator), 1) ||
+        return nothing, Float64[], :exact_svd_start_fallback
+
+    problem_dim = min(dim(Vcod), dim(Vdom))
+    requested = min(maxrank, problem_dim)
+    problem_dim > requested ||
+        return nothing, Float64[], :exact_svd_small_fallback
+    kd = max(requested + 1, min(krylovdim, problem_dim))
+    vals, lefts, _, info = KrylovKit.svdsolve(
+        (x -> _cbe_projected_apply(operator, x),
+         x -> _cbe_projected_adjoint_apply(operator, x)),
+        x0, requested, :LR;
+        krylovdim=kd,
+        tol=max(eps(Float64), min(Float64(cutoff), 1e-10)),
+        maxiter=20)
+    info.converged >= requested ||
+        return nothing, Float64.(vals), :exact_svd_convergence_fallback
+    keep = findall(σ -> σ >= cutoff, vals)
+    resize!(keep, min(length(keep), requested))
+    isempty(keep) && return nothing, Float64.(vals), :krylov_svd
+    return reduce(catdomain, lefts[keep]), Float64.(vals), :krylov_svd
+end
+
+function _cbe_factorized_predictor_directions(
+        strategy::PredictorCBE,
+        operator::CBEProjectedFactors,
+        dz::Number,
+        room::Int,
+)
+    core_norm = _cbe_projected_core_norm(operator)
+    denom = max(core_norm, eps(Float64))
+    cutoff = iszero(dz) ? Inf :
+        strategy.spawn_threshold * denom / Float64(abs(dz))
+    budget = min(room, strategy.max_add, strategy.neigs)
+    directions, sigmas, solver = if isfinite(cutoff) && budget > 0
+        try
+            _cbe_dense_krylov_directions(
+                operator, budget, strategy.krylovdim, cutoff)
+        catch
+            (nothing, Float64[], :exact_svd_error_fallback)
+        end
+    else
+        (nothing, Float64[], :krylov_svd)
+    end
+    projection_norm = sqrt(sum(abs2, sigmas))
+    if startswith(String(solver), "exact_svd") &&
+            isfinite(cutoff) && budget > 0
+        M = _cbe_projected_materialize(operator)
+        exact = CBEExactLeftSVD(M)
+        sigmas = exact.values
+        directions = _cbe_exact_directions(exact, budget; atol=cutoff)
+        projection_norm = Float64(norm(M))
+    end
+    score_max = isempty(sigmas) ? 0.0 :
+        Float64(abs(dz)) * first(sigmas) / denom
+    selected = directions === nothing ? 0 : _cbe_rank(directions)
+    available = min(dim(_cbe_projected_codomain(operator)),
+                    dim(_cbe_projected_domain(operator)))
+    info = CBESelectionInfo(
+        :predictor, solver, available, selected, selected,
+        projection_norm, core_norm, Float64(cutoff), score_max, true)
+    return directions, info
 end
 
 """
@@ -479,17 +623,18 @@ function _cbe_implicit_rsvd_directions(strategy::NaiveCBE, factors, budget::Int)
     sketch = Contractions.rangefinder(
         x -> _cbe_projected_apply(factors, x),
         x -> _cbe_projected_adjoint_apply(factors, x),
-        domain(factors.injection);
+        _cbe_projected_domain(factors);
         maxrank=budget,
         oversample=strategy.oversample,
         poweriter=strategy.poweriter,
         rng=strategy.rng,
-        probe_eltype=scalartype(factors.Zs),
+        probe_eltype=_cbe_projected_eltype(factors),
         threaded=false,
+        distributed=_cbe_projected_distributed(factors),
     )
-    # Only this rank-sketch-by-partner-complement core is materialized. The
-    # full active-complement-by-partner-complement map is never formed.
-    small = (sketch' * factors.Na') * factors.Zs * factors.injection
+    # Only this rank-sketch-by-partner-complement core is materialized. Both
+    # projections are pushed into the local Hamiltonian contraction.
+    small = _cbe_projected_small(factors, sketch)
     exact = CBEExactLeftSVD(small)
     localdirs = _cbe_exact_directions(
         exact, budget; atol=strategy.enr_atol, rtol=strategy.enr_rtol)
@@ -505,7 +650,7 @@ function _cbe_naive_directions(strategy::NaiveCBE, factors, room::Int)
             strategy, factors, budget)
         (dirs, sketched_exact, :implicit_rsvd)
     else
-        M = factors.Na' * factors.Zs * factors.injection
+        M = _cbe_projected_materialize(factors)
         full_exact = CBEExactLeftSVD(M)
         (_cbe_exact_directions(full_exact, budget;
                                atol=strategy.enr_atol,
@@ -514,10 +659,12 @@ function _cbe_naive_directions(strategy::NaiveCBE, factors, room::Int)
     end
     sigmas = exact === nothing ? Float64[] : exact.values
     selected = directions === nothing ? 0 : _cbe_rank(directions)
-    available = min(dim(domain(factors.Na)), dim(domain(factors.Np)))
+    available = min(dim(_cbe_projected_codomain(factors)),
+                    dim(_cbe_projected_domain(factors)))
     info = CBESelectionInfo(:naive, solver, available, selected, selected,
                             exact === nothing ? 0.0 : Float64(norm(exact.S)),
-                            Float64(norm(factors.Θ)), strategy.enr_atol,
+                            _cbe_projected_core_norm(factors),
+                            strategy.enr_atol,
                             isempty(sigmas) ? 0.0 : first(sigmas), true)
     return directions, info
 end
@@ -593,10 +740,11 @@ end
 
 function _cbe_projected_split(strategy::PredictorCBE, ev::TDVP1_CBE,
                               ψ::TTNS, H::TTNO, u::Int, v::Int, dz::Number)
-    factors = _cbe_projected_core(ev, ψ, H, u, v)
+    factors = _cbe_projected_factors(ev, ψ, H, u, v)
     oldrank = _cbe_rank(factors.Q)
     room = max(0, ev.trunc.maxdim - oldrank)
-    directions, info = _cbe_predictor_directions(strategy, factors, dz, room)
+    directions, info = _cbe_factorized_predictor_directions(
+        strategy, factors, dz, room)
     if directions === nothing
         U, R = _cbe_no_growth_split(factors.frames.active, factors.Q)
     else

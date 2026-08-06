@@ -7,6 +7,7 @@
             rsvd_memory_cap_bytes=nothing,
             rsvd_task_workspace_bytes=nothing,
             rsvd_fanout_diagnostics=nothing,
+            factorized=false,
             contraction_optimize=true,
             contraction_sector_aware=true,
             threaded_channels=false, channel_slices=2,
@@ -29,6 +30,12 @@ measured conservative per-task scratch allowance
 `rsvd_task_workspace_bytes`; omission selects an observable deterministic
 serial fallback. `rsvd_fanout_diagnostics` may be a `Ref` used to inspect the
 admitted batches and memory model without changing `expand!`'s return value.
+`factorized=true` enables the biprojected range-finder path used by DMRG3S:
+random probes pass directly through the local Hamiltonian halves and the
+current child complement without forming a two-site ket or `H_eff(Θ)`.
+Channel-sliced and distributed requests partition the factor-frame TTNO edge
+channel and reduce the projected slice results without restoring a materialized
+two-site action.
 """
 function expand!(ψ::TTNS, H::TTNO, edge; scheme::Symbol=:exact,
                  cache::Union{Nothing,EnvCache}=nothing,
@@ -42,6 +49,7 @@ function expand!(ψ::TTNS, H::TTNO, edge; scheme::Symbol=:exact,
                  rsvd_memory_cap_bytes::Union{Nothing,Integer}=nothing,
                  rsvd_task_workspace_bytes::Union{Nothing,Integer}=nothing,
                  rsvd_fanout_diagnostics::Union{Nothing,Base.RefValue}=nothing,
+                 factorized::Bool=false,
                  contraction_optimize::Bool=true,
                  contraction_sector_aware::Bool=true,
                  threaded_channels::Bool=false, channel_slices::Int=2,
@@ -74,23 +82,46 @@ function expand!(ψ::TTNS, H::TTNO, edge; scheme::Symbol=:exact,
 
     c = cache === nothing ? EnvCache(t) : cache
     move_center!(ψ, n; cache=c)
-    Θ = two_site_tensor(ψ, n, m)
-    h2 = eff_h2(c, ψ, H, n, m;
-                optimize=contraction_optimize,
-                sector_aware=contraction_sector_aware,
-                threaded_channels, channel_slices, channel_minbatch,
-                channel_min_flops,
-                channel_memory_cap_bytes, distributed)
-    PΘ = mixing * h2(Θ)
-    P = _child_predictor_basis(ψ, PΘ, n, cap; scheme, rng,
-                               rsvd_oversample, rsvd_poweriter,
-                               rsvd_threaded, rsvd_minbatch,
-                               rsvd_memory_cap_bytes,
-                               rsvd_task_workspace_bytes,
-                               rsvd_fanout_diagnostics)
-    U, R = _expand_enrich_split(ψ.tensors[n], P; maxdim=cap,
-                                max_add=cap - olddim,
-                                enr_rtol, enr_atol)
+    use_factor_frame = factorized && scheme === :rangefinder
+    U, R = if use_factor_frame
+        source_basis, link = left_orth(ψ.tensors[n])
+        factor_frame = oriented_two_site_factor_frame(
+            c, ψ, H, n, m; source_tensor=source_basis,
+            optimize=contraction_optimize)
+        _factorized_rangefinder_enrich_split(
+            ψ.tensors[n], source_basis, c, factor_frame, link,
+            cap, mixing;
+            rng=rng::AbstractRNG,
+            rsvd_oversample, rsvd_poweriter,
+            rsvd_threaded, rsvd_minbatch,
+            rsvd_memory_cap_bytes,
+            rsvd_task_workspace_bytes,
+            rsvd_fanout_diagnostics,
+            enr_rtol, enr_atol,
+            optimize=contraction_optimize,
+            sector_aware=contraction_sector_aware,
+            threaded_channels, channel_slices, channel_minbatch,
+            channel_min_flops, channel_memory_cap_bytes, distributed)
+    else
+        Θ = two_site_tensor(ψ, n, m)
+        h2 = eff_h2(c, ψ, H, n, m;
+                    optimize=contraction_optimize,
+                    sector_aware=contraction_sector_aware,
+                    threaded_channels, channel_slices, channel_minbatch,
+                    channel_min_flops,
+                    channel_memory_cap_bytes, distributed)
+        PΘ = mixing * h2(Θ)
+        P = _child_predictor_basis(
+            ψ, PΘ, n, cap; scheme, rng,
+            rsvd_oversample, rsvd_poweriter,
+            rsvd_threaded, rsvd_minbatch,
+            rsvd_memory_cap_bytes,
+            rsvd_task_workspace_bytes,
+            rsvd_fanout_diagnostics)
+        _expand_enrich_split(ψ.tensors[n], P; maxdim=cap,
+                             max_add=cap - olddim,
+                             enr_rtol, enr_atol)
+    end
     dim(domain(U)) == olddim && return ψ
     ψ.tensors[n] = U
     R = Networks.pivotal_link(R)
@@ -98,6 +129,94 @@ function expand!(ψ::TTNS, H::TTNO, edge; scheme::Symbol=:exact,
     ψ.center = m
     invalidate_edge!(c, n, m)
     return ψ
+end
+
+function _factorized_rangefinder_enrich_split(
+        active::AbstractTensorMap,
+        kept::AbstractTensorMap,
+        cache::EnvCache,
+        frame::OrientedTwoSiteFactorFrame,
+        link::AbstractTensorMap,
+        maxdim::Int,
+        mixing::Number;
+        rng::AbstractRNG,
+        rsvd_oversample::Int,
+        rsvd_poweriter::Int,
+        rsvd_threaded::Bool,
+        rsvd_minbatch::Integer,
+        rsvd_memory_cap_bytes::Union{Nothing,Integer},
+        rsvd_task_workspace_bytes::Union{Nothing,Integer},
+        rsvd_fanout_diagnostics::Union{Nothing,Base.RefValue},
+        enr_rtol::Float64,
+        enr_atol::Float64,
+        optimize::Bool,
+        sector_aware::Bool,
+        threaded_channels::Bool,
+        channel_slices::Int,
+        channel_minbatch::Int,
+        channel_min_flops::Real,
+        channel_memory_cap_bytes::Union{Nothing,Real},
+        distributed::Union{Nothing,AbstractDistributedContext},
+)
+    room = maxdim - dim(domain(active))
+    complement = left_null(kept)
+    (room > 0 && dim(domain(complement)) > 0) ||
+        return kept, kept' * active
+    target_frame = id(
+        scalartype(frame.target_action), codomain(frame.target_action))
+    apply = target_basis -> mixing * contract_biprojected_two_site(
+        cache, frame, link, complement, target_basis;
+        optimize, sector_aware, threaded_channels, channel_slices,
+        channel_minbatch, channel_min_flops, channel_memory_cap_bytes,
+        distributed)
+    adjoint_apply = source_sketch -> conj(mixing) *
+        _pivotal_target_basis(contract_biprojected_two_site(
+            cache, frame, link, complement * source_sketch, target_frame;
+            optimize, sector_aware, threaded_channels, channel_slices,
+            channel_minbatch, channel_min_flops, channel_memory_cap_bytes,
+            distributed)', codomain(frame.target_action))
+    sketch = rangefinder(
+        apply, adjoint_apply, domain(target_frame);
+        maxrank=room,
+        oversample=rsvd_oversample,
+        poweriter=rsvd_poweriter,
+        rng,
+        probe_eltype=scalartype(frame.source_action),
+        threaded=rsvd_threaded,
+        minbatch=rsvd_minbatch,
+        memory_cap_bytes=rsvd_memory_cap_bytes,
+        task_workspace_memory_bytes=rsvd_task_workspace_bytes,
+        fanout_diagnostics=rsvd_fanout_diagnostics,
+        distributed)
+
+    # QR removes the predictor scale. Recover it in a rank-small core before
+    # applying the ordinary enrichment tolerances and final rank cap.
+    small = mixing * contract_biprojected_two_site(
+        cache, frame, link, complement * sketch, target_frame;
+        optimize, sector_aware, threaded_channels, channel_slices,
+        channel_minbatch, channel_min_flops, channel_memory_cap_bytes,
+        distributed)
+    local_directions, _, _ = split_svd(
+        small,
+        TruncationScheme(; maxdim=room, atol=enr_atol, rtol=enr_rtol))
+    dim(domain(local_directions)) == 0 && return kept, kept' * active
+    enrichment = complement * (sketch * local_directions)
+    if isdual(domain(kept)[1]) != isdual(domain(enrichment)[1])
+        enrichment = flip(enrichment, numind(enrichment))
+    end
+    expanded = catdomain(kept, enrichment)
+    return expanded, expanded' * active
+end
+
+function _pivotal_target_basis(adjoint_core::AbstractTensorMap,
+                               target_space::ProductSpace)
+    target_basis = adjoint_core
+    for leg in 1:numout(target_basis)
+        target_basis = flip(target_basis, leg)
+    end
+    codomain(target_basis) == target_space || throw(SpaceMismatch(
+        "pivotal adjoint did not restore the target factor frame"))
+    return target_basis
 end
 
 function _edge_child_parent(t::TreeTopology, edge::Pair)
@@ -181,7 +300,8 @@ function rangefinder(apply::F, adjoint_apply::A, probe_domain;
                      minbatch::Integer=max(2, Base.Threads.nthreads()),
                      memory_cap_bytes::Union{Nothing,Integer}=nothing,
                      task_workspace_memory_bytes::Union{Nothing,Integer}=nothing,
-                     fanout_diagnostics::Union{Nothing,Base.RefValue}=nothing) where
+                     fanout_diagnostics::Union{Nothing,Base.RefValue}=nothing,
+                     distributed::Union{Nothing,AbstractDistributedContext}=nothing) where
                     {F,A,T<:Number}
     maxrank > 0 || throw(ArgumentError("rangefinder maxrank must be positive"))
     oversample >= 0 ||
@@ -196,6 +316,7 @@ function rangefinder(apply::F, adjoint_apply::A, probe_domain;
                            threaded, minbatch, memory_cap_bytes,
                            task_workspace_memory_bytes,
                            fanout_diagnostics)
+    distributed === nothing || distributed_broadcast!(distributed, Ω)
     Q, _ = left_orth(apply(Ω)::AbstractTensorMap; alg=:qr)
     for _ in 1:poweriter
         Z, _ = left_orth(adjoint_apply(Q)::AbstractTensorMap; alg=:qr)

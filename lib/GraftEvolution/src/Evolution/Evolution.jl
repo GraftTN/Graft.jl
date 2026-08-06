@@ -27,7 +27,8 @@ using ..Backend
 using ..Trees
 using ..Networks
 using ..Contractions
-using ..Parallel: AbstractDistributedContext, distributed_exponentiate
+using ..Parallel: AbstractDistributedContext, distributed_broadcast!,
+    distributed_exponentiate
 
 export Evolver, step!, evolve!, CorrelatorSeries, correlator, correlator_series,
     supports_complex_step,

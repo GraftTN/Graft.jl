@@ -99,6 +99,194 @@ function contract_projected_two_site(cache::EnvCache,
                              (A, link, projected), scalartype(A); optimize)
 end
 
+"""
+    contract_biprojected_two_site(
+        cache, frame, link, source_basis, target_basis; optimize=true,
+    )
+
+Contract the factorized two-site action directly inside source and target
+frames, returning `source_basis' * H_eff * target_basis`.  The local
+Hamiltonian halves are projected before the edge channels are closed, so the
+unprojected two-site action is never materialized.  Both bases may themselves
+be rank-small sketches, which makes this primitive suitable for matrix-free
+range finding and projected-core construction. Threaded and distributed
+channel slicing partitions the factor-frame TTNO edge directly; either mode
+requires an explicit `channel_memory_cap_bytes` admission bound.
+"""
+function contract_biprojected_two_site(
+        cache::EnvCache,
+        frame::OrientedTwoSiteFactorFrame,
+        link::AbstractTensorMap,
+        source_basis::AbstractTensorMap,
+        target_basis::AbstractTensorMap;
+        optimize::Bool=true,
+        sector_aware::Bool=true,
+        threaded_channels::Bool=false,
+        channel_slices::Int=2,
+        channel_minbatch::Int=2,
+        channel_min_flops::Real=0,
+        channel_memory_cap_bytes::Union{Nothing,Real}=nothing,
+        distributed::Union{Nothing,AbstractDistributedContext}=nothing,
+)
+    A, B = frame.source_action, frame.target_action
+    numind(link) == 2 || throw(ArgumentError("edge link must have rank two"))
+    codomain(source_basis) == codomain(A) || throw(SpaceMismatch(
+        "source basis does not span the source external frame"))
+    codomain(target_basis) == codomain(B) || throw(SpaceMismatch(
+        "target basis does not span the target external frame"))
+
+    source_projected = source_basis' * A
+    target_projected = target_basis' * B
+    spec = _biprojected_two_site_spec(source_projected, target_projected)
+    operands = (source_projected, link, target_projected)
+    T = scalartype(A)
+    full_plan = _cache_get_or_plan!(
+        cache, :oriented_biprojected_close, spec, operands, T;
+        optimize, sector_aware)
+
+    use_channels = distributed !== nothing ||
+        (threaded_channels && Threads.nthreads() > 1 &&
+         _channel_plan_flops(full_plan) >= Float64(channel_min_flops))
+    use_channels || return Planning.execute(full_plan, operands)
+    return _channel_biprojected_two_site(
+        cache, spec, operands;
+        optimize, sector_aware, threaded_channels,
+        channel_slices, channel_minbatch, channel_min_flops,
+        channel_memory_cap_bytes, distributed)
+end
+
+function _biprojected_two_site_spec(source_projected::AbstractTensorMap,
+                                    target_projected::AbstractTensorMap)
+    es = numout(source_projected)
+    et = numout(target_projected)
+    labels = Vector{Int}[
+        [ntuple(i -> -i, es)..., 1, 3],
+        [1, 2],
+        [ntuple(i -> -(es + i), et)..., 2, 3],
+    ]
+    return ContractionSpec(labels, Bool[false, false, false], es + et,
+                           (es, et), nothing; preferred_slots=[1, 3, 2])
+end
+
+function _biprojected_channel_groups(V::ElementarySpace, requested::Int)
+    requested >= 2 || throw(ArgumentError(
+        "channel_slices must be at least 2"))
+    entries = [(q, j) for q in sectors(V) for j in 1:dim(V, q)]
+    isempty(entries) && throw(ArgumentError(
+        "cannot slice an empty factor-frame operator channel"))
+    nslices = min(requested, length(entries))
+    bins = [Dict{Any,Vector{Int}}() for _ in 1:nslices]
+    for (index, (q, j)) in enumerate(entries)
+        push!(get!(bins[mod1(index, nslices)], q, Int[]), j)
+    end
+    return bins
+end
+
+function _biprojected_slice_operands(operands::Tuple, selected)
+    source_projected, link, target_projected = operands
+    source_op_leg = numind(source_projected)
+    target_op_leg = numind(target_projected)
+    source_slice = _restrict_channel_leg(
+        source_projected, source_op_leg, selected)
+    target_slice = _restrict_channel_leg(
+        target_projected, target_op_leg, _dual_channel_groups(selected))
+    # Closing a channel against its dual requires the pivotal twist on the
+    # target half. It is the identity for ordinary dense spaces and carries
+    # the fermionic sign for odd graded channels.
+    target_slice = Backend.twist(target_slice, target_op_leg)
+    return (source_slice, link, target_slice)
+end
+
+function _sum_biprojected_slices(plans, operands, indices;
+                                 threaded::Bool, minbatch::Int)
+    partials = Vector{Any}(undef, length(indices))
+    threaded_foreach(eachindex(indices); threaded, minbatch) do local_index
+        slice = indices[local_index]
+        partials[local_index] = Planning.execute(
+            plans[slice], operands[slice])
+    end
+    result = partials[1]::AbstractTensorMap
+    for index in 2:length(partials)
+        axpy!(1, partials[index]::AbstractTensorMap, result)
+    end
+    return result
+end
+
+function _channel_biprojected_two_site(
+        cache::EnvCache,
+        spec::ContractionSpec,
+        operands::Tuple;
+        optimize::Bool,
+        sector_aware::Bool,
+        threaded_channels::Bool,
+        channel_slices::Int,
+        channel_minbatch::Int,
+        channel_min_flops::Real,
+        channel_memory_cap_bytes::Union{Nothing,Real},
+        distributed::Union{Nothing,AbstractDistributedContext},
+)
+    source_projected = operands[1]
+    operator_space = space(source_projected, numind(source_projected))
+    requested = distributed === nothing ? channel_slices :
+        max(channel_slices,
+            distributed_size(distributed) * max(Threads.nthreads(), 1))
+    groups = _biprojected_channel_groups(operator_space, requested)
+    if distributed !== nothing
+        distributed_size(distributed) >= 2 || throw(ArgumentError(
+            "distributed factorized channels require at least two ranks"))
+        _require_nonempty_distributed_ranks(distributed, length(groups))
+    end
+
+    local_contraction = function ()
+        channel_slices >= 2 || throw(ArgumentError(
+            "channel_slices must be at least 2"))
+        channel_minbatch >= 1 || throw(ArgumentError(
+            "channel_minbatch must be positive"))
+        min_flops = Float64(channel_min_flops)
+        isfinite(min_flops) && min_flops >= 0 || throw(ArgumentError(
+            "channel_min_flops must be a finite nonnegative number"))
+        channel_memory_cap_bytes === nothing && throw(ArgumentError(
+            "factorized channel execution requires channel_memory_cap_bytes"))
+        cap = Float64(channel_memory_cap_bytes)
+        isfinite(cap) && cap >= 0 || throw(ArgumentError(
+            "channel_memory_cap_bytes must be a finite nonnegative number"))
+        indices = distributed === nothing ? collect(eachindex(groups)) :
+            collect((distributed_rank(distributed) + 1):
+                    distributed_size(distributed):length(groups))
+        sliced_operands = Vector{Any}(undef, length(groups))
+        plans = Vector{Any}(undef, length(groups))
+        for slice in indices
+            sliced_operands[slice] = _biprojected_slice_operands(
+                operands, groups[slice])
+            plans[slice] = _cache_get_or_plan!(
+                cache, Symbol("oriented_biprojected_channel_", slice),
+                spec, sliced_operands[slice], scalartype(source_projected);
+                optimize, sector_aware)
+        end
+        retained_bytes = sum(_env_payload_bytes, operands; init=0) + sum(
+            _env_payload_bytes(sliced_operands[index][1]) +
+            _env_payload_bytes(sliced_operands[index][3])
+            for index in indices; init=0)
+        live_bytes = ceil(Int, retained_bytes + sum(
+            _slice_live_bytes(plans[index]::ContractionPlan)
+            for index in indices; init=0.0))
+        live_bytes <= cap || throw(ArgumentError(
+            "factorized channel contraction requires approximately $live_bytes live bytes, " *
+            "exceeding channel_memory_cap_bytes=$channel_memory_cap_bytes"))
+        return _sum_biprojected_slices(
+            plans, sliced_operands, indices;
+            threaded=threaded_channels && Threads.nthreads() > 1,
+            minbatch=channel_minbatch)
+    end
+
+    distributed === nothing && return local_contraction()
+    result = _distributed_local_call(distributed) do
+        local_contraction()
+    end
+    distributed_allreduce_sum!(distributed, result)
+    return distributed_broadcast!(distributed, result)
+end
+
 function _oriented_site_tensor(psi::TTNS, site::Int, peer::Int)
     t = topology(psi)
     A = psi.tensors[site]

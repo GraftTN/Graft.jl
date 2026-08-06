@@ -92,13 +92,6 @@ end
     @test norm(graded_predictor * graded_predictor' -
                graded_exact * graded_exact') < 1e-12
 
-    factors = (
-        Na=GraftFoundation.id(codomain(M)),
-        Np=GraftFoundation.id(domain(M)),
-        Zs=M,
-        injection=GraftFoundation.id(domain(M)),
-        Θ=M,
-    )
     policy(seed) = NaiveCBE(
         rng=Xoshiro(seed), max_add=2, oversample=4, poweriter=1,
         enr_atol=0, enr_rtol=0)
@@ -107,11 +100,11 @@ end
     @test oracle_info.solver === :exact_svd_oracle
     @test norm(oracle * oracle' - exact_projector) < 1e-12
     sampled1, sampled_exact1 = _CBE._cbe_implicit_rsvd_directions(
-        policy(0x51eed), factors, 2)
+        policy(0x51eed), M, 2)
     sampled2, sampled_exact2 = _CBE._cbe_implicit_rsvd_directions(
-        policy(0x51eed), factors, 2)
+        policy(0x51eed), M, 2)
     zero_sampled, zero_exact = _CBE._cbe_implicit_rsvd_directions(
-        policy(0x51eed), factors, 0)
+        policy(0x51eed), M, 0)
     sampled_projector = sampled1 * sampled1'
 
     # Projector distance is the sine-principal-angle oracle and is invariant
@@ -129,7 +122,7 @@ end
         expected = rand(global_rng, UInt64)
         copy!(global_rng, saved_global_rng)
         _CBE._cbe_implicit_rsvd_directions(
-            policy(0x600d), factors, 2)
+            policy(0x600d), M, 2)
         @test rand(global_rng, UInt64) == expected
     finally
         copy!(global_rng, saved_global_rng)
@@ -198,15 +191,8 @@ end
         enr_atol=final_cutoff, enr_rtol=0)
     naive_directions, naive_info = _CBE._cbe_naive_exact_oracle(
         naive, (; M=dense, Θ=dense), length(exact.values))
-    factors = (
-        Na=GraftFoundation.id(codomain(dense)),
-        Np=GraftFoundation.id(domain(dense)),
-        Zs=dense,
-        injection=GraftFoundation.id(domain(dense)),
-        Θ=dense,
-    )
     production_directions, production_info = _CBE._cbe_naive_directions(
-        naive, factors, length(exact.values))
+        naive, dense, length(exact.values))
     reference = _CBE._cbe_exact_directions(
         exact, length(exact.values); atol=final_cutoff)
 
