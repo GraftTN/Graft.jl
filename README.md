@@ -273,6 +273,12 @@ does not imply that every variant in the paper is implemented.
    alternating sweep composition. Tree predictor variants have separate pyTTN
    provenance.
 
+   **Implementation references:** [pyTTN](https://github.com/llindoy/pyttn)
+   for the default `PredictorCBE`,
+   [FiniteMPS.jl](https://github.com/Qiaoyi-Li/FiniteMPS.jl) for `NaiveCBE`, and
+   [CBEAlgorithms](https://github.com/ShimpeiGoto/CBEAlgorithms) for the
+   independent `LGVDCBE` C2/C3 cross-check.
+
 3. **CBE shrewd selection** — *implemented; algorithmic basis*
 
    A. Gleis, J.-W. Li, and J. von Delft, “Controlled bond expansion for DMRG ground state search at single-site costs,” *Physical Review Letters* **130**, 246402 (2023).
