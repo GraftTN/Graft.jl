@@ -111,7 +111,9 @@ unprojected two-site action is never materialized.  Both bases may themselves
 be rank-small sketches, which makes this primitive suitable for matrix-free
 range finding and projected-core construction. Threaded and distributed
 channel slicing partitions the factor-frame TTNO edge directly; either mode
-requires an explicit `channel_memory_cap_bytes` admission bound.
+requires an explicit `channel_memory_cap_bytes` admission bound when slicing
+is admitted. A one-dimensional or sub-threshold edge stays on the unsliced
+factorized contraction and never restores a materialized two-site action.
 """
 function contract_biprojected_two_site(
         cache::EnvCache,
@@ -144,9 +146,11 @@ function contract_biprojected_two_site(
         cache, :oriented_biprojected_close, spec, operands, T;
         optimize, sector_aware)
 
-    use_channels = distributed !== nothing ||
-        (threaded_channels && Threads.nthreads() > 1 &&
-         _channel_plan_flops(full_plan) >= Float64(channel_min_flops))
+    operator_space = space(source_projected, numind(source_projected))
+    use_channels = dim(operator_space) >= 2 &&
+        _channel_plan_flops(full_plan) >= Float64(channel_min_flops) &&
+        (distributed !== nothing ||
+         (threaded_channels && Threads.nthreads() > 1))
     use_channels || return Planning.execute(full_plan, operands)
     return _channel_biprojected_two_site(
         cache, spec, operands;

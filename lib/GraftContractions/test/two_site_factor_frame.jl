@@ -27,6 +27,18 @@ function _factor_dense_fixture(; seed=2026080211)
     return psi, H
 end
 
+function _factor_single_channel_fixture(; seed=2026080717)
+    topo = mps_topology(2)
+    spin = spin_ops()
+    physical = Dict(:site1 => spin.P, :site2 => spin.P)
+    terms = OpSum() + Term(
+        0.23, SiteOp(:site1, :X, spin.X), SiteOp(:site2, :Z, spin.Z))
+    H = ttno_from_opsum(terms, topo, physical; hermitian=true)
+    psi = random_ttns(
+        Xoshiro(seed), ComplexF64, topo, physical, ℂ^1; center=topo.root)
+    return psi, H
+end
+
 function _factor_graded_fixture()
     topo = mps_topology(2)
     fermion = fermion_ops_z2()
@@ -212,6 +224,33 @@ end
         channel_memory_cap_bytes=1_000_000_000,
         distributed=_ReplayFactorContext(remote))
 
+    @test norm(distributed - reference) <=
+        1e-12 * max(norm(reference), 1.0)
+end
+
+@testset "single-channel distributed request stays factorized and unsliced" begin
+    psi, H = _factor_single_channel_fixture()
+    move_center!(psi, 1)
+    cache = EnvCache(psi.topo)
+    source_tensor, _ = GraftContractions.Contractions._oriented_site_tensor(
+        psi, 1, 2)
+    target_tensor, _ = GraftContractions.Contractions._oriented_site_tensor(
+        psi, 2, 1)
+    source_basis, link = left_orth(source_tensor)
+    target_basis, _ = left_orth(target_tensor)
+    frame = oriented_two_site_factor_frame(
+        cache, psi, H, 1, 2; source_tensor=source_basis)
+    contractions = GraftContractions.Contractions
+    projected = source_basis' * frame.source_action
+    operator_space = contractions.space(
+        projected, contractions.numind(projected))
+    @test contractions.dim(operator_space) == 1
+
+    reference = contract_biprojected_two_site(
+        cache, frame, link, source_basis, target_basis)
+    distributed = contract_biprojected_two_site(
+        cache, frame, link, source_basis, target_basis;
+        distributed=_FactorDistributedContext(0, 2))
     @test norm(distributed - reference) <=
         1e-12 * max(norm(reference), 1.0)
 end
