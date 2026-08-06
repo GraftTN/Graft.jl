@@ -476,18 +476,17 @@ end
 
 function _cbe_implicit_rsvd_directions(strategy::NaiveCBE, factors, budget::Int)
     budget <= 0 && return nothing, nothing
-    Vrest = fuse(domain(factors.injection))
-    sketchdim = min(dim(Vrest), budget + strategy.oversample)
-    K = Contractions._rsvd_probe_space(Vrest, sketchdim)
-    Ω = Contractions._rsvd_random_probe(
-        strategy.rng, scalartype(factors.Zs), domain(factors.injection) ← K;
-        threaded=false)
-    Y = _cbe_projected_apply(factors, Ω)
-    for _ in 1:strategy.poweriter
-        Z, _ = left_orth(_cbe_projected_adjoint_apply(factors, Y); alg=:qr)
-        Y = _cbe_projected_apply(factors, Z)
-    end
-    sketch, _ = left_orth(Y; alg=:qr)
+    sketch = Contractions.rangefinder(
+        x -> _cbe_projected_apply(factors, x),
+        x -> _cbe_projected_adjoint_apply(factors, x),
+        domain(factors.injection);
+        maxrank=budget,
+        oversample=strategy.oversample,
+        poweriter=strategy.poweriter,
+        rng=strategy.rng,
+        probe_eltype=scalartype(factors.Zs),
+        threaded=false,
+    )
     # Only this rank-sketch-by-partner-complement core is materialized. The
     # full active-complement-by-partner-complement map is never formed.
     small = (sketch' * factors.Na') * factors.Zs * factors.injection

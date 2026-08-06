@@ -110,6 +110,8 @@ end
         policy(0x51eed), factors, 2)
     sampled2, sampled_exact2 = _CBE._cbe_implicit_rsvd_directions(
         policy(0x51eed), factors, 2)
+    zero_sampled, zero_exact = _CBE._cbe_implicit_rsvd_directions(
+        policy(0x51eed), factors, 0)
     sampled_projector = sampled1 * sampled1'
 
     # Projector distance is the sine-principal-angle oracle and is invariant
@@ -118,6 +120,8 @@ end
     @test sampled_exact1.values ≈ sampled_exact2.values rtol=1e-13 atol=1e-13
     @test norm(sampled_projector - sampled2 * sampled2') < 1e-13
     @test norm(sampled_projector - exact_projector) < 1e-10
+    @test isnothing(zero_sampled)
+    @test isnothing(zero_exact)
 
     global_rng = Random.default_rng()
     saved_global_rng = copy(global_rng)

@@ -113,8 +113,33 @@ end
         threaded=true, minbatch=1, memory_cap_bytes=1_000_000,
         task_workspace_memory_bytes=0,
     )
+    apply_calls = Ref(0)
+    adjoint_calls = Ref(0)
+    range_matrix_free = _C.rangefinder(
+        x -> begin
+            apply_calls[] += 1
+            dense * x
+        end,
+        x -> begin
+            adjoint_calls[] += 1
+            dense' * x
+        end,
+        domain(dense);
+        maxrank=4, oversample=2, poweriter=1,
+        rng=Xoshiro(2026080202), probe_eltype=ComplexF64,
+        threaded=false,
+    )
     @test norm(range_serial' * range_serial - id(domain(range_serial))) < 1e-12
     @test range_serial == range_parallel
+    @test range_matrix_free == range_serial
+    @test apply_calls[] == 2
+    @test adjoint_calls[] == 1
+    @test_throws ArgumentError _C.rangefinder(
+        x -> dense * x, x -> dense' * x, domain(dense);
+        maxrank=0, oversample=2, poweriter=0,
+        rng=Xoshiro(2026080202), probe_eltype=ComplexF64,
+        threaded=false,
+    )
 
     rsvd = _C._rsvd_predictor_basis(
         dense, 4;
@@ -135,8 +160,16 @@ end
         rng=Xoshiro(2026080205), rsvd_oversample=1, rsvd_poweriter=1,
         threaded=false,
     )
+    graded_matrix_free = _C.rangefinder(
+        x -> graded * x, x -> graded' * x, domain(graded);
+        maxrank=2, oversample=1, poweriter=1,
+        rng=Xoshiro(2026080205), probe_eltype=ComplexF64,
+        threaded=false,
+    )
     @test norm(graded_direct' * graded_direct - id(domain(graded_direct))) < 1e-12
     @test norm(graded_range' * graded_range - id(domain(graded_range))) < 1e-12
+    @test norm(graded_matrix_free * graded_matrix_free' -
+               graded_range * graded_range') < 1e-12
     @test collect(sectors(domain(graded_direct)[1])) == [even, odd]
     @test collect(sectors(domain(graded_range)[1])) == [even, odd]
 end

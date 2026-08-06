@@ -158,6 +158,52 @@ function _directqr_predictor_basis(Ps::AbstractTensorMap)
     return Q
 end
 
+"""
+    rangefinder(apply, adjoint_apply, domain;
+                maxrank, oversample, poweriter, rng, probe_eltype, ...)
+
+Construct an oversampled orthonormal basis for the range of a matrix-free
+operator. `apply` and `adjoint_apply` act on TensorMap blocks, while `domain`
+is the unfused input space used to construct sector-aware Gaussian probes.
+The caller supplies `probe_eltype` explicitly because a TensorKit space does
+not encode the numeric precision of the operator.
+
+The primitive owns only randomized probing and QR stabilization. Any projected
+small-matrix factorization or final rank truncation remains with the caller.
+"""
+function rangefinder(apply::F, adjoint_apply::A, probe_domain;
+                     maxrank::Int,
+                     oversample::Int,
+                     poweriter::Int,
+                     rng::AbstractRNG,
+                     probe_eltype::Type{T},
+                     threaded::Bool=Base.Threads.nthreads() > 1,
+                     minbatch::Integer=max(2, Base.Threads.nthreads()),
+                     memory_cap_bytes::Union{Nothing,Integer}=nothing,
+                     task_workspace_memory_bytes::Union{Nothing,Integer}=nothing,
+                     fanout_diagnostics::Union{Nothing,Base.RefValue}=nothing) where
+                    {F,A,T<:Number}
+    maxrank > 0 || throw(ArgumentError("rangefinder maxrank must be positive"))
+    oversample >= 0 ||
+        throw(ArgumentError("rangefinder oversample must be nonnegative"))
+    poweriter >= 0 ||
+        throw(ArgumentError("rangefinder poweriter must be nonnegative"))
+
+    Vrest = fuse(probe_domain)
+    sketchdim = min(dim(Vrest), maxrank + oversample)
+    K = _rsvd_probe_space(Vrest, sketchdim)
+    Ω = _rsvd_random_probe(rng, T, probe_domain ← K;
+                           threaded, minbatch, memory_cap_bytes,
+                           task_workspace_memory_bytes,
+                           fanout_diagnostics)
+    Q, _ = left_orth(apply(Ω)::AbstractTensorMap; alg=:qr)
+    for _ in 1:poweriter
+        Z, _ = left_orth(adjoint_apply(Q)::AbstractTensorMap; alg=:qr)
+        Q, _ = left_orth(apply(Z)::AbstractTensorMap; alg=:qr)
+    end
+    return Q
+end
+
 function _rangefinder_predictor_basis(Ps::AbstractTensorMap, maxdim::Int;
                                       rng::AbstractRNG,
                                       rsvd_oversample::Int,
@@ -167,19 +213,15 @@ function _rangefinder_predictor_basis(Ps::AbstractTensorMap, maxdim::Int;
                                       memory_cap_bytes::Union{Nothing,Integer}=nothing,
                                       task_workspace_memory_bytes::Union{Nothing,Integer}=nothing,
                                       fanout_diagnostics::Union{Nothing,Base.RefValue}=nothing)
-    Vrest = fuse(domain(Ps))
-    budget = min(dim(Vrest), maxdim + rsvd_oversample)
-    K = _rsvd_probe_space(Vrest, budget)
-    Ω = _rsvd_random_probe(rng, scalartype(Ps), domain(Ps) ← K;
-                           threaded, minbatch, memory_cap_bytes,
-                           task_workspace_memory_bytes,
-                           fanout_diagnostics)
-    Q, _ = left_orth(Ps * Ω; alg=:qr)
-    for _ in 1:rsvd_poweriter
-        Z, _ = left_orth(Ps' * Q; alg=:qr)
-        Q, _ = left_orth(Ps * Z; alg=:qr)
-    end
-    return Q
+    return rangefinder(x -> Ps * x, x -> Ps' * x, domain(Ps);
+                       maxrank=maxdim,
+                       oversample=rsvd_oversample,
+                       poweriter=rsvd_poweriter,
+                       rng,
+                       probe_eltype=scalartype(Ps),
+                       threaded, minbatch, memory_cap_bytes,
+                       task_workspace_memory_bytes,
+                       fanout_diagnostics)
 end
 
 function _rsvd_predictor_basis(Ps::AbstractTensorMap, maxdim::Int;
